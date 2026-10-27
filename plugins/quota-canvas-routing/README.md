@@ -38,7 +38,7 @@ codex plugin marketplace add digimaga/quota-canvas
 codex plugin add quota-canvas-routing@quota-canvas
 ```
 
-初回はフックの実行を信頼（trust）するか聞かれることがあります。
+Codex はフックを信頼（trust）するまで実行しません。信頼していないフックは、`codex exec` などでは確認も出ずに飛ばされるので、入れたあと一度、対話の Codex でこのフックを信頼してください（プラグインを更新してフックの中身が変わったときも同じ）。
 
 ## 無効化
 
