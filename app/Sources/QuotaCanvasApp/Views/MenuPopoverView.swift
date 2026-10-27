@@ -219,9 +219,8 @@ struct MenuPopoverView: View {
         defer { pauseBusy = false }
         do {
             let client = EngineClient()
-            var doc = try await client.getConfig()
-            doc.paused = !statusStore.isPaused
-            _ = try await client.setConfig(doc)
+            let paused = !statusStore.isPaused
+            _ = try await client.updateConfig { $0.paused = paused }
             await statusStore.refresh()
         } catch {
             alertMessage = error.localizedDescription

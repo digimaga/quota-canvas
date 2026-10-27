@@ -1,15 +1,38 @@
 import Foundation
 import Darwin
 
+private final class PipeResults: @unchecked Sendable {
+    var out = Data()
+    var err = Data()
+    var writeError: Error?
+}
+
+/// アプリ内の全設定保存を、読み込みから書き込みまで直列化する。
+actor ConfigSaveLock {
+    private var locked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func acquire() async {
+        if !locked { locked = true; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func release() {
+        if waiters.isEmpty { locked = false } else { waiters.removeFirst().resume() }
+    }
+}
+
 /// Python エンジン（quota-canvas CLI）を Process で呼ぶクライアント。
-/// アプリは AI サービスや USB 画面と直接通信しない。すべてこの経路 + 2 つのファイル。
+/// アプリは AI サービスや USB 画面と直接通信しない。
 final class EngineClient: @unchecked Sendable {
+    private static let configLock = ConfigSaveLock()
     private let decoder = JSONDecoder()
+    private let enginePathOverride: String?
+
+    init(enginePathOverride: String? = nil) { self.enginePathOverride = enginePathOverride }
 
     // MARK: - engine path
 
     var enginePathRaw: String {
-        UserDefaults.standard.string(forKey: AppDefaults.enginePathKey) ?? AppDefaults.enginePath
+        enginePathOverride ?? UserDefaults.standard.string(forKey: AppDefaults.enginePathKey) ?? AppDefaults.enginePath
     }
 
     var enginePath: String {
@@ -67,18 +90,8 @@ final class EngineClient: @unchecked Sendable {
                 process.standardError = stderr
                 process.standardInput = FileHandle.nullDevice
 
-                var stdinWriteError: Error?
-                if let stdin {
-                    let stdinPipe = Pipe()
-                    process.standardInput = stdinPipe
-                    do {
-                        try stdinPipe.fileHandleForWriting.write(contentsOf: stdin)
-                        try? stdinPipe.fileHandleForWriting.close()
-                    } catch {
-                        stdinWriteError = error
-                    }
-                }
-
+                let input = stdin.map { _ in Pipe() }
+                if let input { process.standardInput = input }
                 do {
                     try process.run()
                 } catch {
@@ -86,12 +99,34 @@ final class EngineClient: @unchecked Sendable {
                     return
                 }
 
-                let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-                let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+                // どの pipe も同時に処理し、子プロセスの出力待ちとの循環を避ける。
+                let group = DispatchGroup()
+                let output = PipeResults()
+                group.enter()
+                DispatchQueue.global().async {
+                    output.out = stdout.fileHandleForReading.readDataToEndOfFile()
+                    group.leave()
+                }
+                group.enter()
+                DispatchQueue.global().async {
+                    output.err = stderr.fileHandleForReading.readDataToEndOfFile()
+                    group.leave()
+                }
+                if let stdin, let input {
+                    group.enter()
+                    DispatchQueue.global().async {
+                        do { try input.fileHandleForWriting.write(contentsOf: stdin) }
+                        catch { output.writeError = error }
+                        try? input.fileHandleForWriting.close()
+                        group.leave()
+                    }
+                }
                 process.waitUntilExit()
-
-                if let stdinWriteError {
-                    continuation.resume(throwing: stdinWriteError)
+                group.wait()
+                let outData = output.out
+                let errData = output.err
+                if let error = output.writeError {
+                    continuation.resume(throwing: error)
                     return
                 }
 
@@ -128,6 +163,26 @@ final class EngineClient: @unchecked Sendable {
         } catch {
             let preview = String(data: data.prefix(300), encoding: .utf8) ?? "(non-UTF8)"
             throw EngineError(message: String(localized: "エンジンの応答を解釈できません: \(error.localizedDescription)\n\(preview)"))
+        }
+    }
+
+    func updateConfig(_ mutate: @escaping (inout ConfigDocument) -> Void) async throws -> ConfigDocument {
+        await Self.configLock.acquire()
+        do {
+            var latest = try await getConfig()
+            mutate(&latest)
+            let saved = try await setConfig(latest)
+            await Self.configLock.release()
+            return saved
+        } catch {
+            await Self.configLock.release()
+            throw error
+        }
+    }
+
+    func saveChanges(from original: ConfigDocument, to edited: ConfigDocument) async throws -> ConfigDocument {
+        try await updateConfig { latest in
+            latest = ConfigDocument.applyingChanges(from: original, to: edited, onto: latest)
         }
     }
 

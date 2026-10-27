@@ -1,8 +1,7 @@
 import Foundation
 
 /// `quota-canvas config --json` の結果を JSONSerialization で保持し、
-/// 知らないキー（poll / pacing / display.windows など）を壊さずに
-/// `config --set-json` へ丸ごと送り返すためのドキュメント。
+/// 知らないキーを保持する設定ドキュメント。
 struct ConfigDocument {
     private(set) var object: [String: Any]
 
@@ -19,6 +18,30 @@ struct ConfigDocument {
 
     func jsonData() throws -> Data {
         try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted])
+    }
+
+    /// 編集前後の差分だけを最新の設定に適用する。辞書は再帰し、配列は一単位で扱う。
+    static func applyingChanges(from original: ConfigDocument, to edited: ConfigDocument,
+                                onto latest: ConfigDocument) -> ConfigDocument {
+        func merge(_ old: [String: Any], _ new: [String: Any], _ current: [String: Any]) -> [String: Any] {
+            var result = current
+            for key in Set(old.keys).union(new.keys) {
+                guard let value = new[key] else { result.removeValue(forKey: key); continue }
+                let previous = old[key]
+                if let previous, NSDictionary(dictionary: ["v": previous]).isEqual(to: ["v": value]) {
+                    continue
+                }
+                if let nextDict = value as? [String: Any],
+                   previous == nil || previous is [String: Any] {
+                    result[key] = merge(previous as? [String: Any] ?? [:], nextDict,
+                                        current[key] as? [String: Any] ?? [:])
+                } else {
+                    result[key] = value
+                }
+            }
+            return result
+        }
+        return ConfigDocument(object: merge(original.object, edited.object, latest.object))
     }
 
     // MARK: - display

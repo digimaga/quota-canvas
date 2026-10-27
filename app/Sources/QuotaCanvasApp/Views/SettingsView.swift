@@ -58,20 +58,18 @@ struct DisplaySettingsView: View {
                     brightnessSection(doc: doc)
                     nightSection(doc: doc)
                     notificationSection
-                    engineSection
                     loginSection
                 }
                 .formStyle(.grouped)
                 .disabled(busy)
             } else if loadFailed {
-                ContentUnavailableView("設定を取得できませんでした",
-                                       systemImage: "exclamationmark.triangle",
-                                       description: Text("エンジンのパスを確認し、ウィンドウを開き直してください。"))
+                Text("設定を取得できませんでした").padding()
             } else {
                 ProgressView("設定を読み込み中…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .safeAreaInset(edge: .bottom) { Form { engineSection }.formStyle(.grouped).frame(height: 120) }
         .task { await load() }
         .alert("エラー", isPresented: Binding(
             get: { alertMessage != nil },
@@ -87,29 +85,29 @@ struct DisplaySettingsView: View {
 
     private func gaugeSection(doc: ConfigDocument) -> some View {
         Section("ゲージの表示方式") {
-            Picker("方式", selection: $gaugeShowsUsed) {
+            Picker("方式", selection: Binding(get: { gaugeShowsUsed }, set: { value in
+                gaugeShowsUsed = value
+                commit { $0.gauge = value ? "used" : "remaining" }
+            })) {
                 Text("残量で表示（Codex 方式）").tag(false)
                 Text("使用量で表示（Claude 方式）").tag(true)
             }
             .pickerStyle(.radioGroup)
-            .onChange(of: gaugeShowsUsed) { _, newValue in
-                commit { $0.gauge = newValue ? "used" : "remaining" }
-            }
             Text("メニューバーのポップオーバーの残り % にも同じ方式が使われます。")
                 .font(.caption).foregroundStyle(.secondary)
-            Toggle("利用状況に合わせて % の文字色を変える", isOn: $percentColors)
-                .onChange(of: percentColors) { _, on in
-                    commit { $0.percentColors = on }
-                }
+            Toggle("利用状況に合わせて % の文字色を変える", isOn: Binding(get: { percentColors }, set: { value in
+                percentColors = value
+                commit { $0.percentColors = value }
+            }))
             Text("超過・枯渇は赤、余裕ありは緑。オフにすると全部白になります。")
                 .font(.caption).foregroundStyle(.secondary)
-            Picker("区切り文字", selection: $separator) {
+            Picker("区切り文字", selection: Binding(get: { separator }, set: { value in
+                separator = value
+                commit { $0.separator = value }
+            })) {
                 ForEach(Self.separatorChoices(current: separator), id: \.self) { value in
                     Text(Self.separatorLabel(value)).tag(value)
                 }
-            }
-            .onChange(of: separator) { _, newValue in
-                commit { $0.separator = newValue }
             }
             Text("「言語に合わせる」では日本語表示のとき ／、英語表示のとき \" · \" になります。")
                 .font(.caption).foregroundStyle(.secondary)
@@ -118,14 +116,14 @@ struct DisplaySettingsView: View {
 
     private func languageSection(doc: ConfigDocument) -> some View {
         Section("言語") {
-            Picker("言語", selection: $language) {
+            Picker("言語", selection: Binding(get: { language }, set: { value in
+                language = value
+                Self.applyAppleLanguages(value)
+                commit { $0.language = value }
+            })) {
                 Text("自動（macOS に合わせる）").tag("auto")
                 Text("日本語").tag("ja")
                 Text("English").tag("en")
-            }
-            .onChange(of: language) { _, newValue in
-                Self.applyAppleLanguages(newValue)
-                commit { $0.language = newValue }
             }
             Text("アプリの表示は再起動後に切り替わります")
                 .font(.caption).foregroundStyle(.secondary)
@@ -157,8 +155,8 @@ struct DisplaySettingsView: View {
 
     private func nightSection(doc: ConfigDocument) -> some View {
         Section("夜間の減光") {
-            Toggle("夜間は暗くする", isOn: $nightOn)
-                .onChange(of: nightOn) { _, on in
+            Toggle("夜間は暗くする", isOn: Binding(get: { nightOn }, set: { on in
+                    nightOn = on
                     commit { d in
                         d.night = on ? ConfigDocument.Night(
                             start: Self.hhmm(nightStart),
@@ -166,14 +164,16 @@ struct DisplaySettingsView: View {
                             brightness: nightBrightness
                         ) : nil
                     }
-                }
+                }))
             if nightOn {
                 HStack {
-                    DatePicker("開始", selection: $nightStart, displayedComponents: .hourAndMinute)
-                    DatePicker("終了", selection: $nightEnd, displayedComponents: .hourAndMinute)
+                    DatePicker("開始", selection: Binding(get: { nightStart }, set: { value in
+                        nightStart = value; commitNight()
+                    }), displayedComponents: .hourAndMinute)
+                    DatePicker("終了時刻", selection: Binding(get: { nightEnd }, set: { value in
+                        nightEnd = value; commitNight()
+                    }), displayedComponents: .hourAndMinute)
                 }
-                .onChange(of: nightStart) { _, _ in commitNight() }
-                .onChange(of: nightEnd) { _, _ in commitNight() }
                 HStack {
                     Slider(value: $nightBrightness, in: 0...100, step: 1) {
                         Text("夜間の明るさ")
@@ -185,10 +185,10 @@ struct DisplaySettingsView: View {
                 Text("開始 > 終了 のときは日付をまたぎます（例: 23:00 → 07:00）。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Toggle("Mac のスリープ時に画面も消す", isOn: $sleepWithMac)
-                .onChange(of: sleepWithMac) { _, on in
-                    commit { $0.sleepWithMac = on }
-                }
+            Toggle("Mac のスリープ時に画面も消す", isOn: Binding(get: { sleepWithMac }, set: { on in
+                sleepWithMac = on
+                commit { $0.sleepWithMac = on }
+            }))
             Text("スリープやディスプレイの自動消灯に合わせてパネルを消し、復帰で戻します。")
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -260,16 +260,18 @@ struct DisplaySettingsView: View {
                 nightBrightness = night.brightness
             }
         } catch {
+            doc = nil
             loadFailed = true
             alertMessage = error.localizedDescription
         }
     }
 
     private func commit(_ mutate: (inout ConfigDocument) -> Void) {
-        guard var updated = doc else { return }
+        guard let original = doc else { return }
+        var updated = original
         mutate(&updated)
         doc = updated
-        Task { await save(updated) }
+        Task { await save(original, updated) }
     }
 
     private func commitNight() {
@@ -282,11 +284,11 @@ struct DisplaySettingsView: View {
         }
     }
 
-    private func save(_ docToSave: ConfigDocument) async {
+    private func save(_ original: ConfigDocument, _ docToSave: ConfigDocument) async {
         busy = true
         defer { busy = false }
         do {
-            doc = try await client.setConfig(docToSave)
+            doc = try await client.saveChanges(from: original, to: docToSave)
             EngineClient.scheduleArtifactReload() // 2 秒後に status.json / frame.png を読み直させる
         } catch {
             alertMessage = error.localizedDescription

@@ -13,12 +13,12 @@ cd app && ./scripts/build.sh   # → build/QuotaCanvas.app（ad-hoc 署名、起
 ```
 
 Swift 6.2+ / swift-tools-version 6.0 / macOS 14 以上 / `swiftLanguageModes: [.v5]`。
-WinKey（~/dev/winkey-mac）と同じ方式。
+SwiftPM で実行ファイルをビルドし、リソースと Info.plist を .app にまとめて ad-hoc 署名する。
 
 ## 機能
 
 - メニューバー（MenuBarExtra .window）: gauge 系 SF シンボル + 最も悪いカード状態の色の点
-  （over/exhausted=赤, tight=黄, on_track=紫, spare/fresh=緑, unknown=灰。
+  （over/exhausted=赤, tight/on_track=紫, spare/fresh=緑, unknown=灰。
   status.json が 5 分以上古いときは停止を表す灰色）。ポップオーバーには
   「今使う先」の推奨（`recommendation.text`、F1）、各カードの残り %（gauge=used なら使用量 %）・
   状態ラベル（`fresh` =「リセット直後」も緑系、F5）・リセットまで・advice・
@@ -63,17 +63,18 @@ WinKey（~/dev/winkey-mac）と同じ方式。
     「古いとみなす（分）」Stepper（`routing.stale_minutes` 5-120）。
     「現在の判定」は status.json の `routing.workers` の一覧（判定ラベルは色付き:
     stop=赤 / reserve=黄 / go=紫 / boost=緑 / unknown=灰、残り %、理由の短い文）。
+    表示中は 60 秒ごとに読み直し、判定時刻が 5 分より古いか不明なら警告する。
     行ごとの「使い切り（今日 23:59 まで）」トグルは `routing burn <名前> on|off --json`
     を呼び、`refresh` と 2 秒後の再読込（`scheduleArtifactReload`）で status.json を
     早めに取り直す。トグルは burn 一覧（`routing burn --json`、世代番号で古い応答を
     捨てる）が取れるまで出ない。判定オフでも有効な burn があれば一覧と「解除」を出す。
-    「ワーカーの設定」は `routing.workers` のエディタ（名前は
-    `^[A-Za-z0-9._-]{1,40}$` をアプリ側でも検証、窓 id はカンマ区切り・末尾 `*`
-    で前方一致、上下ボタンで並べ替え）。1 文字ごとの自動保存はせず「保存」ボタン
+    「ワーカーの設定」は `routing.workers` のエディタ。追加ボタンで行を作り、名前は
+    `^[A-Za-z0-9._-]{1,40}$` をアプリ側でも検証する。窓 id はカンマ区切り・末尾 `*`
+    で前方一致し、上下ボタンで並べ替える。1 文字ごとの自動保存はせず「保存」ボタン
     （空行・不正な名前・重複・窓なしのときは無効と理由表示）と「元に戻す」。
     行を消すのはゴミ箱と「既定に戻す（サービスごと）」（確認ダイアログ付きで
     workers を空にする）だけ。保存は 1 本に直列化し、そのたびに `config --json`
-    を取り直して routing のキーだけを上書きして送る（他のタブの保存を壊さない）。
+    を取り直して変更した項目だけを反映して送る（他のタブの保存を壊さない）。
     JSON のオブジェクトはキー順を保てないため、 workers は
     `[{"name", "windows"}]` の配列で送り、読み込み時は `worker_order` の順。
     「Claude Code / Codex への組み込み」はプラグインのインストールコマンドの

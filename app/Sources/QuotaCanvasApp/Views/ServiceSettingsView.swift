@@ -114,20 +114,22 @@ struct ServiceSettingsView: View {
                 return HexColor.color(hex) ?? Color(nsColor: .systemGray)
             },
             set: { newColor in
-                guard var updated = doc else { return }
+                guard let original = doc else { return }
+                var updated = original
                 updated.setProviderColor(service.provider, HexColor.hex(newColor))
                 doc = updated
-                Task { await save(updated) }
+                Task { await save(original, updated) }
             }
         )
     }
 
     /// 「既定の色に戻す」: providers.<p>.color の color キーを削除して保存。
     private func resetColor(_ service: DetectService) {
-        guard var updated = doc else { return }
+        guard let original = doc else { return }
+        var updated = original
         updated.removeProviderColor(service.provider)
         doc = updated
-        Task { await save(updated) }
+        Task { await save(original, updated) }
     }
 
     // MARK: bindings
@@ -140,7 +142,8 @@ struct ServiceSettingsView: View {
         Binding<Bool>(
             get: { doc?.providerEnabled(service.provider) ?? false },
             set: { newValue in
-                guard var updated = doc else { return }
+                guard let original = doc else { return }
+                var updated = original
                 if newValue && !updated.providerEnabled(service.provider) {
                     if enabledCount() >= Self.maxEnabled {
                         limitAlertVisible = true
@@ -149,7 +152,7 @@ struct ServiceSettingsView: View {
                 }
                 updated.setProviderEnabled(service.provider, newValue)
                 doc = updated
-                Task { await save(updated) }
+                Task { await save(original, updated) }
             }
         )
     }
@@ -164,12 +167,13 @@ struct ServiceSettingsView: View {
                 return saved
             },
             set: { selected in
-                guard var updated = doc else { return }
+                guard let original = doc else { return }
+                var updated = original
                 let all = Set(service.windowList.map(\.key))
                 let keys: [String] = (selected == all) ? [] : Array(selected)
                 updated.setProviderWindows(service.provider, keys)
                 doc = updated
-                Task { await save(updated) }
+                Task { await save(original, updated) }
             }
         )
     }
@@ -181,10 +185,11 @@ struct ServiceSettingsView: View {
         return Binding<Bool>(
             get: { doc?.providerTokenRefresh(service.provider) != "off" },
             set: { on in
-                guard var updated = doc else { return }
+                guard let original = doc else { return }
+                var updated = original
                 updated.setProviderTokenRefresh(service.provider, on ? "cli" : "off")
                 doc = updated
-                Task { await save(updated) }
+                Task { await save(original, updated) }
             }
         )
     }
@@ -214,11 +219,11 @@ struct ServiceSettingsView: View {
         }
     }
 
-    private func save(_ docToSave: ConfigDocument) async {
+    private func save(_ original: ConfigDocument, _ docToSave: ConfigDocument) async {
         busy = true
         defer { busy = false }
         do {
-            doc = try await client.setConfig(docToSave)
+            doc = try await client.saveChanges(from: original, to: docToSave)
             EngineClient.scheduleArtifactReload() // 2 秒後に status.json / frame.png を読み直させる
         } catch {
             alertMessage = error.localizedDescription

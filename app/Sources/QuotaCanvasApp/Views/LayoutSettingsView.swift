@@ -480,7 +480,8 @@ struct LayoutSettingsView: View {
     /// split の列は上段か下段のどちらかに main があれば上下両方を small で出す（空の段は main ""、
     /// small に subs はない）。両方空なら出さない。
     private func commit() {
-        guard var updated = doc else { return }
+        guard let original = doc else { return }
+        var updated = original
         var panels: [ConfigDocument.PanelConfig] = []
         for col in 0..<Self.columnCount {
             if splits[col] {
@@ -498,14 +499,14 @@ struct LayoutSettingsView: View {
         }
         updated.layoutPanels = panels
         doc = updated
-        Task { await save(updated) }
+        Task { await save(original, updated) }
     }
 
-    private func save(_ docToSave: ConfigDocument) async {
+    private func save(_ original: ConfigDocument, _ docToSave: ConfigDocument) async {
         busy = true
         defer { busy = false }
         do {
-            doc = try await client.setConfig(docToSave)
+            doc = try await client.saveChanges(from: original, to: docToSave)
             EngineClient.scheduleArtifactReload() // 2 秒後に status.json / frame.png を読み直させる
         } catch {
             alertMessage = error.localizedDescription

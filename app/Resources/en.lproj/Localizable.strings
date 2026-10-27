@@ -94,7 +94,6 @@
 "使用量で表示（Claude 方式）" = "Show usage (Claude style)";
 "メニューバーのポップオーバーの残り % にも同じ方式が使われます。" = "The same style is used for the remaining-% value in the menu bar popover.";
 "利用状況に合わせて % の文字色を変える" = "Color the % by usage status";
-"超過・枯渇は赤、ギリギリは黄、余裕ありは緑。オフにすると全部白になります。" = "Red when over or exhausted, yellow when tight, green when there is room. Off shows them all in white.";
 "区切り文字" = "Separator";
 "言語に合わせる" = "Follow display language";
 "／（全角スラッシュ）" = "／ (full-width slash)";
@@ -111,7 +110,7 @@
 "夜間の減光" = "Night dimming";
 "夜間は暗くする" = "Dim at night";
 "開始" = "Start";
-"終了" = "End";
+"終了時刻" = "End time";
 "夜間の明るさ" = "Night brightness";
 "開始 > 終了 のときは日付をまたぎます（例: 23:00 → 07:00）。" = "If start is later than end, the period crosses midnight (e.g. 23:00 → 07:00).";
 "Mac のスリープ時に画面も消す" = "Sleep screen with Mac";
@@ -239,3 +238,7 @@
 "解除" = "Lift";
 "空の行があります。入力するか削除してください。" = "There is an empty row. Fill it in or delete it.";
 "リセット直前のペース超過（使い切ってよい）" = "Over pace, but the reset is imminent (ok to burn through)";
+
+"超過・枯渇は赤、余裕ありは緑。オフにすると全部白になります。" = "Over or exhausted is red; spare is green. When off, all values are white.";
+"使い切り" = "Burn";
+"判定の更新が古いか、更新時刻が不明です" = "Verdict is stale or its update time is unknown";

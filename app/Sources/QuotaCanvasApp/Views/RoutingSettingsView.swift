@@ -5,8 +5,7 @@ import AppKit
 /// 判定そのものはエンジン担当。アプリは config --set-json で設定を保存し、
 /// status.json の "routing" で現在の判定を表示し、`routing burn` CLI で
 /// 使い切りモードを切り替えるだけ（app/README.md の方針どおり直接通信しない）。
-/// 保存は 1 本に直列化し、そのたびに `config --json` を取り直して routing の
-/// キーだけを上書きして送る（他のタブが保存した値を古い値で上書きしないため）。
+/// 設定保存はアプリ共通の直列化された経路を使う。
 struct RoutingSettingsView: View {
     @State private var doc: ConfigDocument?
     @State private var loadFailed = false
@@ -21,13 +20,11 @@ struct RoutingSettingsView: View {
     // ワーカーの編集（保存ボタンで明示的に保存する）
     @State private var rows: [WorkerRow] = []
     @State private var savedWorkers: [ConfigDocument.RoutingWorker] = []
-    @State private var pendingWorkers: [ConfigDocument.RoutingWorker]? // 保存予定（保存ボタンで設定）
-    @State private var saveRunning = false
-    @State private var saveQueued = false
     @State private var showResetConfirm = false
 
     // 現在の判定（status.json の "routing"）と burn 一覧（CLI）
     @State private var verdicts: [RoutingWorkerStatus] = []
+    @State private var verdictTimestamp: Date?
     @State private var hasRoutingStatus = false // status.json に "routing" がある
     @State private var usableWindows: [String] = []
     @State private var burnEntries: [RoutingBurnEntry] = []
@@ -73,7 +70,13 @@ struct RoutingSettingsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task { await load() }
+        .task {
+            await load()
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { break }
+                await reloadVerdicts()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .engineArtifactsChanged)) { _ in
             Task { await reloadVerdicts() } // 設定保存 2 秒後などに判定を取り直す
         }
@@ -91,26 +94,33 @@ struct RoutingSettingsView: View {
 
     private var toggleSection: some View {
         Section("振り分け判定") {
-            Toggle("AI ワーカーの振り分け判定を使う", isOn: $routingOn)
-                .onChange(of: routingOn) { _, _ in enqueueSave() }
+            Toggle("AI ワーカーの振り分け判定を使う", isOn: Binding(
+                get: { routingOn }, set: { value in
+                    routingOn = value
+                    saveRouting { $0.routingEnabled = value }
+                }))
             Text("残り % に応じてワーカーごとに「使ってよし / 控える / 止める」の判定を出します。エンジン自身は何も止めず、プラグイン経由で Claude Code・Codex のセッション開始時に結果を渡せます。")
                 .font(.caption).foregroundStyle(.secondary)
-            Stepper(value: $floorPercent, in: 0...50, step: 1) {
+            Stepper(value: Binding(get: { floorPercent }, set: { value in
+                floorPercent = value
+                saveRouting { $0.routingFloorPercent = value }
+            }), in: 0...50, step: 1) {
                 HStack {
                     Text("止める下限（残り %）")
                     Spacer()
                     Text("\(Int(floorPercent))").monospacedDigit().foregroundStyle(.secondary)
                 }
             }
-            .onChange(of: floorPercent) { _, _ in enqueueSave() }
-            Stepper(value: $staleMinutes, in: 5...120, step: 5) {
+            Stepper(value: Binding(get: { staleMinutes }, set: { value in
+                staleMinutes = value
+                saveRouting { $0.routingStaleMinutes = value }
+            }), in: 5...120, step: 5) {
                 HStack {
                     Text("古いとみなす（分）")
                     Spacer()
                     Text("\(staleMinutes)").monospacedDigit().foregroundStyle(.secondary)
                 }
             }
-            .onChange(of: staleMinutes) { _, _ in enqueueSave() }
         }
     }
 
@@ -118,6 +128,9 @@ struct RoutingSettingsView: View {
 
     private var verdictSection: some View {
         Section("現在の判定") {
+            if hasRoutingStatus && Self.verdictIsStale(verdictTimestamp, now: Date()) {
+                Text("判定の更新が古いか、更新時刻が不明です").font(.caption).foregroundStyle(.orange)
+            }
             if !routingOn {
                 Text("判定は無効です。「AI ワーカーの振り分け判定を使う」をオンにすると、エンジンの次の更新から判定が現れます。")
                     .font(.callout).foregroundStyle(.secondary)
@@ -303,6 +316,7 @@ struct RoutingSettingsView: View {
                 Text(blocker).font(.caption).foregroundStyle(.red)
             }
             HStack {
+                Button("ワーカーを追加") { rows.append(WorkerRow(name: "", windowsText: "")) }
                 Button("保存") { saveWorkers() }
                     .disabled(!canSaveWorkers)
                 Button("元に戻す") { revertWorkers() }
@@ -405,12 +419,11 @@ struct RoutingSettingsView: View {
 
     private func saveWorkers() {
         guard canSaveWorkers else { return }
-        pendingWorkers = normalizedRows
-        enqueueSave()
+        let workers = normalizedRows
+        saveWorkersValue(workers)
     }
 
     private func revertWorkers() {
-        pendingWorkers = nil // 失敗して残った保存予定があれば捨てる
         rows = savedWorkers.map {
             WorkerRow(name: $0.name, windowsText: $0.windows.joined(separator: ","))
         }
@@ -418,8 +431,7 @@ struct RoutingSettingsView: View {
 
     private func resetWorkersToDefault() {
         rows = []
-        pendingWorkers = [] // workers を空にして保存（= サービスごとの既定ワーカー）
-        enqueueSave()
+        saveWorkersValue([])
     }
 
     /// 名前は ^[A-Za-z0-9._-]{1,40}$（エンジンの gate.WORKER_NAME_RE と同じ）。
@@ -482,7 +494,6 @@ struct RoutingSettingsView: View {
             rows = savedWorkers.map {
                 WorkerRow(name: $0.name, windowsText: $0.windows.joined(separator: ","))
             }
-            pendingWorkers = nil
         } catch {
             loadFailed = true
             alertMessage = error.localizedDescription
@@ -496,6 +507,7 @@ struct RoutingSettingsView: View {
         burnGeneration += 1
         let generation = burnGeneration
         let snapshot = StatusStore.loadStatusSnapshot()
+        verdictTimestamp = snapshot?.routing?.at
         hasRoutingStatus = snapshot?.routing != nil
         verdicts = snapshot?.routing?.workers ?? []
         usableWindows = (snapshot?.windows ?? []).compactMap { window in
@@ -511,63 +523,33 @@ struct RoutingSettingsView: View {
         }
     }
 
-    // MARK: - save（1 本に直列化）
-
-    /// 保存を直列化するキューに入れる。実行中のあいかに来た要求は最新の 1 件だけを残す。
-    private func enqueueSave() {
-        saveQueued = true
-        runQueuedSave()
-    }
-
-    private func runQueuedSave() {
-        guard !saveRunning, saveQueued else { return }
-        saveQueued = false
-        saveRunning = true
+    // 変更した項目だけを、アプリ共通の直列化された保存経路に渡す。
+    private func saveRouting(_ mutate: @escaping (inout ConfigDocument) -> Void) {
+        guard doc != nil else { return }
         Task {
-            await performSave()
-            saveRunning = false
-            runQueuedSave() // 待っていた最新の 1 件を送る
+            do {
+                _ = try await client.updateConfig(mutate)
+                EngineClient.scheduleArtifactReload()
+            } catch { alertMessage = error.localizedDescription }
         }
     }
 
-    /// 保存のたびに `config --json` を取り直し、routing のキー（enabled /
-    /// floor_percent / stale_minutes / 開始時に保留だった workers）だけを
-    /// 上書きして送る。他のタブが保存した値を古い値で上書きしないため。
-    /// workers を送るのは「保存」「既定に戻す」の保存だけ（開始時に
-    /// pendingWorkers があった保存）。トグル・Stepper の保存は触らない。
-    private func performSave() async {
+    private func saveWorkersValue(_ workers: [ConfigDocument.RoutingWorker]) {
         guard doc != nil else { return }
         busy = true
-        defer { busy = false }
-        let sendWorkers = pendingWorkers // この保存が運ぶのは開始時に保留だった内容だけ
-        do {
-            var updated = try await client.getConfig()
-            updated.routingEnabled = routingOn
-            updated.routingFloorPercent = floorPercent
-            updated.routingStaleMinutes = staleMinutes
-            var includesWorkers = false
-            if let pending = sendWorkers {
-                updated.routingWorkers = pending
-                includesWorkers = true
-            }
-            let saved = try await client.setConfig(updated)
-            if sendWorkers != nil {
-                pendingWorkers = nil // 運んだ保存予定を消す（実行中に押された分は温存）
-            }
-            doc = saved
-            if includesWorkers {
-                savedWorkers = saved.routingWorkers
-                rows = savedWorkers.map {
-                    WorkerRow(name: $0.name, windowsText: $0.windows.joined(separator: ","))
-                }
-            }
-            EngineClient.scheduleArtifactReload() // 2 秒後に status.json を読み直させる
-        } catch {
-            // 失敗した保存予定は捨てる。残しておくと、次のトグル・Stepper の
-            // 保存が古い workers を書いてしまう。
-            pendingWorkers = nil
-            alertMessage = error.localizedDescription
+        Task {
+            defer { busy = false }
+            do {
+                _ = try await client.updateConfig { $0.routingWorkers = workers }
+                savedWorkers = workers
+                EngineClient.scheduleArtifactReload()
+            } catch { alertMessage = error.localizedDescription }
         }
+    }
+
+    static func verdictIsStale(_ timestamp: Date?, now: Date) -> Bool {
+        guard let timestamp else { return true }
+        return now.timeIntervalSince(timestamp) > 5 * 60
     }
 
     // MARK: - time helpers
