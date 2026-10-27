@@ -473,12 +473,18 @@ def _worker_map(value: Any, path: Path) -> Dict[str, List[str]]:
 
     値に part_of 付きの内訳窓を書いても判定に入らない (gate 側で除外)。
     空リストは「どの窓も使わない」になってしまうのでエラーにする。
+    名前は gate.WORKER_NAME_RE (1 行の安全な短い名前) に限定する。判定の 1 行は
+    SessionStart フックで AI の文脈に入るため。
     """
     if not isinstance(value, dict) or any(not isinstance(k, str) or not k.strip()
                                           for k in value):
         raise ConfigError(t("config.workers_required", path=path, value=value))
+    from .gate import WORKER_NAME_RE  # 遅 import: gate は TYPE_CHECKING で config を参照
     out: Dict[str, List[str]] = {}
     for name, ids in value.items():
+        if not WORKER_NAME_RE.match(name.strip()):
+            raise ConfigError(t("config.workers_bad_name", path=path,
+                                name=name.strip()))
         items = _windows_list(ids, "routing.workers.%s" % name.strip(), path,
                               example='["glm:5h", "glm:weekly"] または ["grok:*"]')
         if not items:

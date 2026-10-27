@@ -1052,3 +1052,26 @@ def test_language_missing_key_in_toml_means_auto(tmp_path):
     # language を書かなければ既定 auto (既存の設定ファイルに影響しない)
     p = write_cfg(tmp_path, "[display]\nbrightness = 80\n")
     assert load_config(p).display.language == "auto"
+
+
+# --- routing.workers (名前の検証: gate.WORKER_NAME_RE と同じ条件) -------------
+
+
+def test_routing_workers_names_ok(tmp_path):
+    cfg = load_config(write_cfg(
+        tmp_path, '[routing.workers]\nglm = ["glm:5h"]\n"my_ai.2" = ["codex:*"]\n'))
+    assert cfg.routing.workers == {"glm": ["glm:5h"], "my_ai.2": ["codex:*"]}
+
+
+@pytest.mark.parametrize("name", ["has space", 'quo"te', "new\nline", "tab\there",
+                                  "x" * 41, "-bad$name"])
+def test_routing_workers_bad_name_raises(name):
+    with pytest.raises(ConfigError) as ei:
+        config_from_dict({"routing": {"workers": {name: ["glm:5h"]}}})
+    assert "ワーカー名" in str(ei.value) or "invalid worker name" in str(ei.value)
+
+
+def test_routing_workers_empty_name_raises():
+    # 空の名前は既存の workers_required (テーブルの形) で落とす
+    with pytest.raises(ConfigError):
+        config_from_dict({"routing": {"workers": {"": ["glm:5h"]}}})

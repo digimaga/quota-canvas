@@ -254,6 +254,20 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `boost` (display and judgment; `stop`/`unknown` stay). `stop`/`unknown` are never
   lifted. State lives in `~/Library/Application Support/quota-canvas/routing-burn.json`;
   expired entries are purged on write. `quota-canvas routing burn` lists active entries.
+- `quota-canvas routing hook [--event NAME]` — one line of JSON for the SessionStart hook
+  of the bundled plugin (`plugins/quota-canvas-routing/`):
+  `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "…"}}`
+  (`--event` renames `hookEventName`, default `SessionStart`). `additionalContext` is the
+  same one-line verdict `routing line` prints plus short routing rules in the display
+  language; when status.json is missing/too old/unreadable it is only the same
+  `quota: stale（…）` line. Same read path and options as `routing line` (`--status`,
+  `--fallback-status`, `QUOTA_STATUS_PATH`, `QUOTA_STATUS_FALLBACK`); never fetches from
+  the services. It always exits 0 and prints nothing on stdout when
+  `routing.enabled = false`, when there is no worker to judge, when the config cannot be
+  read, and when the judgment throws (fail-open, so a broken engine never blocks the
+  session from starting). Worker names shown in the line are restricted to
+  `^[A-Za-z0-9._-]{1,40}$` (default workers take their names from status.json's
+  `windows[].provider`, so anything else is dropped there and in the hook).
 
 
 Notes on `detect --json`: `detected: true` means the credentials exist. It then makes the

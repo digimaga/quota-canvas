@@ -14,6 +14,7 @@ routing = "quota-aware AI worker routing (reads status.json only; never fetches)
 routing_line = "one-line summary of the routing verdict (only when [routing] enabled = true); always exit 0"
 routing_check = "verdict for one worker: exit 3 on stop, a note for reserve/unknown, silent otherwise"
 routing_burn = "burn mode: list / <name> on [--until HH:MM|ISO] / <name> off"
+routing_hook = "for the SessionStart hook: print the verdict line plus routing rules as one JSON line (always exit 0)"
 routing_status = "status.json to read (default: {default}; env QUOTA_STATUS_PATH)"
 routing_fallback = "fallback when the primary status.json is missing/stale (default: env {var})"
 

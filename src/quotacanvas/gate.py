@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,6 +31,16 @@ if TYPE_CHECKING:  # 循環 import を避ける (実行時は duck typing)
 
 # 判定に使う canonical な provider 名 (config.PROVIDERS と同じ。単独で保つ)
 KNOWN_PROVIDERS = ("claude", "codex", "glm", "grok", "gemini")
+
+# ワーカー名の制約。既定ワーカーの名前は status.json 由来の windows[].provider の
+# 生の文字列なので、この条件を満たす名前だけを判定・表示に使う (format_line の
+# 1 行は SessionStart フックで AI の文脈に入るため、怪しい文字列を載せない)。
+# [routing.workers] のキー検証 (config._worker_map) も同じ正規表現を使う。
+WORKER_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
+
+
+def safe_worker_name(name: Any) -> bool:
+    return isinstance(name, str) and WORKER_NAME_RE.match(name) is not None
 
 # quota-gate と同じ: 判定は残り % ではなくペース判定 (status) で決める。
 # 残り何 % より「このペースでリセットまで持つか」が大事なため。
@@ -422,12 +433,13 @@ def _one_provider(providers: Set[str]) -> str:
 
 def default_workers(status: Optional[dict]) -> Dict[str, List[str]]:
     """[routing.workers] 未指定の既定: 取得できている provider ごとに、その
-    provider 名で「その provider の独立窓 (part_of なし) すべて」。"""
+    provider 名で「その provider の独立窓 (part_of なし) すべて」。
+    名前は status.json 由来の生の文字列なので、安全な形のものだけ採用する。"""
     windows = status_windows(status)
     present: List[str] = []
     for w in windows:
         p = w.get("provider")
-        if isinstance(p, str) and p and p not in present:
+        if isinstance(p, str) and p and p not in present and safe_worker_name(p):
             present.append(p)
     for p in error_providers(status):
         if p not in present:
@@ -564,6 +576,8 @@ def format_line(result: RoutingResult, now: datetime, lang: Optional[str] = None
         return ""  # ワーカーが 1 つも無いときは崩れた行ではなく何も出さない
     parts: List[str] = []
     for w in result.workers:
+        if not safe_worker_name(w.name):
+            continue  # status.json 由来の怪しい名前は行に載せない
         if w.verdict == "unknown":
             parts.append("%s=%s" % (w.name, "stale" if w.reason == "stale" else "?"))
             continue

@@ -1,0 +1,14 @@
+{
+  "name": "quota-canvas",
+  "description": "quota-canvas plugins: put the AI worker quota verdict into the session start context",
+  "owner": {
+    "name": "digimaga"
+  },
+  "plugins": [
+    {
+      "name": "quota-canvas-routing",
+      "source": "./plugins/quota-canvas-routing",
+      "description": "Adds quota-canvas's per-worker quota verdict (one line) plus routing rules to the session start context. macOS only."
+    }
+  ]
+}

@@ -23,3 +23,4 @@ sleep_same_time = "{path}: pacing.sleep の start と end は違う時刻にし�
 sleep_time_required = "{path}: '{name}' は必須です（\"HH:MM\" 形式の時刻。start と end を両方指定してください）"
 workers_required = "{path}: 'routing.workers' はワーカー名 → 窓 id 配列のテーブルで指定してください（例: glm = [\"glm:5h\"]、現在: {value!r}）"
 workers_empty = "{path}: 'routing.workers.{name}' に空の配列は指定できません（どの窓も使わないワーカーになってしまうため。削除するか窓 id を書いてください）"
+workers_bad_name = "{path}: ワーカー名 '{name}' は使えません（半角英数字と . _ - だけの 40 文字以内の名前にしてください）"

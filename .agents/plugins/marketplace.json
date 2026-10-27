@@ -1,0 +1,21 @@
+{
+  "name": "quota-canvas",
+  "description": "quota-canvas plugins for Codex and Claude Code.",
+  "interface": {
+    "displayName": "quota-canvas"
+  },
+  "plugins": [
+    {
+      "name": "quota-canvas-routing",
+      "source": {
+        "source": "local",
+        "path": "./plugins/quota-canvas-routing"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

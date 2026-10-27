@@ -23,3 +23,4 @@ sleep_same_time = "{path}: pacing.sleep start and end must differ (equal times w
 sleep_time_required = "{path}: '{name}' is required (an \"HH:MM\" time; specify both start and end)"
 workers_required = "{path}: 'routing.workers' must be a table of worker name → window id list (e.g. glm = [\"glm:5h\"], got: {value!r})"
 workers_empty = "{path}: 'routing.workers.{name}' must not be an empty list (the worker would use no windows; remove it or list window ids)"
+workers_bad_name = "{path}: invalid worker name '{name}' (use up to 40 ASCII letters, digits, '.', '_' or '-')"

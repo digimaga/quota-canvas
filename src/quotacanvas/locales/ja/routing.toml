@@ -1,7 +1,7 @@
 # ワーカー振り分け判定 (gate.py / cli.py の routing コマンド) の文言。
 # gate 系の ja は旧 ~/.claude/bin/quota-gate の line と同じ書式
 # (ワーカーの並び順は [routing.workers] の設定順。CLAUDE.md がこの形を前提)。
-usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <ワーカー名> [--json] | quota-canvas routing burn [ワーカー名 on|off [--until HH:MM|ISO]]"
+usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <ワーカー名> [--json] | quota-canvas routing burn [ワーカー名 on|off [--until HH:MM|ISO]] | quota-canvas routing hook [--event NAME]"
 
 [gate]
 line = "quota: {body} ({at}時点)"
@@ -27,3 +27,13 @@ entry = "使い切りモード: {name}（~{dt}）"
 set = "{host}: 使い切りモード {name}（~{dt}）"
 cleared = "{host}: 使い切りモード {name} を解除"
 bad_until = "--until は HH:MM か ISO 形式"
+
+[hook]
+# routing hook が additionalContext に載せる振り分けのルール (セッション開始時に
+# AI に読ませるもの。line のすぐ後ろに入るので「上の quota 行」始まり)。
+rules = """上の quota 行は quota-canvas による AI ワーカーごとの利用枠の判定。このセッション自身の作業は止めない。使うのはサブエージェントや別の AI に作業を渡すときだけ。ユーザーが名指ししたワーカーにはそのまま従う。
+- boost（余っている）> go（普通に使う）> reserve（ペース超過。他に合う相手がいればそちら）の順に優先する。stop（使い切り）には新しく作業を割り当てない。
+- =? / =stale は判定できない。残量を使わず普段どおりに選ぶ。
+- 残量は候補の間の優先度であって、作業への向き不向きより優先しない。
+- 使い切りモード（burn）・QUOTA_GATE_FORCE・--force・設定の変更は、ユーザーに言われたときだけ。
+- 長い作業の途中で最新を見たいときは `quota-canvas routing line` を実行する。"""

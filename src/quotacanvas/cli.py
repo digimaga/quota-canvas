@@ -738,6 +738,41 @@ def _cmd_routing_check(args, cfg: Config) -> int:
     return 0
 
 
+def _print_hook_context(event: str, context: str) -> None:
+    """SessionStart フックの additionalContext を 1 行の JSON で出す。"""
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": event,
+                                             "additionalContext": context}},
+                     ensure_ascii=False))
+
+
+def _cmd_routing_hook(args, cfg: Config) -> int:
+    """routing hook [--event NAME]: プラグインの SessionStart フック用。
+    `routing line` と同じ 1 行に短いルール (locale の routing.hook.rules) を
+    続けた additionalContext を、1 行の JSON で stdout に出す。
+    status.json が無い・古い・壊れているときは line と同じ stale の 1 行だけ
+    入れる (判定できない旨)。enabled=false・ワーカー 0 件・例外のときは
+    何も出さない。どんなときも exit 0。サービスへの取得は絶対にしない
+    (line と同じ読み取り経路。--status / --fallback-status / 環境変数も同じ)。"""
+    if not cfg.routing.enabled:
+        return 0
+    try:
+        lang = current_language()
+        state, data, detail, path = _load_gate_status(args, cfg)
+        now = gate.now_local()
+        if state != "ok":
+            _print_hook_context(args.event,
+                                gate.format_stale_line(detail, path, data, now, lang))
+            return 0
+        result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
+                               previous=data.get("routing"))
+        line = gate.format_line(result, now, lang)
+        if line:  # ワーカー 0 件のときは何も出さない (line と同じ)
+            _print_hook_context(args.event, line + "\n\n" + t("routing.hook.rules"))
+    except Exception:
+        pass  # 判定できないときもセッション開始は止めない (fail-open、無出力)
+    return 0
+
+
 def _cmd_routing_burn(args, cfg: Config) -> int:
     """routing burn: 使い切りモード。期限内はそのワーカーの reserve / go / boost を
     boost とみなす (stop と unknown はそのまま)。"""
@@ -781,6 +816,8 @@ def _cmd_routing(args, cfg: Config) -> int:
         return _cmd_routing_check(args, cfg)
     if args.routing_cmd == "burn":
         return _cmd_routing_burn(args, cfg)
+    if args.routing_cmd == "hook":
+        return _cmd_routing_hook(args, cfg)
     print(t("routing.usage"), file=sys.stderr)
     return 2
 
@@ -910,6 +947,10 @@ def main(argv=None) -> int:
                         help='"on" or "off"')
     p_burn.add_argument("--until", default=None, metavar="HH:MM|ISO",
                         help="burn until this time (default: today 23:59)")
+    p_hook = routing_subs.add_parser("hook", parents=[routing_common],
+                                     help=t("cli.help.routing_hook"))
+    p_hook.add_argument("--event", default="SessionStart", metavar="NAME",
+                        help="hookEventName to report (default: SessionStart)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
@@ -931,6 +972,9 @@ def main(argv=None) -> int:
     try:
         cfg = load_config(args.config)
     except ConfigError as exc:
+        if args.command == "routing" and getattr(args, "routing_cmd", None) == "hook":
+            # 壊れた設定でもセッション開始は止めない (fail-open、無出力)
+            return 0
         if args.command == "config" and args.json:
             return _fail(str(exc))
         print(t("cli.config_error", detail=exc), file=sys.stderr)
