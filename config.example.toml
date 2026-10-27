@@ -87,10 +87,15 @@ on_track = 70
 # 既定は無効。有効にすると status.json に "routing" も書かれる。
 # [routing]
 # enabled = true
-# 残り % がこの値未満のワーカーは stop（使い切る前に離れる）
+# floor の適用中に残り % がこの値未満なら stop
 # floor_percent = 5
+# 24 時間以上または長さ不明の窓で floor を適用するリセットまでの時間（時間）
+# 0 なら全窓で常に適用。リセット時刻不明も適用
+# floor_hours = 24
 # fetched_at がこの分数より古い窓（または stale_error 中）は unknown（stale）
 # stale_minutes = 20
+# 24 時間未満の窓の over 猶予と floor を外す終盤の長さ（分）。省略時は窓長の 10%
+# short_over_margin_minutes = 30
 # ワーカー名 → 窓 ID のリスト。並び順 = line 表示順。"claude:*" のように末尾に
 # "*" を付けると接頭一致。内訳窓（part_of）は判定しない。
 # 省略時の既定は「取得できた provider ごとに独立窓すべてを 1 ワーカーにまとめ、

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -153,9 +154,11 @@ class Routing:
     """
 
     enabled: bool = False
-    floor_percent: float = 5.0   # 残りがこれ未満の窓があれば stop (ペースに関係なく)
+    floor_percent: float = 5.0   # floor の適用中に残りがこれ未満なら stop
     stale_minutes: int = 20      # fetched_at がこれより古い窓を含むワーカーは stale
     workers: Dict[str, List[str]] = field(default_factory=dict)
+    short_over_margin_minutes: Optional[float] = None
+    floor_hours: float = 24.0   # 長い窓でリセットまでこれ以上なら floor を適用
 
 
 @dataclass
@@ -336,8 +339,24 @@ def _build(data: Dict[str, Any], path: Path) -> Config:
                 cfg.routing.enabled = _bool(value, "routing.enabled", path)
             elif key == "floor_percent":
                 cfg.routing.floor_percent = _float_in(value, "routing.floor_percent", path, 0, 100)
+            elif key == "floor_hours":
+                hours = _float_in(value, "routing.floor_hours", path, 0)
+                if not math.isfinite(hours):
+                    raise ConfigError(t("config.float_required", path=path,
+                                        name="routing.floor_hours", range=_range_txt(0, None), value=value))
+                cfg.routing.floor_hours = hours
             elif key == "stale_minutes":
                 cfg.routing.stale_minutes = _int_in(value, "routing.stale_minutes", path, 1)
+            elif key == "short_over_margin_minutes":
+                if value is None:  # config --json の既定値
+                    cfg.routing.short_over_margin_minutes = None
+                    continue
+                margin = _float_in(value, "routing.short_over_margin_minutes", path, 0)
+                if not math.isfinite(margin) or margin <= 0:
+                    raise ConfigError(t("config.float_required", path=path,
+                                        name="routing.short_over_margin_minutes",
+                                        range="> 0", value=value))
+                cfg.routing.short_over_margin_minutes = margin
             elif key == "workers":
                 cfg.routing.workers = _worker_map(value, path)
             else:
@@ -716,10 +735,16 @@ def format_toml(cfg: Config) -> str:
         "# true にしない限り何も出しません (既定オフ)。status.json への全窓 (windows) の",
         "# 書き出しはこの設定に関係なく行われます。",
         "enabled = %s" % ("true" if cfg.routing.enabled else "false"),
-        "# 残りがこの % 未満の窓があればペースに関係なく stop",
+        "# floor の適用中に残りがこの % 未満なら stop",
         "floor_percent = %g" % cfg.routing.floor_percent,
+        "# 24 時間以上または長さ不明の窓でリセットまでこの時間以上なら floor を適用",
+        "# 0 なら全窓で常に適用。リセット時刻不明も適用",
+        "floor_hours = %r" % cfg.routing.floor_hours,
         "# fetched_at がこの分数より古い窓を含むワーカーは stale (判定できない扱い)",
         "stale_minutes = %d" % cfg.routing.stale_minutes,
+        "# 24 時間未満の窓の over 猶予と floor を外す終盤の長さ (分)。未指定なら窓長の 10%",
+        ("short_over_margin_minutes = %r" % cfg.routing.short_over_margin_minutes
+         if cfg.routing.short_over_margin_minutes is not None else "# short_over_margin_minutes = 30"),
     ]
     if cfg.routing.workers:
         lines += [
@@ -844,7 +869,9 @@ def config_to_dict(cfg: Config) -> Dict[str, Any]:
         "routing": {
             "enabled": cfg.routing.enabled,
             "floor_percent": cfg.routing.floor_percent,
+            "floor_hours": cfg.routing.floor_hours,
             "stale_minutes": cfg.routing.stale_minutes,
+            "short_over_margin_minutes": cfg.routing.short_over_margin_minutes,
             "workers": {name: list(ids) for name, ids in cfg.routing.workers.items()},
         },
     }

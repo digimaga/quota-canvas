@@ -16,6 +16,7 @@ status.json のトップレベル "windows" (表示フィルタ前の全窓) を
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -41,10 +42,12 @@ PACE_VERDICT = {
     "fresh": ("boost", "fresh"),         # リセット直後で枠が空いている
     "unknown": ("go", "unknown"),        # 判断材料が無い
 }
+SHORT_PACE_VERDICT = dict(PACE_VERDICT, on_track=("boost", "on_track"))
 VERDICT_RANK = {"stop": 0, "reserve": 1, "go": 2, "boost": 3}
 SHOW_STATUS = frozenset(("over", "tight", "spare", "exhausted", "fresh"))
 
 DEFAULT_FLOOR_PERCENT = 5.0
+DEFAULT_FLOOR_HOURS = 24.0
 DEFAULT_STALE_MINUTES = 20
 
 # 使い切りモード (burn) の状態ファイル。status.json と同じディレクトリ。
@@ -315,6 +318,7 @@ class RoutingResult:
     workers: List[WorkerResult] = field(default_factory=list)
     at: Optional[str] = None  # status.json の updated_at (ISO8601)
     reset_credits: Dict[str, int] = field(default_factory=dict)  # provider → 期限内の権数
+    holds: Dict[str, str] = field(default_factory=dict)  # reserve(over) の窓 id → resets_at
 
     def worker(self, name: str) -> Optional[WorkerResult]:
         for w in self.workers:
@@ -326,6 +330,7 @@ class RoutingResult:
         return {
             "at": self.at,
             "reset_credits": dict(self.reset_credits),
+            "holds": dict(self.holds),
             "workers": [w.to_dict() for w in self.workers],
         }
 
@@ -347,17 +352,35 @@ def _status_reset_credits(status: Optional[dict], now: datetime) -> Dict[str, in
     return out
 
 
-def _judge(entry: dict, floor_percent: float) -> Tuple[str, str]:
-    """窓 1 枚の判定 (verdict, reason)。quota-gate と同じ:
-    exhausted → stop / 残り floor_percent 未満 → stop / over → reserve /
-    tight・on_track・unknown → go / spare・fresh → boost。"""
+def _judge(entry: dict, floor_percent: float, floor_hours: float, now: datetime, holds: dict,
+           margin_minutes: Optional[float]) -> Tuple[str, str]:
+    """窓 1 枚の判定。短い窓の over は予測時刻と前回状態を使う。"""
     st = norm_status(entry.get("status"))
     if st == "exhausted":
         return "stop", "exhausted"
+    length = entry.get("length")
+    short = (not isinstance(length, bool) and isinstance(length, (int, float))
+             and math.isfinite(length) and 0 < length < 24 * 3600)
+    margin = (margin_minutes * 60 if margin_minutes is not None else length * 0.1) if short else None
     rem = norm_remaining(entry.get("remaining"))
     if rem is not None and rem < floor_percent:
-        return "stop", "below_floor"
-    return PACE_VERDICT.get(st, ("go", "unknown"))
+        reset = parse_dt(entry.get("resets_at"))
+        floor_seconds = margin if short else floor_hours * 3600
+        if floor_hours == 0 or reset is None or (reset - now).total_seconds() >= floor_seconds:
+            return "stop", "below_floor"
+    if not short:
+        return PACE_VERDICT.get(st, ("go", "unknown"))
+    if st == "over":
+        reset = parse_dt(entry.get("resets_at"))
+        exhaust = parse_dt(entry.get("exhausts_at"))
+        if reset is None or exhaust is None:
+            return "reserve", "over"
+        old_reset = parse_dt(holds.get(entry.get("id")))
+        threshold = margin * 2 / 3 if old_reset == reset else margin
+        if (reset - exhaust).total_seconds() < threshold:
+            return "go", "over_near_reset"
+        return "reserve", "over"
+    return SHORT_PACE_VERDICT.get(st, ("go", "unknown"))
 
 
 def _match_windows(patterns: List[str], windows: List[dict]) -> List[dict]:
@@ -418,11 +441,18 @@ def default_workers(status: Optional[dict]) -> Dict[str, List[str]]:
     }
 
 
-def _worst(entries: List[dict], floor_percent: float) -> Optional[Tuple[dict, str, str]]:
+def _worst(entries: List[dict], floor_percent: float, floor_hours: float, now: datetime, previous_holds: dict,
+           margin_minutes: Optional[float], holds: Dict[str, str]) -> Optional[Tuple[dict, str, str]]:
     """代表窓 = 一番悪い判定の窓 (stop < reserve < go < boost、同順なら残量が少ない方)。"""
     best: Optional[Tuple[Tuple[int, float], dict, str, str]] = None
     for entry in entries:
-        verdict, reason = _judge(entry, floor_percent)
+        verdict, reason = _judge(entry, floor_percent, floor_hours, now, previous_holds, margin_minutes)
+        wid, reset = entry.get("id"), entry.get("resets_at")
+        if isinstance(wid, str):
+            holds.pop(wid, None)
+            reset_dt = parse_dt(reset)
+            if verdict == "reserve" and reason == "over" and reset_dt is not None and reset_dt > now:
+                holds[wid] = reset
         rem = norm_remaining(entry.get("remaining"))
         rank = (VERDICT_RANK[verdict], rem if rem is not None else float("inf"))
         if best is None or rank < best[0]:
@@ -433,7 +463,8 @@ def _worst(entries: List[dict], floor_percent: float) -> Optional[Tuple[dict, st
 
 
 def evaluate(status: Optional[dict], routing_cfg: "Routing",
-             burn: Dict[str, datetime], now: datetime) -> RoutingResult:
+             burn: Dict[str, datetime], now: datetime,
+             previous: Optional[dict] = None) -> RoutingResult:
     """status.json の windows からワーカーごとの判定を作る (純粋関数)。
 
     routing_cfg は config.Routing (workers / floor_percent / stale_minutes を
@@ -444,8 +475,20 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
     windows = status_windows(status)
     errors = error_providers(status)
     floor = float(getattr(routing_cfg, "floor_percent", DEFAULT_FLOOR_PERCENT))
+    floor_hours = float(getattr(routing_cfg, "floor_hours", DEFAULT_FLOOR_HOURS))
     stale_min = int(getattr(routing_cfg, "stale_minutes", DEFAULT_STALE_MINUTES))
     specs: Dict[str, List[str]] = getattr(routing_cfg, "workers", None) or default_workers(status)
+    previous_holds = previous.get("holds") if isinstance(previous, dict) else None
+    if not isinstance(previous_holds, dict):
+        previous_holds = {}
+    # 判定できなかった窓は、まだ有効な前回の hold を維持する。
+    holds: Dict[str, str] = {}
+    for wid, reset in previous_holds.items():
+        reset_dt = parse_dt(reset)
+        if isinstance(wid, str) and reset_dt is not None and reset_dt > now:
+            holds[wid] = reset
+    previous_holds = dict(holds)
+    margin_minutes = getattr(routing_cfg, "short_over_margin_minutes", None)
 
     workers: List[WorkerResult] = []
     for name, patterns in specs.items():
@@ -464,7 +507,7 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             workers.append(WorkerResult(name=name, verdict="unknown", reason="missing",
                                         provider=_one_provider(providers)))
             continue
-        picked = _worst(matched, floor)
+        picked = _worst(matched, floor, floor_hours, now, previous_holds, margin_minutes, holds)
         assert picked is not None
         entry, verdict, reason = picked
         until = burn.get(name)
@@ -487,6 +530,7 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
         workers=workers,
         at=status.get("updated_at") if isinstance(status, dict) and isinstance(status.get("updated_at"), str) else None,
         reset_credits=_status_reset_credits(status, now),
+        holds=holds,
     )
 
 

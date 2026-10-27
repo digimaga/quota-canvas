@@ -88,6 +88,7 @@ def _window_item(pu: ProviderUsage, pace: Pace) -> Dict[str, Any]:
         "remaining": round(win.remaining_percent, 1),
         "status": pace.status.value,
         "resets_at": _iso(win.resets_at),
+        "length": win.length.total_seconds(),
     }
     if pace.exhausts_at is not None:
         item["exhausts_at"] = _iso(pace.exhausts_at)
@@ -169,7 +170,8 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
                  layout: Optional[Sequence[Any]] = None,
                  recommendation: Optional[Any] = None,
                  all_windows: Optional[Sequence[Tuple[ProviderUsage, Optional[Pace]]]] = None,
-                 burn: Optional[Dict[str, datetime]] = None) -> Dict[str, Any]:
+                 burn: Optional[Dict[str, datetime]] = None,
+                 previous: Optional[dict] = None) -> Dict[str, Any]:
     """status.json 1 件ぶんの dict を作る。cards は cli.build_cards の返り値。
 
     layout は render に渡した PanelSpec のリスト (None = 自動配置)。
@@ -223,7 +225,7 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
         # 設定変更を即反映するため)。"line" は routing line と同じ 1 行で、
         # quota-canvas を入れていない Mac がコピーをそのまま表示するのに使う。
         try:
-            result = evaluate(payload, cfg.routing, burn or {}, now)
+            result = evaluate(payload, cfg.routing, burn or {}, now, previous=previous)
             payload["routing"] = dict(result.to_dict(), line=format_line(result, now))
         except Exception as exc:  # routing の失敗で常駐 run は落とさない (キーを省くだけ)
             logging.getLogger(__name__).warning("routing: %s", exc)

@@ -297,16 +297,24 @@ def _write_app_files(cfg: Config, cards: List[Card], usages: List[ProviderUsage]
     recommendation は recommend.recommend の返り値 (None = 推奨なし)、
     all_windows は表示フィルタ前の全窓 (status.json の "windows" の材料)。"""
     burn = None
+    previous = None
     if cfg.routing.enabled:
         try:
             burn = gate.load_burn(gate.BURN_PATH, now)
         except Exception as exc:  # routing の失敗で常駐 run は落とさない
             log.warning("routing: %s", exc)
             burn = None
+        try:
+            with STATUS_PATH.open(encoding="utf-8") as handle:
+                old_status = json.load(handle)
+            if isinstance(old_status, dict):
+                previous = old_status.get("routing")
+        except (OSError, ValueError):
+            pass  # 初回・読めない既存ファイルは前回状態なし
     try:
         write_status(build_status(cfg, cards, usages, now, layout=layout,
                                   recommendation=recommendation, all_windows=all_windows,
-                                  burn=burn))
+                                  burn=burn, previous=previous))
     except OSError as exc:
         log.warning("status.json を書けません: %s", exc)
     if img is not None:
@@ -669,13 +677,15 @@ def _cmd_routing_line(args, cfg: Config) -> int:
                 _print_json({"state": "stale", "detail": detail})
             else:
                 result = gate.evaluate(data, cfg.routing,
-                                       gate.load_burn(gate.BURN_PATH, now), now)
+                                       gate.load_burn(gate.BURN_PATH, now), now,
+                                       previous=data.get("routing"))
                 _print_json(result.to_dict())
             return 0
         if state != "ok":
             print(gate.format_stale_line(detail, path, data, now, lang))
             return 0
-        result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now)
+        result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
+                               previous=data.get("routing"))
         line = gate.format_line(result, now, lang)
         if line:  # ワーカー 0 件のときは何も出さない (空白の崩れた行を出さない)
             print(line)
@@ -711,7 +721,8 @@ def _cmd_routing_check(args, cfg: Config) -> int:
             print(message, file=sys.stderr)
         return 0
     now = gate.now_local()
-    result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now)
+    result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
+                           previous=data.get("routing"))
     worker = result.worker(name)
     if worker is None:  # そのワーカーの窓もエラーも status に無い → unknown (missing)
         worker = gate.WorkerResult(name=name, verdict="unknown", reason="missing")

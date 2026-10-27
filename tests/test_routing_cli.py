@@ -493,3 +493,24 @@ def test_burn_works_when_routing_disabled(tmp_path, burn_path):
     rc, out, _ = _run(tmp_path, ["routing", "burn", "glm", "off"], config=cfg)
     assert rc == 0
     assert "glm" not in json.loads(burn_path.read_text(encoding="utf-8"))
+
+
+def test_cli_reuses_persisted_holds_without_advancing_state(tmp_path):
+    path = tmp_path / "status.json"
+    now = datetime.now().astimezone()
+    reset = now + timedelta(hours=2)
+    entry = _win("glm:5h", "glm", "over", 50)
+    entry.update(length=18000, resets_at=reset.isoformat(),
+                 exhausts_at=(reset - timedelta(minutes=25)).isoformat())
+    data = _write_status(path, [entry])
+    data["routing"] = {"holds": {"glm:5h": entry["resets_at"]}}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    before = path.read_text()
+    for _ in range(2):
+        rc, out, err = _run(tmp_path, ["routing", "line", "--json"], status=path)
+        assert rc == 0 and not err
+        assert json.loads(out)["workers"][0]["verdict"] == "reserve"
+        rc, out, err = _run(tmp_path, ["routing", "check", "glm", "--json"], status=path)
+        assert rc == 0 and not err
+        assert json.loads(out)["verdict"] == "reserve"
+        assert path.read_text() == before

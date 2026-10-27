@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from quotacanvas import gate, i18n
-from quotacanvas.config import ConfigError, config_to_dict, format_toml, load_config
+from quotacanvas.config import ConfigError, config_from_dict, config_to_dict, format_toml, load_config
 from quotacanvas.gate import (
     RoutingResult,
     WorkerResult,
@@ -100,10 +100,106 @@ def test_reason_matches_pace_status():
 # --- floor (残り floor_percent 未満は stop) -------------------------------------
 
 
-def test_below_floor_stops_regardless_of_pace():
+def test_below_floor_stops_when_reset_is_far_away():
     # ペースは余裕ありでも残り 4.9% なら stop
     result = evaluate(status(win("glm:5h", "glm", "spare", 4.9)), cfg(), {}, NOW)
     assert (result.workers[0].verdict, result.workers[0].reason) == ("stop", "below_floor")
+
+
+@pytest.mark.parametrize("hours,pace,expected", [
+    (72, "spare", ("stop", "below_floor")),
+    (10, "spare", ("boost", "spare")),
+    (10, "on_track", ("go", "on_track")),
+    (10, "over", ("reserve", "over")),
+    (24, "spare", ("stop", "below_floor")),
+    (24 - 1 / 3600, "spare", ("boost", "spare")),
+])
+def test_floor_depends_on_time_until_reset(hours, pace, expected):
+    entry = win("glm:weekly", "glm", pace, 4, resets=NOW + timedelta(hours=hours))
+    entry["length"] = 7 * 24 * 3600
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == expected
+
+
+@pytest.mark.parametrize("reset", [None, "broken"])
+def test_floor_applies_when_reset_missing_or_invalid(reset):
+    entry = win("glm:weekly", "glm", "spare", 4)
+    entry["resets_at"] = reset
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("stop", "below_floor")
+
+
+@pytest.mark.parametrize("hours", [4, -1])
+def test_zero_floor_hours_always_applies_floor(hours):
+    entry = win("glm:5h", "glm", "spare", 4, resets=NOW + timedelta(hours=hours))
+    entry["length"] = 5 * 3600
+    worker = evaluate(status(entry), cfg(floor_hours=0), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("stop", "below_floor")
+
+
+def test_custom_floor_hours_changes_boundary():
+    entry = win("glm:weekly", "glm", "spare", 4, resets=NOW + timedelta(hours=4))
+    entry["length"] = 7 * 24 * 3600
+    assert evaluate(status(entry), cfg(floor_hours=4), {}, NOW).workers[0].verdict == "stop"
+    assert evaluate(status(entry), cfg(floor_hours=4.5), {}, NOW).workers[0].verdict == "boost"
+
+
+def test_short_window_below_floor_still_uses_hysteresis():
+    reset = NOW + timedelta(minutes=20)
+    entry = short_window(30, reset=reset)
+    entry["remaining"] = 4
+    first = evaluate(status(entry), cfg(), {}, NOW)
+    assert (first.workers[0].verdict, first.workers[0].reason) == ("reserve", "over")
+    entry = short_window(25, reset=reset)
+    entry["remaining"] = 4
+    retained = evaluate(status(entry), cfg(), {}, NOW, previous=first.to_dict())
+    assert retained.workers[0].verdict == "reserve"
+    entry = short_window(7, reset=reset)
+    entry["remaining"] = 4
+    near = evaluate(status(entry), cfg(), {}, NOW, previous=retained.to_dict())
+    assert (near.workers[0].verdict, near.workers[0].reason) == ("go", "over_near_reset")
+    entry["status"] = "exhausted"
+    entry["remaining"] = 0
+    assert evaluate(status(entry), cfg(), {}, NOW).workers[0].verdict == "stop"
+
+
+@pytest.mark.parametrize("minutes,length,margin,expected", [
+    (120, 5, None, ("stop", "below_floor")),
+    (30, 5, None, ("stop", "below_floor")),
+    (20, 5, None, ("boost", "spare")),
+    (6, 1, None, ("stop", "below_floor")),
+    (5, 1, None, ("boost", "spare")),
+    (10, 5, 10, ("stop", "below_floor")),
+    (9, 5, 10, ("boost", "spare")),
+    (20, 5, 45, ("boost", "spare")),
+])
+def test_short_window_floor_uses_margin(minutes, length, margin, expected):
+    entry = win("glm:5h", "glm", "spare", 4, resets=NOW + timedelta(minutes=minutes))
+    entry["length"] = length * 3600
+    worker = evaluate(status(entry), cfg(short_over_margin_minutes=margin), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == expected
+
+
+def test_floor_missing_length_uses_floor_hours():
+    entry = win("glm:5h", "glm", "spare", 4, resets=NOW + timedelta(hours=2))
+    assert evaluate(status(entry), cfg(), {}, NOW).workers[0].verdict == "boost"
+    assert evaluate(status(entry), cfg(floor_hours=2), {}, NOW).workers[0].verdict == "stop"
+
+
+@pytest.mark.parametrize("length,expected", [(24 * 3600 - 1, "stop"), (24 * 3600, "boost")])
+def test_floor_selects_margin_by_window_length(length, expected):
+    entry = win("glm:window", "glm", "spare", 4, resets=NOW + timedelta(hours=3))
+    entry["length"] = length
+    assert evaluate(status(entry), cfg(), {}, NOW).workers[0].verdict == expected
+
+
+@pytest.mark.parametrize("reset", [None, "broken"])
+def test_short_window_floor_applies_if_reset_unknown(reset):
+    entry = short_window(7)
+    entry["remaining"] = 4
+    entry["resets_at"] = reset
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("stop", "below_floor")
 
 
 def test_floor_boundary_is_not_below():
@@ -568,21 +664,25 @@ def test_routing_config_defaults(tmp_path):
     cfg_ = load_config(tmp_path / "none.toml")
     assert cfg_.routing.enabled is False
     assert cfg_.routing.floor_percent == pytest.approx(5.0)
+    assert cfg_.routing.floor_hours == 24
     assert cfg_.routing.stale_minutes == 20
+    assert cfg_.routing.short_over_margin_minutes is None
     assert cfg_.routing.workers == {}
 
 
 def test_routing_config_load_and_roundtrip(tmp_path):
     p = tmp_path / "config.toml"
     p.write_text(
-        '[routing]\nenabled = true\nfloor_percent = 8.5\nstale_minutes = 15\n'
+        '[routing]\nenabled = true\nfloor_percent = 8.5\nfloor_hours = 12.5\nstale_minutes = 15\nshort_over_margin_minutes = 12.5\n'
         '[routing.workers]\nglm = ["glm:5h", "glm:weekly"]\n'
         'argon = ["gemini:argon"]\ngrok = ["grok:*"]\n',
         encoding="utf-8")
     cfg_ = load_config(p)
     assert cfg_.routing.enabled is True
     assert cfg_.routing.floor_percent == pytest.approx(8.5)
+    assert cfg_.routing.floor_hours == 12.5
     assert cfg_.routing.stale_minutes == 15
+    assert cfg_.routing.short_over_margin_minutes == 12.5
     assert cfg_.routing.workers == {"glm": ["glm:5h", "glm:weekly"],
                                     "argon": ["gemini:argon"], "grok": ["grok:*"]}
     parsed = format_toml(cfg_)
@@ -590,9 +690,17 @@ def test_routing_config_load_and_roundtrip(tmp_path):
     assert "glm = " in parsed
     assert config_to_dict(load_config_from_text(parsed))["routing"] == config_to_dict(cfg_)["routing"]
     d = config_to_dict(cfg_)
-    assert d["routing"] == {"enabled": True, "floor_percent": 8.5, "stale_minutes": 15,
+    assert config_to_dict(config_from_dict(d)) == d
+    assert d["routing"] == {"enabled": True, "floor_percent": 8.5, "floor_hours": 12.5, "stale_minutes": 15,
+                            "short_over_margin_minutes": 12.5,
                             "workers": {"glm": ["glm:5h", "glm:weekly"],
                                         "argon": ["gemini:argon"], "grok": ["grok:*"]}}
+
+
+def test_floor_hours_zero_roundtrip():
+    settings = config_from_dict({"routing": {"floor_hours": 0}})
+    assert config_to_dict(settings)["routing"]["floor_hours"] == 0
+    assert load_config_from_text(format_toml(settings)).routing.floor_hours == 0
 
 
 def load_config_from_text(text):
@@ -614,8 +722,19 @@ def load_config_from_text(text):
         '[routing]\nenabled = "yes"',
         "[routing]\nfloor_percent = -1",
         "[routing]\nfloor_percent = 101",
+        '[routing]\nfloor_hours = -1',
+        '[routing]\nfloor_hours = "24"',
+        '[routing]\nfloor_hours = true',
+        '[routing]\nfloor_hours = nan',
+        '[routing]\nfloor_hours = inf',
         '[routing]\nstale_minutes = 0',
         '[routing]\nstale_minutes = "soon"',
+        '[routing]\nshort_over_margin_minutes = 0',
+        '[routing]\nshort_over_margin_minutes = -1',
+        '[routing]\nshort_over_margin_minutes = "30"',
+        '[routing]\nshort_over_margin_minutes = true',
+        '[routing]\nshort_over_margin_minutes = nan',
+        '[routing]\nshort_over_margin_minutes = inf',
         "[routing]\nworkers = 3",                             # テーブルでない
         '[routing.workers]\nglm = "glm:5h"',                  # 配列でない
         '[routing.workers]\nglm = []',                        # 空: どの窓も使わない
@@ -677,6 +796,7 @@ def test_build_status_writes_windows_unfiltered_and_always(tmp_path):
     item = payload["windows"][0]
     assert item["provider"] == "glm" and item["key"] == "5h" and item["part_of"] is None
     assert item["remaining"] == 49.0 and item["status"] == "on_track"
+    assert item["length"] == 5 * 3600
     assert item["fetched_at"] == NOW.astimezone().isoformat(timespec="seconds")
     assert "T" in item["resets_at"]  # ISO 8601
     breakdown = payload["windows"][2]
@@ -694,7 +814,7 @@ def test_build_status_writes_routing_when_enabled(tmp_path):
     routing = payload["routing"]
     assert [w["name"] for w in routing["workers"]] == ["glm"]
     worker = routing["workers"][0]
-    assert worker["verdict"] == "boost" and worker["reason"] == "burn"  # burn で昇格
+    assert worker["verdict"] == "boost" and worker["reason"] == "on_track"
     assert worker["burn_until"] is not None
     assert routing["at"] == payload["updated_at"]
     assert routing["line"].startswith("quota: glm=boost(")  # routing line と同じ 1 行
@@ -728,3 +848,198 @@ def test_routing_result_dict_shape():
 def test_format_line_empty_workers_returns_empty_string():
     result = gate.RoutingResult(workers=[], at=NOW.isoformat(timespec="seconds"))
     assert gate.format_line(result, NOW, "ja") == ""
+
+
+def short_window(gap_minutes, *, length_hours=5, pace="over", wid="glm:5h", provider="glm", reset=None):
+    reset = reset or NOW + timedelta(hours=4)
+    entry = win(wid, provider, pace, 50, resets=reset,
+                exhausts=reset - timedelta(minutes=gap_minutes))
+    entry["length"] = length_hours * 3600
+    return entry
+
+
+@pytest.mark.parametrize("gap,expected", [(7, ("go", "over_near_reset")),
+                                           (30, ("reserve", "over"))])
+def test_short_over_boundaries(gap, expected):
+    worker = evaluate(status(short_window(gap)), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == expected
+    if gap == 7:
+        line = format_line(evaluate(status(short_window(gap)), cfg(), {}, NOW), NOW, "ja")
+        assert "glm=go(" in line and "ペース超過" in line and "枯渇見込み" in line
+
+
+@pytest.mark.parametrize("length,gap,margin,expected", [
+    (1, 5.9, None, "go"), (1, 6, None, "reserve"),
+    (5, 9, 10, "go"), (5, 10, 10, "reserve"),
+])
+def test_short_margin(length, gap, margin, expected):
+    data = status(short_window(gap, length_hours=length))
+    assert evaluate(data, cfg(short_over_margin_minutes=margin), {}, NOW).workers[0].verdict == expected
+
+
+@pytest.mark.parametrize("broken", ["length", "exhausts_at", "bad_exhausts", "bad_reset"])
+def test_short_over_missing_data_is_reserve(broken):
+    entry = short_window(7)
+    if broken == "bad_exhausts":
+        entry["exhausts_at"] = "broken"
+    elif broken == "bad_reset":
+        entry["resets_at"] = "broken"
+    else:
+        del entry[broken]
+    assert evaluate(status(entry), cfg(), {}, NOW).workers[0].verdict == "reserve"
+
+
+def test_long_window_preserves_rules():
+    entry = short_window(2 * 24 * 60, length_hours=7 * 24)
+    assert evaluate(status(entry), cfg(), {}, NOW).workers[0].verdict == "reserve"
+    entry["status"] = "on_track"
+    assert evaluate(status(entry), cfg(), {}, NOW).workers[0].verdict == "go"
+    entry["length"] = 24 * 3600
+    assert evaluate(status(entry), cfg(), {}, NOW).workers[0].verdict == "go"
+    entry["length"] -= 1
+    assert evaluate(status(entry), cfg(), {}, NOW).workers[0].verdict == "boost"
+
+
+def test_short_over_hysteresis_and_idempotence():
+    first = evaluate(status(short_window(30)), cfg(), {}, NOW)
+    assert first.holds == {"glm:5h": short_window(30)["resets_at"]}
+    for gap, expected in [(25, "reserve"), (20, "reserve"), (19, "go")]:
+        data = status(short_window(gap))
+        result = evaluate(data, cfg(), {}, NOW, previous=first.to_dict())
+        assert result.workers[0].verdict == expected
+        assert evaluate(data, cfg(), {}, NOW, previous=result.to_dict()).to_dict() == result.to_dict()
+    data = status(short_window(25))
+    assert evaluate(data, cfg(), {}, NOW).workers[0].verdict == "go"
+    different = {"holds": {"glm:5h": (NOW + timedelta(days=1)).isoformat()}}
+    assert evaluate(data, cfg(), {}, NOW, previous=different).workers[0].verdict == "go"
+    entry = short_window(25, pace="tight")
+    assert evaluate(status(entry), cfg(), {}, NOW, previous=first.to_dict()).holds == {}
+    entry["status"] = "over"
+    entry["remaining"] = 1
+    assert evaluate(status(entry), cfg(floor_hours=0), {}, NOW, previous=first.to_dict()).holds == {}
+
+
+@pytest.mark.parametrize("weekly,short,expected", [("over", "over", "reserve"),
+    ("on_track", "exhausted", "stop"), ("spare", "on_track", "boost")])
+def test_mixed_windows(weekly, short, expected):
+    week = short_window(2 * 24 * 60, length_hours=168, pace=weekly,
+                        wid="gemini:weekly", provider="gemini")
+    five = short_window(7, pace=short, wid="gemini:5h", provider="gemini")
+    result = evaluate(status(week, five), cfg(), {}, NOW)
+    assert result.workers[0].verdict == expected
+
+
+def test_holds_track_each_window_even_when_not_representative_or_burned():
+    five = short_window(30, wid="gemini:5h", provider="gemini")
+    week = short_window(0, length_hours=168, pace="exhausted", wid="gemini:week", provider="gemini")
+    result = evaluate(status(five, week), cfg(), {"gemini": NOW + timedelta(hours=1)}, NOW)
+    assert result.workers[0].verdict == "stop"
+    assert result.holds == {"gemini:5h": five["resets_at"]}
+    five = short_window(25, wid="gemini:5h", provider="gemini")
+    result = evaluate(status(five), cfg(), {"gemini": NOW + timedelta(hours=1)}, NOW,
+                      previous=result.to_dict())
+    assert result.workers[0].verdict == "boost"
+    assert result.holds == {"gemini:5h": five["resets_at"]}
+
+
+def test_engine_writes_and_reuses_previous_routing(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from quotacanvas import cli
+    from quotacanvas.models import PaceStatus
+    from quotacanvas.status import write_status
+
+    path = tmp_path / "status.json"
+    monkeypatch.setattr(cli, "STATUS_PATH", path)
+    monkeypatch.setattr(cli, "write_status", lambda payload: write_status(payload, path))
+    monkeypatch.setattr(gate, "BURN_PATH", tmp_path / "burn.json")
+    cards, usages = _engine_cards()
+    pu, pace = cards[0]
+    reset = pace.window.resets_at
+    pace = replace(pace, status=PaceStatus.OVER, exhausts_at=reset - timedelta(minutes=30))
+    settings = _engine_cfg(tmp_path, '[routing]\nenabled = true\n')
+    cli._write_app_files(settings, [(pu, pace)], usages, NOW, None)
+    first = json.loads(path.read_text())
+    assert first["routing"]["holds"] == {"glm:5h": first["windows"][0]["resets_at"]}
+    stale_pu = replace(pu, stale_error="temporary failure")
+    cli._write_app_files(settings, [(stale_pu, pace)], [stale_pu], NOW, None)
+    interrupted = json.loads(path.read_text())
+    assert interrupted["routing"]["workers"][0]["verdict"] == "unknown"
+    assert interrupted["routing"]["holds"] == first["routing"]["holds"]
+    pace = replace(pace, exhausts_at=reset - timedelta(minutes=25))
+    cli._write_app_files(settings, [(pu, pace)], usages, NOW, None)
+    second = json.loads(path.read_text())
+    assert second["routing"]["workers"][0]["verdict"] == "reserve"
+    assert second["routing"]["holds"] == first["routing"]["holds"]
+
+
+@pytest.mark.parametrize("interruption", ["stale", "other_stale", "error", "missing"])
+def test_hysteresis_survives_unjudged_windows(interruption):
+    settings = cfg(workers={"glm": ["glm:5h"]})
+    first = evaluate(status(short_window(30)), settings, {}, NOW)
+    entry = short_window(25)
+    if interruption == "stale":
+        entry["stale_error"] = "temporary failure"
+        data = status(entry)
+    elif interruption == "other_stale":
+        other = win("glm:other", "glm", "spare", 50, stale_error="temporary failure")
+        data = status(entry, other)
+    elif interruption == "error":
+        data = status(entry, errors=[{"provider": "glm"}])
+    else:
+        data = status()
+    interrupted = evaluate(data, settings, {}, NOW, previous=first.to_dict())
+    assert interrupted.workers[0].verdict == "unknown"
+    assert interrupted.holds == first.holds
+    assert evaluate(data, settings, {}, NOW, previous=interrupted.to_dict()).to_dict() == interrupted.to_dict()
+    recovered = evaluate(status(short_window(25)), settings, {}, NOW, previous=interrupted.to_dict())
+    assert (recovered.workers[0].verdict, recovered.workers[0].reason) == ("reserve", "over")
+    assert recovered.holds == first.holds
+
+
+def test_unjudged_expired_holds_are_discarded():
+    previous = {"holds": {
+        "glm:past": (NOW - timedelta(seconds=1)).isoformat(),
+        "glm:now": NOW.isoformat(),
+        "glm:future": (NOW + timedelta(seconds=1)).isoformat(),
+        "glm:broken": "bad timestamp",
+    }}
+    result = evaluate(status(), cfg(workers={"glm": ["glm:*"]}), {}, NOW, previous=previous)
+    assert result.holds == {"glm:future": previous["holds"]["glm:future"]}
+
+
+def test_expired_hold_does_not_affect_judgment_or_idempotence():
+    entry = short_window(25)
+    reset = NOW - timedelta(seconds=1)
+    entry["resets_at"] = reset.isoformat()
+    entry["exhausts_at"] = (reset - timedelta(minutes=25)).isoformat()
+    data = status(entry)
+    previous = {"holds": {"glm:5h": entry["resets_at"]}}
+    result = evaluate(data, cfg(), {}, NOW, previous=previous)
+    assert result.workers[0].verdict == "go"
+    assert result.holds == {}
+    assert evaluate(data, cfg(), {}, NOW, previous=result.to_dict()).to_dict() == result.to_dict()
+
+
+def test_judged_window_clears_hold_after_interruption():
+    settings = cfg(workers={"glm": ["glm:5h"]})
+    first = evaluate(status(short_window(30)), settings, {}, NOW)
+    interrupted = evaluate(status(errors=[{"provider": "glm"}]), settings, {}, NOW, previous=first.to_dict())
+    result = evaluate(status(short_window(25, pace="tight")), settings, {}, NOW,
+                      previous=interrupted.to_dict())
+    assert result.workers[0].verdict == "go"
+    assert result.holds == {}
+    recovered = evaluate(status(short_window(25)), settings, {}, NOW, previous=result.to_dict())
+    assert recovered.workers[0].reason == "over_near_reset"
+
+
+def test_hold_is_replaced_for_judged_window_while_another_remains_unjudged():
+    first_glm = short_window(30)
+    first_gemini = short_window(30, wid="gemini:5h", provider="gemini")
+    settings = cfg(workers={"glm": ["glm:5h"], "gemini": ["gemini:5h"]})
+    first = evaluate(status(first_glm, first_gemini), settings, {}, NOW)
+    second = evaluate(status(short_window(25, pace="tight"), first_gemini,
+                             errors=[{"provider": "gemini"}]), settings, {}, NOW,
+                      previous=first.to_dict())
+    assert second.holds == {"gemini:5h": first_gemini["resets_at"]}
+    assert second.worker("glm").verdict == "go"
+    assert second.worker("gemini").verdict == "unknown"
