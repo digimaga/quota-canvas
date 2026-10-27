@@ -1,0 +1,29 @@
+# ワーカー振り分け判定 (gate.py / cli.py の routing コマンド) の文言。
+# gate 系の ja は旧 ~/.claude/bin/quota-gate の line と同じ書式
+# (ワーカーの並び順は [routing.workers] の設定順。CLAUDE.md がこの形を前提)。
+usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <ワーカー名> [--json] | quota-canvas routing burn [ワーカー名 on|off [--until HH:MM|ISO]]"
+
+[gate]
+line = "quota: {body} ({at}時点)"
+over = "ペース超過"
+exhausts = "·~{dt}枯渇見込み"
+credits = "リセット権{n}"
+burn = "使い切り~{dt}"
+stale_missing = "quota: stale（status.json なし）"
+stale_old = "quota: stale（{time}時点・{reason}）"
+stale_reason_old = "古いので残量は判断に使わない"
+stale_reason_broken = "読めないので残量は判断に使わない"
+
+[check]
+stop = "quota-canvas: {name}=stop（{detail}）。QUOTA_GATE_FORCE=1 で無視"
+reserve = "quota-canvas: {name}=reserve（{detail}）。可能なら他のワーカーを優先"
+unknown = "quota-canvas: {name}=unknown（{reason}）。判定できないためそのまま続行"
+remains = "残り{pct}"
+remains_reset = "残り{pct}、~{dt}"
+
+[burn]
+none = "使い切りモード: なし"
+entry = "使い切りモード: {name}（~{dt}）"
+set = "{host}: 使い切りモード {name}（~{dt}）"
+cleared = "{host}: 使い切りモード {name} を解除"
+bad_until = "--until は HH:MM か ISO 形式"

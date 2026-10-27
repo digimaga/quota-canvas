@@ -1,0 +1,12 @@
+# Wording for "which service to use now" (F1, recommend.py).
+[main]
+use = "Use {name} · {reason}"
+
+[parts]
+remaining = "{pct}% left on {label}"
+reset_in = "resets in {span}"
+credit_soon = "reset credit expires in {span}"
+
+[reason]
+waiting_reset = "waiting for reset"
+stale = "fetch failing"

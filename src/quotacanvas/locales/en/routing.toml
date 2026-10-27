@@ -1,0 +1,28 @@
+# Worker routing messages (gate.py / the routing CLI commands). The ja gate
+# strings mirror the old ~/.claude/bin/quota-gate line format.
+usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <worker> [--json] | quota-canvas routing burn [worker on|off [--until HH:MM|ISO]]"
+
+[gate]
+line = "quota: {body} (as of {at})"
+over = "pace over"
+exhausts = "· ~{dt} projected to exhaust"
+credits = "{n} reset credits"
+burn = "burn ~{dt}"
+stale_missing = "quota: stale (no status.json)"
+stale_old = "quota: stale (as of {time}, {reason})"
+stale_reason_old = "too old to judge quota"
+stale_reason_broken = "unreadable, not judging quota"
+
+[check]
+stop = "quota-canvas: {name}=stop ({detail}). Set QUOTA_GATE_FORCE=1 to ignore"
+reserve = "quota-canvas: {name}=reserve ({detail}). Prefer other workers if possible"
+unknown = "quota-canvas: {name}=unknown ({reason}). Cannot judge, continuing"
+remains = "remaining {pct}"
+remains_reset = "remaining {pct}, ~{dt}"
+
+[burn]
+none = "burn mode: none"
+entry = "burn mode: {name} (until ~{dt})"
+set = "{host}: burn mode {name} (until ~{dt})"
+cleared = "{host}: burn mode {name} cleared"
+bad_until = "--until takes HH:MM or an ISO 8601 time"

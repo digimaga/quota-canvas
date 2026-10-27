@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.egg-info/
+.DS_Store
+preview/
+.pytest_cache/
+
+# Local-only files (never publish)
+.claude/
+CLAUDE.local.md
+AGENTS.local.md
+.env
+.env.*
+/config.toml
+*.local.toml
+*.log
+*.jsonl

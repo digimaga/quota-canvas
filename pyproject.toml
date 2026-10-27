@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "turzx"
+version = "0.1.0"
+description = "Drive the TURZX 9.2\" USB secondary screen (1920x462, 1cbe:0092) from macOS"
+requires-python = ">=3.11"
+dependencies = [
+    # USB protocol implementation (MIT). Pinned to the commit verified on 2026-10-24.
+    "turingscreencli @ git+https://github.com/phstudy/turing-smart-screen-cli@ffc652ab7fa421ff57e7a2bf67c20bfccb884784",
+    "pyusb>=1.2.1",
+    "Pillow>=9.0.0",
+]
+
+[project.scripts]
+turzx = "turzx.cli:main"
+quota-canvas = "quotacanvas.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+quotacanvas = ["locales/*/*.toml"]

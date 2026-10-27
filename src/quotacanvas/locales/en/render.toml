@@ -1,0 +1,118 @@
+# Panel wording (render.py / status.py). Keep keys and {name} placeholders
+# identical to ja/render.toml. English stays short: TURZX panels are narrow.
+
+# default sentence separator (when display.separator is ""). Strings use " · "
+separator = " · "
+
+[weekday]
+mon = "Mon"
+tue = "Tue"
+wed = "Wed"
+thu = "Thu"
+fri = "Fri"
+sat = "Sat"
+sun = "Sun"
+
+[badge]
+over = "Over pace"
+exhausted = "Limit hit"
+tight = "Full use"
+on_track = "On track"
+spare = "Ahead"
+fresh = "Just reset"
+unknown = "Pending"
+
+[badge_short]
+# sub-row status (short). "Just reset" is shown as "Ahead" on sub rows
+over = "Over"
+exhausted = "Limit"
+tight = "Full"
+on_track = "OK"
+spare = "Ahead"
+fresh = "Ahead"
+unknown = "N/A"
+
+[word]
+remaining = "left"
+used = "used"
+
+[gauge]
+used_head = "used"
+caption = "{head} {value}% / ideal {ideal}%"
+exhausted = "Exhausted"
+
+[span]
+dh = "{d}d{h}h"
+d = "{d}d"
+hm = "{h}h{m}m"
+h = "{h}h"
+m = "{m}m"
+
+[elapsed]
+of = "{e} of {total} elapsed"
+short = "{e} elapsed"
+
+[credit]
+no_expiry = "No expiry"
+row = "until {dt} · {span} left"
+count = "Reset credits ×{n}"
+next = "· next {dt}"
+more = "+{n} more"
+head = "Reset credits ×{n} ({tz})"
+
+[stale]
+text = "Fetch failed"
+at = "Fetch failed · {hh:02d}:{mm:02d}"
+
+[error]
+title = "Fetch error"
+reason = "Fetch failed ({reason})"
+unknown = "unknown"
+
+[card]
+exhaust_at = "Runs out {dt} (in {span})"
+projected = "Est. {pct}% used by reset"
+no_projection = "No projection"
+reset_line = "Reset {dt} · {span} left"
+no_reset = "Reset time unknown"
+narrow_el_reset = " · reset in {span}"
+reset_compact = "Reset in {span}"
+prev_left = "Last: {pct}% left"
+prev_used = "Last: {pct}% used"
+sub_exhaust_at = "{label} window may run out by {dt}"
+sub_exhausted = "{label} window is maxed out"
+
+[advice]
+no_data = "No data · measuring"
+exhausted_reset = "Limit hit · reset in {span}"
+fresh = "Just reset · the window is open"
+fresh_compact = "Just reset · open"
+burst = "At this pace, gone by {dt}"
+burst_compact = "Gone by {dt} at this pace"
+compact_reset = "reset in {span}"
+# pacing.sleep advice = "bedtime": deadline is bedtime
+bedtime_compact_reset = "until bed {span}"
+compact_per_day = "≈{pct}%/d"
+# windows shorter than a day show the rest and the time to the deadline
+short_left = "{head} · {pct}% left · in {span}"
+short_left_bedtime = "{head} · {pct}% left · until bed {span}"
+no_reset = "{label} · reset time unknown"
+slow_down = "Slow down"
+slow_down_pct = "Slow down ~{pct}%"
+slow_down_plan = "{head} · {rem}: {allowance}"
+over_last_unit = "Slow down · {pct}% left in the final {span}"
+bedtime_over_last_unit = "Slow down · {pct}% left in the {span} until bed"
+over_generic = "Over pace · take it easy"
+tight = "On pace to use it all"
+tight_last_unit = "On pace to use it all · reset in {span}"
+bedtime_tight_last_unit = "On pace to use it all · until bed {span}"
+tight_plan = "On pace to use it all · {allowance}"
+on_track_last_unit = "On track · reset in {span}, last {pct}% is free"
+bedtime_on_track_last_unit = "On track · until bed {span}, last {pct}% is free"
+on_track_plan = "On track · {allowance} pace works"
+spare_last_unit = "Ahead · reset in {span}, {pct}% free"
+bedtime_spare_last_unit = "Ahead · until bed {span}, {pct}% free"
+spare_plan = "Ahead · {unit}: up to ≈{pct}%"
+unit_day = "1d"
+allowance = "{unit} {pct}%"
+rem_days = "{d}d left"

@@ -1,0 +1,62 @@
+# CLI (cli.py / keychain.py) user-facing messages.
+config_error = "Config error: {detail}"
+no_usage = "Could not fetch usage"
+
+[help]
+config = "config file (default: {default})"
+only = "window ids to show, e.g. claude:weekly codex:weekly glm:5h (overrides config display.windows)"
+json_config = "print the effective config as JSON (app integration)"
+detect = "which services are usable on this Mac (app integration)"
+set_key = "store an API key in the login Keychain (app integration)"
+refresh = "ask a running engine to redraw now (app integration: creates {path})"
+pick = "print which service is best to use right now, one line (app integration)"
+routing = "quota-aware AI worker routing (reads status.json only; never fetches)"
+routing_line = "one-line summary of the routing verdict (only when [routing] enabled = true); always exit 0"
+routing_check = "verdict for one worker: exit 3 on stop, a note for reserve/unknown, silent otherwise"
+routing_burn = "burn mode: list / <name> on [--until HH:MM|ISO] / <name> off"
+routing_status = "status.json to read (default: {default}; env QUOTA_STATUS_PATH)"
+routing_fallback = "fallback when the primary status.json is missing/stale (default: env {var})"
+
+[init]
+exists = "{path} already exists; not overwriting"
+no_example = "config.example.toml not found (put it in the repository root)"
+created = "Created {path} (from {example})"
+
+[config]
+window_ids = "Window ids available now (for display.windows):"
+disabled = "(not fetched: providers.{name}.enabled = false)"
+not_fetched = "(not fetched)"
+fetch_error = "Fetch error: {error}"
+no_windows = "(no windows)"
+
+[detect]
+unusable = "unusable: {error}"
+plan_unknown = "plan=unknown"
+ok = "{head}  OK {source} ({detail})"
+
+[set_json]
+bad_json = "Cannot parse JSON: {detail}"
+save_failed = "Cannot save to {path} ({detail})"
+
+[refresh]
+created = "Refresh requested at {path}. A running engine redraws within 1s"
+
+[pick]
+none = "No recommendation right now"
+
+[set_key]
+unknown_provider = "Unknown provider: {provider} (one of {choices})"
+no_key_needed = "{name} does not use an API key; set-key is not needed"
+deleted = "Deleted the {name} API key from the Keychain"
+prompt = "API key for {name} (one line): "
+empty_key = "API key is empty. Enter it on one line"
+stored = "Stored the {name} API key in the Keychain (service {service}, account {account})"
+
+[keychain]
+timeout = "security command timed out"
+cannot_run = "cannot run the security command"
+read_failed = "Could not read from the Keychain (security rc={rc})"
+bad_value = "Invalid value (must be non-empty, no surrounding whitespace, no newlines)"
+write_failed = "Could not save to the Keychain (security rc={rc})"
+verify_failed = "Could not verify the Keychain value"
+delete_failed = "Could not delete from the Keychain (security rc={rc})"

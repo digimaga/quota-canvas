@@ -1,0 +1,121 @@
+# パネル描画 (render.py / status.py) のユーザーに見える文言。
+# キーはコードから t("render.<テーブル>.<キー>") で参照する。
+# ja と en はキー集合も差し込み名 ({name}) も同じに保つこと。
+
+# 文の区切りの既定 (display.separator が "" のとき)。文言の中は " · " で書く
+separator = "／"
+
+[weekday]
+mon = "月"
+tue = "火"
+wed = "水"
+thu = "木"
+fri = "金"
+sat = "土"
+sun = "日"
+
+[badge]
+over = "ペース超過"
+exhausted = "上限到達"
+tight = "使い切り"
+on_track = "順調"
+spare = "余裕あり"
+fresh = "リセット直後"
+unknown = "判定待ち"
+
+[badge_short]
+# サブ行の状態 (全角 2 文字)。リセット直後はサブ行では「余裕」にまとめる
+over = "超過"
+exhausted = "上限"
+tight = "使切"
+on_track = "順調"
+spare = "余裕"
+fresh = "余裕"
+unknown = "不明"
+
+[word]
+remaining = "残り"
+used = "使用"
+
+[gauge]
+used_head = "実際"
+caption = "{head} {value}% / 理想 {ideal}%"
+exhausted = "枯渇"
+
+[span]
+dh = "{d}日{h}時間"
+d = "{d}日"
+hm = "{h}時間{m}分"
+h = "{h}時間"
+m = "{m}分"
+
+[elapsed]
+of = "{e}経過 / {total}"
+short = "{e}経過"
+
+[credit]
+no_expiry = "期限未取得"
+row = "{dt} まで · あと {span}"
+count = "リセット権 {n}回"
+next = "· 最短 {dt}"
+more = "ほか {n} 回"
+head = "リセット権 {n}回（{tz}）"
+
+[stale]
+text = "取得失敗中"
+at = "取得失敗中 {hh:02d}:{mm:02d} 時点"
+
+[error]
+title = "取得エラー"
+reason = "取得失敗 ({reason})"
+unknown = "理由不明"
+
+[card]
+exhaust_at = "枯渇予測 {dt} (あと {span})"
+projected = "リセットまでに {pct}% 消費見込み"
+no_projection = "予測データなし"
+reset_line = "リセット {dt} · あと {span}"
+no_reset = "リセット時刻未取得"
+narrow_el_reset = " · リセットまで {span}"
+reset_compact = "リセット あと {span}"
+prev_left = "前回 {pct}% 余り"
+prev_used = "前回 {pct}% 使用"
+sub_exhaust_at = "{label}枠が {dt} に尽きる見込み"
+sub_exhausted = "{label}枠はすでに上限"
+
+[advice]
+no_data = "データ不足 · しばらく計測します"
+exhausted_reset = "上限到達 · リセットまで あと {span}"
+fresh = "リセット直後 · 枠は開いています"
+fresh_compact = "リセット直後 · 枠あり"
+burst = "このペースだと {dt} に尽きる見込み"
+burst_compact = "このペースだと {dt} に尽きる"
+compact_reset = "リセットまで{span}"
+# pacing.sleep advice = "bedtime": 寝る時刻が締切のときの「寝るまで」版
+bedtime_compact_reset = "寝るまで{span}"
+compact_per_day = "1日 約{pct}%まで"
+# 1日未満の窓 (5時間枠など) は 1時間あたりの許容量ではなく、残量と締切までの
+# 時間をそのまま出す ({head} は状態語・「ペースを約◯%落とす」など)
+short_left = "{head} · 残り{pct}% · あと{span}"
+# pacing.sleep advice = "bedtime": 寝る時刻が締切のときの「寝るまで」版
+short_left_bedtime = "{head} · 残り{pct}% · 寝るまで{span}"
+no_reset = "{label} · リセット時刻が未取得です"
+slow_down = "ペースを落とす"
+slow_down_pct = "ペースを約{pct}%落とす"
+slow_down_plan = "{head} · {rem}は{allowance}まで"
+over_last_unit = "ペースを落とす · リセットまでの{span}は残り{pct}%で"
+bedtime_over_last_unit = "ペースを落とす · 寝るまでの{span}は残り{pct}%で"
+over_generic = "ペース超過 · 残り期間は控えめに"
+tight = "ほぼ使い切れる見込み"
+tight_last_unit = "ほぼ使い切れる見込み · リセットまで{span}"
+bedtime_tight_last_unit = "ほぼ使い切れる見込み · 寝るまで{span}"
+tight_plan = "ほぼ使い切れる見込み · {allowance}まで"
+on_track_last_unit = "順調 · リセットまで{span}、残り{pct}%は使い切ってよい"
+bedtime_on_track_last_unit = "順調 · 寝るまで{span}、残り{pct}%は使い切ってよい"
+on_track_plan = "順調 · {allowance}ペースで最後まで使える"
+spare_last_unit = "余裕あり · リセットまで{span}、残り{pct}%は自由に使える"
+bedtime_spare_last_unit = "余裕あり · 寝るまで{span}、残り{pct}%は自由に使える"
+spare_plan = "余裕あり · {unit} 約{pct}%まで使える"
+unit_day = "1日"
+allowance = "{unit}{pct}%"
+rem_days = "残り{d}日"

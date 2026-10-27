@@ -1,0 +1,62 @@
+# CLI (cli.py / keychain.py) の表示文言。
+config_error = "設定エラー: {detail}"
+no_usage = "利用枠を取得できませんでした"
+
+[help]
+config = "設定ファイル (既定: {default})"
+only = "window ids to show, e.g. claude:weekly codex:weekly glm:5h (config display.windows より優先)"
+json_config = "print the effective config as JSON (app 連携)"
+detect = "which services are usable on this Mac (app 連携)"
+set_key = "store an API key in the login Keychain (app 連携)"
+refresh = "ask a running engine to redraw now (app 連携: {path} を作る)"
+pick = "今使うと得なサービスを 1 行で出す (app 連携)"
+routing = "残量に応じた AI ワーカー振り分け判定 (status.json を読むだけ。取得はしない)"
+routing_line = "判定の 1 行サマリ ([routing] enabled = true のときだけ出す)。常に exit 0"
+routing_check = "ワーカー 1 件の判定: stop なら exit 3、reserve / unknown は注意 1 行、他は無言"
+routing_burn = "使い切りモード: 一覧 / <名前> on [--until HH:MM|ISO] / <名前> off"
+routing_status = "読む status.json (既定: {default}、環境変数 QUOTA_STATUS_PATH でも可)"
+routing_fallback = "主の status.json が無い・古いときに使う予備 (既定: 環境変数 {var})"
+
+[init]
+exists = "{path} は既に存在するので上書きしません"
+no_example = "config.example.toml が見つかりません（リポジトリ直下に置いてください）"
+created = "{path} を作成しました（もと: {example}）"
+
+[config]
+window_ids = "現在取得できる窓 ID（display.windows に書けます）:"
+disabled = "(providers.{name}.enabled = false のため取得しません)"
+not_fetched = "(取得されませんでした)"
+fetch_error = "取得エラー: {error}"
+no_windows = "(利用枠なし)"
+
+[detect]
+unusable = "使えません: {error}"
+plan_unknown = "plan=不明"
+ok = "{head}  ○ {source}（{detail}）"
+
+[set_json]
+bad_json = "JSON を読めません: {detail}"
+save_failed = "{path} に保存できません ({detail})"
+
+[refresh]
+created = "反映要求を {path} に作成しました。run 中なら 1 秒以内に再描画します"
+
+[pick]
+none = "いまおすすめのサービスはありません"
+
+[set_key]
+unknown_provider = "未知のサービスです: {provider}（{choices} のいずれか）"
+no_key_needed = "{name} は API キーを使わないので set-key は不要です"
+deleted = "{name} の API キーをキーチェーンから削除しました"
+prompt = "{name} の API キーを入力 (1 行): "
+empty_key = "API キーが空です。1 行で入力してください"
+stored = "{name} の API キーをキーチェーン (service {service}, account {account}) に保存しました"
+
+[keychain]
+timeout = "security コマンドがタイムアウトしました"
+cannot_run = "security コマンドを実行できません"
+read_failed = "キーチェーンから読めませんでした (security rc={rc})"
+bad_value = "保存する値が不正です (空・前後の空白・改行は使えません)"
+write_failed = "キーチェーンに保存できませんでした (security rc={rc})"
+verify_failed = "キーチェーンの値を確認できませんでした"
+delete_failed = "キーチェーンから削除できませんでした (security rc={rc})"

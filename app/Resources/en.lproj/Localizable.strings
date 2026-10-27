@@ -1,0 +1,180 @@
+/* English translations. Keys are the Japanese source strings (dev language = ja). */
+
+/* MARK: app / window titles */
+"画面プレビュー" = "Screen Preview";
+
+/* MARK: MenuPopoverView */
+"一時停止中" = "Paused";
+"更新: %@" = "Updated: %@";
+"更新時刻: 不明" = "Update time: unknown";
+"ステータスを取得できていません" = "No status yet";
+"エンジンのパスを「設定 → 表示」で確認してください。" = "Check the engine path in Settings → Display.";
+"エンジンが動いていません（5 分以上更新がありません）" = "Engine not running (no update for 5+ min)";
+"表示するカードがありません" = "No cards to show";
+"エラー" = "Error";
+"不明なエラー" = "Unknown error";
+"再開" = "Resume";
+"一時停止" = "Pause";
+"設定…" = "Settings…";
+"終了" = "Quit";
+"ペース超過" = "Over pace";
+"枯渇" = "Exhausted";
+"ギリギリ" = "Tight";
+"順調" = "On track";
+"余裕あり" = "Ahead";
+"不明" = "Unknown";
+"リセット時刻: 不明" = "Reset time: unknown";
+"リセット済み" = "Reset";
+"リセットまで あと%@" = "Resets %@";
+
+/* MARK: LayoutSettingsView */
+"設定を取得できませんでした" = "Could not load settings";
+"エンジンのパスを「表示」タブで確認してください。" = "Check the engine path in the Display tab.";
+"設定を読み込み中…" = "Loading settings…";
+"列 %lld" = "Column %lld";
+"列 %lld 上段" = "Column %lld Top";
+"列 %lld 下段" = "Column %lld Bottom";
+"大スロットの空きは保存されません（2 段に分けた列は空き段も位置を保ちます）。変更はすぐ保存され、エンジンの次の描画から反映されます。" = "Empty large slots are not saved (split columns keep empty rows in place). Changes save immediately and appear on the engine's next draw.";
+"各列を 2 段に分けると上下 2 枚の小スロットになります（最大 %lld 枚）。" = "Splitting a column into 2 rows gives two small slots (up to %lld total).";
+"自動配置に戻す" = "Reset to auto layout";
+"画面" = "Screen";
+"2 段に分ける" = "Split into 2 rows";
+"片方を空にすると 1 段に戻せます" = "Empty one row to merge back";
+"%@（%@）" = "%@ (%@)";
+"大" = "Large";
+"小" = "Small";
+"閉じる" = "Close";
+"窓" = "Windows";
+"（空）" = "(empty)";
+"サブ窓（最大 %lld）" = "Sub-windows (max %lld)";
+"自動" = "Auto";
+"サブを自動に戻す" = "Back to auto subs";
+"主枠と同じサービスの残りの窓を自動で並べています。チェックを変えると明示指定になります。" = "Remaining windows of the main window's service are laid out automatically. Editing the checks switches to manual.";
+"サブ窓は最大 %lld つまでです" = "Up to %lld sub-windows";
+"このスロットを空にする" = "Clear slot";
+"窓の一覧を取得できません: %@" = "Could not list windows: %@";
+"クリックして設定" = "Click to set";
+"サブ: 自動（現在なし）" = "Subs: auto (none)";
+"サブ（自動）: %@" = "Subs (auto): %@";
+"サブなし" = "No subs";
+"サブ: %@" = "Subs: %@";
+"・" = ", ";
+
+/* MARK: ServiceSettingsView */
+"有効にできるサービスは最大 %lld つです" = "Up to %lld services can be enabled";
+"再検出" = "Re-detect";
+"サービスの上限" = "Service limit";
+"有効にできるサービスは最大 %lld つです。不要なサービスをオフにしてから試してください。" = "Up to %lld services can be enabled. Turn off unused services and try again.";
+"サービスを検出中…（利用状況を 1 回取得するため時間がかかります）" = "Detecting services… (this fetches usage once and takes a while)";
+"サービスを検出できませんでした。「再検出」を試してください。" = "No services detected. Try \"Re-detect\".";
+"検出されたサービス" = "Detected services";
+"チェックした窓だけが画面に表示されます。すべてチェック（既定）でそのサービスの全窓を表示します。" = "Only checked windows are shown on screen. All checked (default) shows every window of the service.";
+"プラン: %@" = "Plan: %@";
+"トークンを自動で更新する" = "Refresh token automatically";
+"期限切れ時に claude を軽く 1 回実行して更新させます。オフにすると、切れたらパネルに案内を出すだけになります。" = "Runs claude once to refresh an expired token. When off, the panel only shows guidance after expiry.";
+"API キー" = "API key";
+"保存" = "Save";
+"削除" = "Delete";
+"キーはログインキーチェーン（quota-canvas）に保存され、アプリ自体には残りません。" = "Keys are stored in the login keychain (quota-canvas), not in the app.";
+"検出" = "Detected";
+"色" = "Color";
+"画面のカードの色（%@）" = "Card color on screen (%@)";
+"providers.%@.color を削除し、既定の色に戻します" = "Removes providers.%@.color and restores the default color";
+"既定に戻す" = "Reset to default";
+"API キーを入力してください。" = "Enter an API key.";
+
+/* MARK: SettingsView */
+"サービス" = "Services";
+"配置" = "Layout";
+"表示" = "Display";
+"エンジンのパスを確認し、ウィンドウを開き直してください。" = "Check the engine path and reopen the window.";
+"ゲージの表示方式" = "Gauge style";
+"方式" = "Style";
+"残量で表示（Codex 方式）" = "Show remaining (Codex style)";
+"使用量で表示（Claude 方式）" = "Show usage (Claude style)";
+"メニューバーのポップオーバーの残り % にも同じ方式が使われます。" = "The same style is used for the remaining-% value in the menu bar popover.";
+"利用状況に合わせて % の文字色を変える" = "Color the % by usage status";
+"超過・枯渇は赤、ギリギリは黄、余裕ありは緑。オフにすると全部白になります。" = "Red when over or exhausted, yellow when tight, green when there is room. Off shows them all in white.";
+"区切り文字" = "Separator";
+"言語に合わせる" = "Follow display language";
+"／（全角スラッシュ）" = "／ (full-width slash)";
+"·（中黒）" = "· (middle dot)";
+"/（半角スラッシュ）" = "/ (slash)";
+"|" = "|";
+"「言語に合わせる」では日本語表示のとき ／、英語表示のとき \" · \" になります。" = "Follow display language uses ／ for Japanese and \" · \" for English.";
+"言語" = "Language";
+"自動（macOS に合わせる）" = "Automatic (follow macOS)";
+"日本語" = "日本語";
+"アプリの表示は再起動後に切り替わります" = "The app language changes after relaunch";
+"画面の明るさ" = "Screen brightness";
+"明るさ" = "Brightness";
+"夜間の減光" = "Night dimming";
+"夜間は暗くする" = "Dim at night";
+"開始" = "Start";
+"終了" = "End";
+"夜間の明るさ" = "Night brightness";
+"開始 > 終了 のときは日付をまたぎます（例: 23:00 → 07:00）。" = "If start is later than end, the period crosses midnight (e.g. 23:00 → 07:00).";
+"Mac のスリープ時に画面も消す" = "Sleep screen with Mac";
+"スリープやディスプレイの自動消灯に合わせてパネルを消し、復帰で戻します。" = "Hides panels on sleep or display off and restores them on wake.";
+"エンジン" = "Engine";
+"quota-canvas のパス" = "quota-canvas path";
+"規定に戻す" = "Reset to default";
+"再読み込み" = "Reload";
+"この CLI が検出・設定・キー保存を行います。アプリはここで指定する以外の通信をしません。" = "This CLI handles detection, settings, and key storage. The app talks to nothing else.";
+"アプリ" = "App";
+"ログイン時に起動" = "Launch at login";
+"ログイン時起動の設定に失敗しました: %@" = "Could not change launch-at-login: %@";
+
+/* MARK: EngineRefreshButton */
+"今すぐ画面に反映" = "Apply to screen now";
+"最終更新 %@" = "Updated %@";
+"最終更新: 不明" = "Last update: unknown";
+
+/* MARK: FramePreviewView */
+"USB 画面に表示中のフレーム" = "Frame shown on the USB display";
+"最終描画: %@" = "Last drawn: %@";
+"フレームがありません" = "No frame yet";
+"エンジンが 1 度も描画していないか、一時停止中です。" = "The engine has not drawn anything yet, or it is paused.";
+"フレームを読み込み中…" = "Loading frame…";
+
+/* MARK: EngineClient / StatusStore / ConfigDocument */
+"エンジンが見つかりません: %@\n設定タブでパスを確認してください。" = "Engine not found: %@\nCheck the path in Settings.";
+"エンジンの実行元が安全ではありません: %@\n実行ファイルとパス上のフォルダの所有者・書込権限を確認してください。" = "Unsafe engine location: %@\nCheck the owner and write permissions of the executable and every folder in its path.";
+"エンジンを起動できません: %@" = "Could not launch the engine: %@";
+"エンジンエラー (exit %lld):\n%@" = "Engine error (exit %lld):\n%@";
+"エンジンコマンドが失敗しました (exit %lld)" = "Engine command failed (exit %lld)";
+"エンジンの応答を解釈できません: %@\n%@" = "Could not parse engine response: %@\n%@";
+"エンジンが反映要求を受け付けませんでした。" = "The engine did not accept the refresh request.";
+"設定 JSON の形式が不正です（オブジェクトではありません）" = "Invalid settings JSON (not an object)";
+"status.json を解釈できません: %@" = "Could not parse status.json: %@";
+"status.json がまだ作成されていません" = "status.json does not exist yet";
+"status.json を読めません: %@" = "Could not read status.json: %@";
+
+/* MARK: LoginItem */
+"ログイン時に起動します" = "Launches at login";
+"システム設定で承認が必要です" = "Approval required in System Settings";
+"未登録" = "Not registered";
+"アプリが見つかりません（app バンドルから起動してください）" = "App not found (launch from the app bundle)";
+
+/* MARK: status / cards (fresh=リセット直後, stale_error, previous_used) */
+"リセット直後" = "Just reset";
+"取得失敗中（最後の値）: %@" = "Fetch failing (showing last value): %@";
+"前回 %@ 使用" = "Previous: %@ used";
+"前回 %@ 余り" = "Previous: %@ left";
+
+/* MARK: reset credits */
+"リセット権" = "Reset credits";
+"%@ ×%lld · 最短 %@" = "%1$@ ×%2$lld · earliest %3$@";
+"期限不明" = "Unknown expiry";
+"失効済み" = "Expired";
+
+/* MARK: notifications */
+"リセットされました" = "Window reset";
+"リセット権の期限" = "Reset credit expiring";
+"%@ のリセット権が %@ に失効します" = "Reset credit for %1$@ expires %2$@";
+"直近のペースが速いので %@ に尽きる見込み" = "Recent pace is fast — may run out %@";
+
+/* MARK: settings (表示タブ) */
+"通知" = "Notifications";
+"通知を出す" = "Show notifications";
+"枠が尽きた・リセットされた・加速で尽きる見込み・リセット権の期限が近い、ときに macOS の通知を出します。" = "Posts macOS notifications when a window runs out, resets, is burning down too fast, or a reset credit is about to expire.";

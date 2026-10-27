@@ -1,0 +1,149 @@
+# quota-canvas の設定ファイル
+#
+# 場所: ~/.config/quota-canvas/config.toml
+#   （`quota-canvas config --init` でこの内容のファイルを作成できます）
+# ファイルが無ければすべて既定値で動作します。
+# `quota-canvas run` 中にこのファイルを保存し直すと、自動で読み直されます（再起動不要）。
+# `quota-canvas config` で、実際に使われている設定と窓 ID の一覧を確認できます。
+
+[display]
+# 表示する窓 ID の順番つき一覧。書ける ID は `quota-canvas config` で確認できます。
+# 空リスト [] なら、取得できるすべての窓を既定の並び順で表示します。
+# 指定した場合はこの順番で並べ、ここに無い窓は表示しません。
+windows = []
+# 例: windows = ["claude:weekly", "codex:weekly", "glm:5h"]
+
+# 画面の明るさ 0-100（起動時と、設定を変更したときに適用されます）
+brightness = 100
+
+# 表示言語。"auto" なら macOS の言語設定に従い（日本語環境なら日本語）、
+# "ja" / "en" で画面と CLI の文言を固定できます。
+# language = "auto"
+
+# Mac がスリープ（ディスプレイ/システム）したらこの画面も黒 1 枚と明るさ 0 で
+# 消灯し、復帰したら明るさと表示を戻します。false ならスリープしても描き続けます。
+sleep_with_mac = true
+
+# 残り%（使用%）の数字を利用状況に合わせた色にします（超過・枯渇は赤、
+# 余裕ありは緑）。false なら全部白で表示します。
+percent_colors = true
+
+# 文の区切り（「1時間経過／リセットまで 6日22時間」の「／」）。"" なら表示言語の
+# 既定（日本語は全角「／」、英語は「 · 」）。例: " · " / " / " / " | "（5 文字まで）
+# separator = ""
+
+# 夜間の減光。使わないならこの [display.night] 節ごと削除してください。
+# 時刻はローカル時刻。start > end なら日付をまたぎます（23:00 → 翌 07:00）。
+[display.night]
+start = "23:00"
+end = "07:00"
+brightness = 20
+
+# 画面の配置。ここに書かなければ（既定）、取得できたサービスを自動で配置します。
+# 各パネルの項目:
+#   main = メインの窓 ID（例: "claude:weekly"）かサービス ID（例: "gemini"）。
+#          サービス ID なら代表窓が自動で選ばれ、取得できないときはエラー枠になります。
+#   subs = 大きいパネルの下に並べるサブの窓 ID（例: ["claude:5h"]）。large のみ。
+#   size = "large"（大きいパネル。1 枚で 1 列）か "small"（小さいパネル。続けて書いた
+#          2 枚が 1 列に上下 2 段で入る。どの列でも使える）。
+#          small に限り main = "" で空き段（位置だけ保つ）にできます。
+# 上限: 列は最大 4 つ（4 列すべて small にすれば最大 8 枚）。
+# [[layout.panels]]
+# main = "claude:weekly"
+# subs = ["claude:5h"]
+# size = "large"
+#
+# [[layout.panels]]
+# main = "codex:weekly"
+# size = "small"
+
+[poll]
+# 利用枠の取得間隔 (秒)。最小 60
+interval = 900
+# 再描画の間隔 (秒)。最小 10
+redraw = 60
+
+[pacing]
+# リセット時の予測消費 (%) がこの値以上なら「使い切り」（100% 未満なので尽きはしない）
+tight = 92
+# 予測消費 (%) がこの値以上なら「順調」、未満なら「余裕あり」
+on_track = 70
+
+# 睡眠帯: ペース判定（over / tight / on_track / spare）を「起きている時間」で行う。
+# 寝ている間はカウントしないので、「寝る前（start）までに枠を使い切れるか」の
+# 目安になる。例: Grok の週間が 04:00 リセット、睡眠 00:00-08:00 なら、
+# 実質の締め切りは 00:00 扱いになる。start > end なら日付をまたぐ。
+# skip に入れた provider には睡眠時間を適用しない（壁時計どおりの判定）。
+# advice = "bedtime" なら、寝る時刻がリセットより先のときアドバイス行の残り
+# 時間を「リセットまで」の代わりに「寝るまで」で出す（既定 "reset" は変更なし）。
+# 使わないなら、次の [pacing.sleep] 節を行ごと削除するか、先頭に # を付ける。
+# [pacing.sleep]
+# start = "00:00"
+# end = "08:00"
+# skip = ["glm"]
+# advice = "bedtime"
+
+# 残量に応じた AI ワーカー振り分け判定（quota-canvas routing line / check 用）。
+# 既定は無効。有効にすると status.json に "routing" も書かれる。
+# [routing]
+# enabled = true
+# 残り % がこの値未満のワーカーは stop（使い切る前に離れる）
+# floor_percent = 5
+# fetched_at がこの分数より古い窓（または stale_error 中）は unknown（stale）
+# stale_minutes = 20
+# ワーカー名 → 窓 ID のリスト。並び順 = line 表示順。"claude:*" のように末尾に
+# "*" を付けると接頭一致。内訳窓（part_of）は判定しない。
+# 省略時の既定は「取得できた provider ごとに独立窓すべてを 1 ワーカーにまとめ、
+# その中で最も悪い窓の判定を採用」。たとえば gemini は Argon の枠（gemini:argon）や
+# Antigravity 経由の Claude の枠（gemini:claude / gemini:claude_5h）もすべて
+# gemini ワーカーに含まれる。分けたいときは [routing.workers] で明示する。
+# [routing.workers]
+# gemini = ["gemini:weekly", "gemini:5h"]
+# argon = ["gemini:argon"]
+# agclaude = ["gemini:claude", "gemini:claude_5h"]
+# claude = ["claude:*"]
+# codex = ["codex:*"]
+# glm = ["glm:5h"]
+# grok = ["grok:*"]
+
+# 取得するプロバイダ。false にしたものは取得しません。
+# color でそのサービスのテーマ色（バーとサービス名の横のドット）を変えられます。
+# 省略したときは既定のブランド色（claude=#D97757 など）が使われます。
+[providers.claude]
+enabled = true
+# OAuth トークンが期限切れのときの更新方法。
+#   "cli" = `claude -p` を軽く 1 回実行して Claude Code CLI 自身に更新させる
+#           （バックグラウンドで実行。30 分に 1 回まで。既定）
+#   "off" = 自動更新しない。401/403 は「claude を一度起動してください」のエラーになる
+# token_refresh = "cli"
+# color = "#D97757"
+
+[providers.codex]
+enabled = true
+# OAuth トークンが期限切れのときの更新方法。
+#   "cli" = `codex exec` を最小のプロンプトで 1 回実行して Codex CLI 自身に更新させる
+#           （バックグラウンドで実行。30 分に 1 回まで。既定）
+#   "off" = 自動更新しない。401/403 は従来どおり HTTP エラーのまま
+# token_refresh = "cli"
+# color = "#10A37F"
+
+[providers.glm]
+enabled = true
+# color = "#3B82F6"
+
+[providers.grok]
+enabled = true
+# ログイン トークンが期限切れのときの更新方法。
+#   "cli" = `grok models`（モデルを呼ばないので枠を消費しない）を 1 回実行して
+#           Grok CLI 自身に更新させる（バックグラウンドで実行。30 分に 1 回まで。既定）
+#   "off" = 自動更新しない。期限切れは従来どおりのエラー、401 は HTTP エラーのまま
+# token_refresh = "cli"
+# color = "#E5E7EB"
+
+[providers.gemini]
+enabled = true
+# 利用枠の取得は Antigravity CLI の `agy -p "/usage"`（モデルを呼ばないので枠を
+# 消費しない）。トークンの更新も agy 自身が行うため、次の token_refresh は
+# 過去の設定ファイルとの互換で受け付けるだけで、現在は使われない。
+# token_refresh = "cli"
+# color = "#8E75F0"

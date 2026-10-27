@@ -1,0 +1,40 @@
+# Provider strings. Keys are "providers." + the key in this file.
+# Keep key names / interpolation names identical to ja/providers.toml.
+
+no_credentials = "No credentials"
+unreadable = "Credentials unreadable"
+malformed = "Malformed credentials"
+api_key_not_set = "API key not set"
+security_unavailable = "security command unavailable"
+token_expired_run_claude = "Token expired (run claude once)"
+token_expired_refreshing = "Token expired (auto-refreshing)"
+login_expired_run_grok = "Login expired (run grok once)"
+login_expired_refreshing = "Login expired (auto-refreshing)"
+reset_credit = "Reset credits"
+
+[window]
+weekly = "Weekly"
+five_hours = "5h"
+days = "{n}d"
+hours = "{n}h"
+
+[detect]
+claude = "Claude Code login (keychain)"
+codex = "Codex CLI login (~/.codex/auth.json)"
+grok = "Grok CLI login (~/.grok/auth.json)"
+gemini = "Antigravity CLI (agy) /usage"
+glm = "GLM (Z.ai) API key ({source})"
+glm_keychain = "keychain quota-canvas/glm"
+glm_env = "env ZAI_API_KEY"
+
+[claude]
+weekly_scoped = "Weekly {model}"
+
+[gemini]
+claude_window = "Claude"
+claude_5h_window = "Claude 5h"
+no_quota = "No quota information in response"
+agy_missing = "Antigravity CLI (agy) not found"
+agy_timeout = "agy did not respond in time"
+agy_failed = "agy did not report usage"
+agy_invalid = "unreadable agy response"

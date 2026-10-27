@@ -1,0 +1,40 @@
+# プロバイダー (取得元) の文言。キーは "providers." + このファイルのキー。
+# 「認証情報なし」は CLI 側の比較でも使うので必ず no_credentials に置く。
+
+no_credentials = "認証情報なし"
+unreadable = "認証情報を読めない"
+malformed = "認証情報の形式が不正"
+api_key_not_set = "API キーが未設定"
+security_unavailable = "security コマンド不可"
+token_expired_run_claude = "トークン期限切れ（claude を一度起動してください）"
+token_expired_refreshing = "トークン期限切れ（自動更新中）"
+login_expired_run_grok = "ログインの期限切れ（grok を一度起動してください）"
+login_expired_refreshing = "ログインの期限切れ（自動更新中）"
+reset_credit = "リセット権"
+
+[window]
+weekly = "週間"
+five_hours = "5時間"
+days = "{n}日"
+hours = "{n}時間"
+
+[detect]
+claude = "Claude Code のログイン（キーチェーン）"
+codex = "Codex CLI のログイン（~/.codex/auth.json）"
+grok = "Grok CLI のログイン（~/.grok/auth.json）"
+gemini = "Antigravity CLI (agy) の /usage"
+glm = "GLM (Z.ai) の API キー（{source}）"
+glm_keychain = "キーチェーン quota-canvas/glm"
+glm_env = "環境変数 ZAI_API_KEY"
+
+[claude]
+weekly_scoped = "週間 {model}"
+
+[gemini]
+claude_window = "Claude"
+claude_5h_window = "Claude 5時間"
+no_quota = "利用枠の情報を取得できない"
+agy_missing = "Antigravity CLI (agy) が見つからない"
+agy_timeout = "agy が時間内に応答しない"
+agy_failed = "agy が利用枠を返さない"
+agy_invalid = "agy の応答を読めない"

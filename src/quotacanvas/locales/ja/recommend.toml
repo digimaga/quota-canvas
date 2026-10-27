@@ -1,0 +1,12 @@
+# 今使う先 (F1, recommend.py) の文言。
+[main]
+use = "{name} を使う · {reason}"
+
+[parts]
+remaining = "{label}の残り {pct}%"
+reset_in = "リセットまで {span}"
+credit_soon = "リセット権が {span}で失効"
+
+[reason]
+waiting_reset = "リセット待ち"
+stale = "取得失敗中"
