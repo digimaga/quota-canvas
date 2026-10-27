@@ -632,3 +632,34 @@ def test_build_cards_carries_bedtime_at(tmp_path, utc_local_tz):
                             sleep=Sleep(time(0, 0), time(8, 0), [], advice="reset"))
     by_provider = {u.provider: pace for u, pace in cards}
     assert by_provider["claude"].bedtime_at is None
+
+
+def test_sleep_across_dst_fall_back_measures_real_time():
+    from zoneinfo import ZoneInfo
+    from quotacanvas.pacing import _active_span, _advance_active
+    zone = ZoneInfo("America/New_York")
+    start = datetime(2026, 10, 31, 8, tzinfo=zone)
+    end = datetime(2026, 11, 2, 10, tzinfo=zone)
+    sleep = (time(0), time(8))
+    assert _active_span(start, end, sleep, zone) == timedelta(hours=34)
+    reached = _advance_active(start, 34 / 24, sleep, zone)
+    assert reached.astimezone(UTC) == end.astimezone(UTC)
+
+
+def test_system_timezone_uses_dst_rules(monkeypatch):
+    from quotacanvas.pacing import _active_span
+    monkeypatch.setenv("TZ", "America/New_York")
+    start = datetime(2026, 10, 31, 12, tzinfo=UTC)
+    end = datetime(2026, 11, 2, 15, tzinfo=UTC)
+    assert _active_span(start, end, (time(0), time(8)), None) == timedelta(hours=34)
+
+
+def test_sleep_across_dst_spring_forward():
+    from zoneinfo import ZoneInfo
+    from quotacanvas.pacing import _active_span, _advance_active
+    zone = ZoneInfo("America/New_York")
+    start = datetime(2026, 3, 7, 8, tzinfo=zone)
+    end = datetime(2026, 3, 9, 10, tzinfo=zone)
+    sleep = (time(0), time(8))
+    assert _active_span(start, end, sleep, zone) == timedelta(hours=34)
+    assert _advance_active(start, 34 / 24, sleep, zone).astimezone(UTC) == end.astimezone(UTC)

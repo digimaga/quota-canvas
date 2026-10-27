@@ -13,6 +13,8 @@ import json
 import logging
 import math
 import os
+import re
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime, time
@@ -573,7 +575,7 @@ def _int_in(value: Any, key: str, path: Path, lo: int, hi: Optional[int] = None)
 
 
 def _float_in(value: Any, key: str, path: Path, lo: float, hi: Optional[float] = None) -> float:
-    bad = isinstance(value, bool) or not isinstance(value, (int, float)) or value < lo \
+    bad = isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < lo \
         or (hi is not None and value > hi)
     if bad:
         raise ConfigError(t("config.float_required", path=path, name=key,
@@ -634,8 +636,12 @@ def _language(value: Any, key: str, path: Path) -> str:
     return _choice(value, key, path, LANGUAGE_CHOICES)
 
 
+def _format_time(value: time) -> str:
+    return value.isoformat(timespec="seconds" if value.second else "minutes")
+
+
 def _time(value: Any, key: str, path: Path) -> time:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{2}:\d{2}(?::\d{2})?", value.strip()):
         raise ConfigError(t("config.time_required", path=path, name=key, value=value))
     try:
         return time.fromisoformat(value.strip())
@@ -709,8 +715,8 @@ def format_toml(cfg: Config) -> str:
         lines += [
             "",
             "[display.night]",
-            'start = "%s"' % d.night.start.strftime("%H:%M"),
-            'end = "%s"' % d.night.end.strftime("%H:%M"),
+            'start = "%s"' % _format_time(d.night.start),
+            'end = "%s"' % _format_time(d.night.end),
             "brightness = %d" % d.night.brightness,
         ]
     else:
@@ -736,7 +742,7 @@ def format_toml(cfg: Config) -> str:
         for p in cfg.layout.panels:
             lines += [
                 "[[layout.panels]]",
-                'main = "%s"' % p.main,
+                'main = %s' % json.dumps(p.main, ensure_ascii=False),
             ]
             if p.subs is None:
                 lines.append("# subs を省略: 同じサービスの残りの窓を自動でサブに並べる")
@@ -772,8 +778,8 @@ def format_toml(cfg: Config) -> str:
             '# advice = "bedtime" なら、寝る時刻がリセットより先のときアドバイス行の',
             "# 残り時間を「寝るまで」で出す（既定の \"reset\" はリセット基準のまま）。",
             "[pacing.sleep]",
-            'start = "%s"' % s.start.strftime("%H:%M"),
-            'end = "%s"' % s.end.strftime("%H:%M"),
+            'start = "%s"' % _format_time(s.start),
+            'end = "%s"' % _format_time(s.end),
             "skip = %s" % json.dumps(s.skip, ensure_ascii=False),
             'advice = "%s"' % s.advice,
         ]
@@ -815,7 +821,7 @@ def format_toml(cfg: Config) -> str:
             "[routing.workers]",
         ]
         for name, ids in cfg.routing.workers.items():
-            lines.append("%s = %s" % (name, json.dumps(ids, ensure_ascii=False)))
+            lines.append("%s = %s" % (json.dumps(name, ensure_ascii=False), json.dumps(ids, ensure_ascii=False)))
     else:
         lines += [
             "",
@@ -898,15 +904,15 @@ def config_to_dict(cfg: Config) -> Dict[str, Any]:
     }
     if cfg.display.night is not None:
         display["night"] = {
-            "start": cfg.display.night.start.strftime("%H:%M"),
-            "end": cfg.display.night.end.strftime("%H:%M"),
+            "start": _format_time(cfg.display.night.start),
+            "end": _format_time(cfg.display.night.end),
             "brightness": cfg.display.night.brightness,
         }
     pacing: Dict[str, Any] = {"tight": cfg.pacing.tight, "on_track": cfg.pacing.on_track}
     if cfg.pacing.sleep is not None:
         pacing["sleep"] = {  # 未設定なら absent (night と同じ流儀)
-            "start": cfg.pacing.sleep.start.strftime("%H:%M"),
-            "end": cfg.pacing.sleep.end.strftime("%H:%M"),
+            "start": _format_time(cfg.pacing.sleep.start),
+            "end": _format_time(cfg.pacing.sleep.end),
             "skip": list(cfg.pacing.sleep.skip),
             "advice": cfg.pacing.sleep.advice,
         }
@@ -972,11 +978,16 @@ def save_config(cfg: Config, path: Optional[PathLike] = None) -> Path:
     """
     target = Path(path).expanduser() if path is not None else DEFAULT_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
+    tmp = None
     try:
-        tmp.write_text(format_toml(cfg), encoding="utf-8")
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent,
+                                         prefix="." + target.name + ".", suffix=".tmp",
+                                         delete=False) as file:
+            tmp = Path(file.name)
+            file.write(format_toml(cfg))
+        load_config(tmp)  # 書式・値の両方を読み戻してから元ファイルを置換する
         os.replace(tmp, target)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
     return target

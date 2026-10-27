@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, time, timedelta
+import os
+from datetime import datetime, time, timedelta, timezone
 from typing import List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from .models import Pace, PaceStatus, Sample, Window
 
@@ -19,29 +21,29 @@ def _as_days(delta: timedelta) -> float:
     return delta.total_seconds() / 86400.0
 
 
-def _to_local(at: datetime, tz) -> datetime:
-    """tz aware の時刻をローカル壁時計に直す (tz が無ければシステムのローカル)。"""
-    return at.astimezone(tz) if tz is not None else at.astimezone()
+def _local_zone():
+    """Use the system's regional zone, including future offset changes."""
+    zone = os.environ.get("TZ")
+    if zone:
+        return ZoneInfo(zone.lstrip(":"))
+    with open("/etc/localtime", "rb") as localtime:
+        return ZoneInfo.from_file(localtime)
 
 
 def _sleep_bands(a: datetime, b: datetime, sleep: Sleep, tz) -> List[Tuple[datetime, datetime]]:
-    """区間 [a, b) に重なる睡眠帯のリスト (tz aware、昇順・重なりなし)。
-
-    ローカル時刻で日ごとに帯を作る。start > end なら日付をまたぐので、
-    a の前日から b の当日までの各日で 1 本ずつ見る。DST は tz aware 同士の
-    比較・減算で扱う (壁時計の帯をローカルに置いて重なりを取る)。
-    """
+    """Sleep bands clipped to [a, b), in UTC so elapsed time includes DST."""
     band_start, band_end = sleep
     if band_start == band_end:
-        return []  # 長さ 0 は無効扱い (config ではエラー)
-    loc_a, loc_b = _to_local(a, tz), _to_local(b, tz)
-    zone = loc_a.tzinfo
+        return []
+    zone = tz if tz is not None else _local_zone()
+    a, b = a.astimezone(timezone.utc), b.astimezone(timezone.utc)
+    loc_a, loc_b = a.astimezone(zone), b.astimezone(zone)
     bands: List[Tuple[datetime, datetime]] = []
-    day = loc_a.date() - _DAY  # 前日始まりの帯が a にまたがることがある
+    day = loc_a.date() - _DAY
     while day <= loc_b.date():
-        begin = datetime.combine(day, band_start, tzinfo=zone)
+        begin = datetime.combine(day, band_start, tzinfo=zone).astimezone(timezone.utc)
         finish = datetime.combine(day + (_DAY if band_start > band_end else timedelta(0)),
-                                  band_end, tzinfo=zone)
+                                  band_end, tzinfo=zone).astimezone(timezone.utc)
         lo, hi = max(a, begin), min(b, finish)
         if lo < hi:
             bands.append((lo, hi))
@@ -50,9 +52,10 @@ def _sleep_bands(a: datetime, b: datetime, sleep: Sleep, tz) -> List[Tuple[datet
 
 
 def _active_span(a: datetime, b: datetime, sleep: Optional[Sleep], tz) -> timedelta:
-    """区間 [a, b) の「起きている時間」。sleep が無ければ壁時計の長さそのまま。"""
+    """Elapsed awake time in [a, b), measured on the UTC timeline."""
     if sleep is None:
         return b - a
+    a, b = a.astimezone(timezone.utc), b.astimezone(timezone.utc)
     if b <= a:
         return timedelta(0)
     out = b - a
@@ -62,25 +65,23 @@ def _active_span(a: datetime, b: datetime, sleep: Optional[Sleep], tz) -> timede
 
 
 def _advance_active(at: datetime, days: float, sleep: Optional[Sleep], tz) -> datetime:
-    """at から「起きている時間」で days 日分進めた壁時計の時刻 (睡眠帯を飛ばす)。
-
-    sleep が無ければ壁時計のそのままの日数進める。
-    """
+    """Advance by awake time, skipping local sleep bands on the UTC timeline."""
     if sleep is None:
         return at + timedelta(days=days)
+    zone = tz if tz is not None else _local_zone()
     remaining = timedelta(days=max(days, 0.0))
-    cur = at
+    cur = at.astimezone(timezone.utc)
     while remaining > timedelta(0):
-        horizon = cur + remaining + 2 * _DAY  # 睡眠帯の列挙範囲 (帯は高々 1 日ぶん)
-        for s, e in _sleep_bands(cur, horizon, sleep, tz):
-            lead = max(timedelta(0), s - cur)  # 帯までの起きている時間
+        horizon = cur + remaining + 2 * _DAY
+        for s, e in _sleep_bands(cur, horizon, sleep, zone):
+            lead = max(timedelta(0), s - cur)
             if lead >= remaining:
-                return cur + remaining
+                return (cur + remaining).astimezone(at.tzinfo)
             remaining -= lead
             cur = max(cur, e)
         if cur + remaining <= horizon:
-            return cur + remaining  # 列挙した帯を飛べば残りは睡眠に当たらない
-    return cur
+            return (cur + remaining).astimezone(at.tzinfo)
+    return cur.astimezone(at.tzinfo)
 
 
 def _same_period(sample: Sample, resets_at: datetime) -> bool:
@@ -233,6 +234,8 @@ def compute_pace(window: Window, samples: List[Sample], now: datetime, tz=None,
     `bedtime` は pacing.sleep の advice = "bedtime" フラグ。sleep と一緒に
     渡されたときだけ、次に寝る時刻がリセットより先なら Pace.bedtime_at に
     載せる (判定そのものは変わらない、表示側の締切差し替え用)。"""
+    if sleep is not None and tz is None:
+        tz = _local_zone()
     used = window.used_percent
     resets = window.resets_at
     if resets is None:
@@ -264,7 +267,8 @@ def compute_pace(window: Window, samples: List[Sample], now: datetime, tz=None,
             break  # 最初 (最も近い) の帯だけでよい
 
     length = window.length
-    start = resets - length
+    # Window lengths are elapsed time, even when callers supply a regional zone.
+    start = resets.astimezone(timezone.utc) - length if sleep is not None else resets - length
     active_len = span(start, resets)  # sleep が無ければ length と同じ
     elapsed = min(max(span(start, now), timedelta(0)), active_len)
     # lookback (1h / 24h) の上限は壁時計の経過で clamp する (表示や recent の

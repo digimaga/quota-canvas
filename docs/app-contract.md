@@ -40,14 +40,15 @@ The app finds the CLI at the path stored in its settings (default
   "errors": [ { "provider": "glm", "name": "GLM", "error": "HTTP 401" } ],
   "windows": [
     { "id": "codex:weekly", "provider": "codex", "key": "weekly", "part_of": null,
-      "used": 80.0, "remaining": 20.0, "status": "over",
+      "used": 80.0, "remaining": 20.0, "status": "over", "length": 604800.0,
       "resets_at": "2026-10-31T02:40:44+09:00",
       "exhausts_at": "2026-10-25T15:40:44+09:00",
-      "fetched_at": "2026-10-24T21:29:12+09:00", "stale_error": null }
+      "fetched_at": "2026-10-24T21:29:12+09:00" }
   ],
   "routing": {
     "at": "2026-10-24T21:30:00+09:00",
     "reset_credits": { "codex": 1 },
+    "holds": { "codex:weekly": "2026-10-31T02:40:44+09:00" },
     "workers": [
       { "name": "codex", "verdict": "boost", "reason": "burn", "windows": ["codex:weekly"],
         "remaining": 20.0, "status": "over",
@@ -120,9 +121,9 @@ The app finds the CLI at the path stored in its settings (default
 
 - `windows` — every window of every fetched provider, BEFORE the display filter
   (`display.windows` / `providers.<p>.windows` do not affect it; breakdown windows have a
-  non-null `part_of`, the id of the window they belong to). Written on every redraw so the
+  non-null `part_of`, the parent window's `key`, not its `id`). Written on every redraw so the
   routing CLI can judge all windows. Fields mirror the cards (`id`, `provider`, `key`,
-  `part_of`, `used`, `remaining`, `status`, `resets_at`, plus the optional `exhausts_at`,
+  `part_of`, `used`, `remaining`, `status`, `resets_at`, `length` in seconds, plus the optional `exhausts_at`,
   `fetched_at`, `stale_error`). Written always, also while `routing.enabled = false` and
   while paused.
 
@@ -130,14 +131,18 @@ The app finds the CLI at the path stored in its settings (default
   config. The routing verdict per worker (a named group of windows, `[routing.workers]`),
   computed by the same pure logic as `quota-canvas routing line`. `at` is the `updated_at`
   the judgment is based on, `reset_credits` maps provider → number of valid reset credits
-  (display only, it never changes a verdict), `line` is the same one-line summary
+  (display only, it never changes a verdict), `holds` maps window IDs to reset times for
+  reserve/over windows and preserves the short-window hysteresis across redraws, and
+  `line` is the same one-line summary
   `routing line` prints (for Macs without quota-canvas that only read a copied
   status.json). Per worker: `verdict` is one of
   - `stop` — do not use: exhausted (`reason: "exhausted"`) or below the floor
     (`routing.floor_percent`, `reason: "below_floor"`);
   - `reserve` — usable but pace is over (`reason: "over"`); prefer another worker;
-  - `go` — normal use (`reason: "tight"` / `"on_track"`);
-  - `boost` — plenty of headroom (`reason: "spare"` / `"fresh"`), or lifted there by an
+  - `go` — normal use (`reason: "tight"` / `"on_track"` / `"over_near_reset"`);
+    `over_near_reset` means a short window is projected to exhaust within its reset margin;
+  - `boost` — plenty of headroom (`reason: "spare"` / `"fresh"`, or `"on_track"` for
+    windows shorter than 24 hours), or lifted there by an
     active burn window (`reason: "burn"`);
   - `unknown` — cannot judge (`reason: "missing"` no matching window / `"error"` provider
     fetch error / `"stale"` stale `fetched_at` or `stale_error`), decided by the worst
@@ -240,7 +245,10 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `quota: glm=go(89%,~23:07) … (21:30時点)` (same format as `~/.claude/bin/quota-gate
   line`). Reads status.json only — it never fetches from the services — and always exits
   0, even when status.json is stale (prints a `quota: stale（…）` line) or the judgment
-  fails (one stderr line). Silent and exits 0 when `routing.enabled = false`.
+  fails (one stderr line). With `--json`, a successful judgment is
+  `{"at": ..., "reset_credits": {...}, "holds": {...}, "workers": [...]}` (no `line`);
+  stale status returns `{"state": "stale", "detail": "missing|old|broken|unreadable"}`.
+  Silent and exits 0 when `routing.enabled = false`.
 - `quota-canvas routing check <name> [--json]` — for a SessionStart hook (10 s budget):
   `stop` → one stderr line, exit 3; `reserve` → one stderr note, exit 0; `unknown` → one
   stderr line (「判定できないためそのまま続行」), exit 0; `go`/`boost` → silent, exit 0.
@@ -255,7 +263,7 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   status.json (the fallback is used when the primary is missing or older than
   `routing.stale_minutes`).
 - `quota-canvas routing burn [name on|off [--until HH:MM|ISO]]` — burn mode: while active
-  (until the time, default today 23:59), that worker's `reserve`/`go`/`boost` counts as
+  (until the time, default the next 23:59), that worker's `reserve`/`go`/`boost` counts as
   `boost` (display and judgment; `stop`/`unknown` stay). `stop`/`unknown` are never
   lifted. State lives in `~/Library/Application Support/quota-canvas/routing-burn.json`;
   expired entries are purged on write. `quota-canvas routing burn` lists active entries.
@@ -303,6 +311,8 @@ app may put into `providers.<p>.windows` (empty list = show every window).
 | `providers.<p>.color` | `"#RRGGBB"` or absent | サービス: theme color picker (bar fill + name dot). Absent = engine default brand color |
 | `routing.enabled` | bool（既定 `false`） | 振り分け: 「AI ワーカーの振り分け判定を使う」トグル。true で `routing line|check|hook` が判定を出し、status.json に `"routing"` が現れる |
 | `routing.floor_percent` | 0–100（既定 5） | 振り分け: 「止める下限（残り %）」Stepper。floor 適用中に残りがこれ未満のワーカーは stop |
+| `routing.floor_hours` | number ≥ 0（既定 24） | 長い窓の floor を適用する残り時間の下限（時間）。0 なら常に適用 |
+| `routing.short_over_margin_minutes` | number > 0 or `null`（既定 `null`） | 短い窓の終盤の猶予（分）。`null` は窓の長さの 10% |
 | `routing.stale_minutes` | 1 以上（既定 20） | 振り分け: 「古いとみなす（分）」Stepper。fetched_at がこれより古い窓を含むワーカーは stale |
 | `routing.workers` | ワーカー名 → 窓 id 配列（`config --set-json` は `[{"name", "windows"}]` の配列も可、`worker_order` でも順指定可）、空 = サービスごとの既定 | 振り分け: ワーカーエディタ（名前 + 窓 id のカンマ区切り、上下ボタンで並べ替え、「既定に戻す（サービスごと）」で空にする）。名前は `^[A-Za-z0-9._-]{1,40}$` |
 

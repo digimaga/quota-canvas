@@ -566,6 +566,8 @@ def _cmd_config_set_json(args) -> int:
         return _fail(str(exc))
     try:
         save_config(cfg, args.config)
+    except ConfigError as exc:
+        return _fail(str(exc))
     except OSError as exc:
         return _fail(t("cli.set_json.save_failed", path=args.config or DEFAULT_PATH,
                        detail=exc.strerror or exc))
@@ -596,24 +598,23 @@ def _cmd_refresh(args) -> int:
 PICK_MAX_AGE = timedelta(minutes=20)   # status.json を「新しい」とみなす上限
 
 
-def _status_recommendation(now: datetime, path: Path = STATUS_PATH) -> Optional[dict]:
+def _status_recommendation(now: datetime, path: Path = STATUS_PATH) -> Tuple[bool, Optional[dict]]:
     """status.json の "recommendation" を dict で返す。
 
-    ファイルが無い・壊れている・20 分以上古いときは None を返す
-    (呼び出し側が 1 回だけ取得して計算し直す)。新しいのに推奨が無いときも
-    None (計算し直しても無ければ「おすすめなし」になる)。
+    ファイルが無い・壊れている・20 分以上古いときは (False, None) を返す
+    (呼び出し側が 1 回だけ取得して計算し直す)。新しいが推奨なしなら (True, None)。
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
+        return False, None
     if not isinstance(data, dict):
-        return None
+        return False, None
     updated = _parse_iso(data.get("updated_at"))
     if updated is None or (now - updated) >= PICK_MAX_AGE:
-        return None
+        return False, None
     rec = data.get("recommendation")
-    return rec if isinstance(rec, dict) else None
+    return True, rec if isinstance(rec, dict) else None
 
 
 def _cmd_pick(args, cfg: Config) -> int:
@@ -622,8 +623,8 @@ def _cmd_pick(args, cfg: Config) -> int:
     (画面には送らず、status.json / history.jsonl / periods.jsonl にも
     書かない読み取り専用の計算)。"""
     now = datetime.now(timezone.utc)
-    rec = _status_recommendation(now, STATUS_PATH)
-    if rec is None:
+    fresh, rec = _status_recommendation(now, STATUS_PATH)
+    if not fresh:
         history = History(args.history) if args.history else History()
         poller = Poller(history, enabled=cfg.providers.enabled(), record=False)
         usages = poller.fetch(now)
@@ -704,6 +705,14 @@ def _cmd_routing_check(args, cfg: Config) -> int:
         return 0
     if os.environ.get("QUOTA_GATE_FORCE") == "1":
         return 0
+    try:
+        return _routing_check_impl(args, cfg)
+    except Exception as exc:  # fail-open, as with routing line
+        print("routing: %s" % str(exc).replace("\n", " ").replace("\r", " "), file=sys.stderr)
+        return 0
+
+
+def _routing_check_impl(args, cfg: Config) -> int:
     name = args.name
     lang = current_language()
     known = set(cfg.routing.workers) | set(gate.KNOWN_PROVIDERS)
@@ -812,7 +821,7 @@ def _cmd_routing_burn(args, cfg: Config) -> int:
         else:
             print(t("routing.usage"), file=sys.stderr)
         return 2
-    until = now.replace(hour=23, minute=59, second=0, microsecond=0)
+    until = gate.parse_until("23:59", now)
     if action == "on" and args.until:
         parsed = gate.parse_until(args.until, now)
         if parsed is None:

@@ -5,8 +5,9 @@ usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check 
 [gate]
 line = "quota: {body} (as of {at})"
 over = "pace over"
-exhausts = "· ~{dt} projected to exhaust"
+exhausts = " · ~{dt} projected to exhaust"
 credits = "{n} reset credits"
+credit_one = "{n} reset credit"
 burn = "burn ~{dt}"
 stale_missing = "quota: stale (no status.json)"
 stale_old = "quota: stale (as of {time}, {reason})"

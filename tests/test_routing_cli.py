@@ -607,3 +607,22 @@ def test_cli_reuses_persisted_holds_without_advancing_state(tmp_path):
         assert rc == 0 and not err
         assert json.loads(out)["verdict"] == "reserve"
         assert path.read_text() == before
+
+
+def test_check_unexpected_exception_is_fail_open(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("problem\nmore")
+    monkeypatch.setattr(cli, "_load_gate_status", fail)
+    rc, out, err = _run(tmp_path, ["routing", "check", "glm", "--json"])
+    assert rc == 0 and out == ""
+    assert err.splitlines() == ["routing: problem more"]
+
+
+def test_burn_rejects_past_iso_and_default_rolls_to_tomorrow(tmp_path, burn_path, monkeypatch):
+    now = datetime(2026, 10, 26, 23, 59, 30).astimezone()
+    monkeypatch.setattr(gate, "now_local", lambda: now)
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "glm", "on", "--until", (now - timedelta(seconds=1)).isoformat(), "--json"])
+    assert rc == 2 and json.loads(out)["error"] and not burn_path.exists()
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "glm", "on", "--json"])
+    assert rc == 0
+    assert datetime.fromisoformat(json.loads(out)["burn"][0]["until"]) == (now + timedelta(days=1)).replace(hour=23, minute=59, second=0, microsecond=0)

@@ -547,7 +547,7 @@ def test_line_english_wording():
     result = evaluate(data, cfg(workers={"glm": ["glm:5h"]}), {}, now)
     line = format_line(result, now, "en")
     expected = ("glm=reserve(85%,pace over"
-                f"· ~{gate.fmt_reset(data['windows'][0]['exhausts_at'], now)} projected to exhaust,"
+                f" · ~{gate.fmt_reset(data['windows'][0]['exhausts_at'], now)} projected to exhaust,"
                 f"~{gate.fmt_reset(data['windows'][0]['resets_at'], now)}) "
                 f"(as of {gate.fmt_hhmm(now)})")
     assert expected in line
@@ -687,7 +687,7 @@ def test_routing_config_load_and_roundtrip(tmp_path):
                                     "argon": ["gemini:argon"], "grok": ["grok:*"]}
     parsed = format_toml(cfg_)
     assert "[routing.workers]" in parsed
-    assert "glm = " in parsed
+    assert '"glm" = ' in parsed
     assert config_to_dict(load_config_from_text(parsed))["routing"] == config_to_dict(cfg_)["routing"]
     d = config_to_dict(cfg_)
     assert config_to_dict(config_from_dict(d)) == d
@@ -1045,3 +1045,22 @@ def test_hold_is_replaced_for_judged_window_while_another_remains_unjudged():
     assert second.holds == {"gemini:5h": first_gemini["resets_at"]}
     assert second.worker("glm").verdict == "go"
     assert second.worker("gemini").verdict == "unknown"
+
+
+def test_reserve_without_reset_has_no_dangling_separator():
+    worker = WorkerResult("glm", "reserve", "over", remaining=85.0)
+    assert "残り85%）" in gate.check_message(worker, NOW, "ja")
+    assert "remaining 85%)" in gate.check_message(worker, NOW, "en")
+
+
+def test_english_credit_singular_and_plural():
+    worker = WorkerResult("codex", "boost", "spare", remaining=50, provider="codex")
+    result = RoutingResult(workers=[worker], reset_credits={"codex": 1})
+    assert "1 reset credit)" in format_line(result, NOW, "en")
+    result.reset_credits["codex"] = 2
+    assert "2 reset credits)" in format_line(result, NOW, "en")
+
+
+def test_parse_until_rejects_past_and_equal_iso():
+    assert gate.parse_until(NOW.isoformat(), NOW) is None
+    assert gate.parse_until((NOW - timedelta(seconds=1)).isoformat(), NOW) is None

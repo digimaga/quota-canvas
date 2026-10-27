@@ -139,7 +139,7 @@ def test_pick_accepts_status_just_under_20_minutes(monkeypatch, capsys, tmp_path
 # ------------------------------------------------------------- 推奨なし
 
 def test_pick_json_none_when_nothing_usable(monkeypatch, capsys, tmp_path):
-    # 新しい status.json に推奨が無い -> 取得し直しても全滅なら {"recommendation": null}
+    # 新しい status.json に推奨が無ければ取得せず {"recommendation": null}
     path = _status_file(tmp_path, NOW, recommendation=None)
     monkeypatch.setattr(cli, "STATUS_PATH", path)
 
@@ -152,15 +152,14 @@ def test_pick_json_none_when_nothing_usable(monkeypatch, capsys, tmp_path):
     assert json.loads(out) == {"recommendation": None}
 
 
-def test_pick_refetches_when_fresh_status_lacks_recommendation(monkeypatch, capsys, tmp_path):
-    # 古いエンジンの status.json (recommendation のキー無し): 取得して計算する
+def test_pick_fresh_status_lacks_recommendation_without_refetch(monkeypatch, capsys, tmp_path):
     path = _status_file(tmp_path, NOW, recommendation=None)
     monkeypatch.setattr(cli, "STATUS_PATH", path)
     monkeypatch.setattr(providers, "fetch_all",
-                        lambda now=None, enabled=None: _fetch_result())
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("取得しない")))
     rc, out = _run(monkeypatch, capsys, _argv(tmp_path))
     assert rc == 0
-    assert "Claude Max" in out
+    assert out.strip() == "いまおすすめのサービスはありません"
 
 
 def test_pick_none_message_when_computation_finds_nothing(monkeypatch, capsys, tmp_path):

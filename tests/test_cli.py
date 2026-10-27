@@ -594,3 +594,37 @@ def test_once_recommendation_none_when_all_unusable(monkeypatch, tmp_path):
                                   '[display]\nlanguage = "ja"\n', fetch=low_only)
     assert rc == 0
     assert calls["recommendation"] is None  # 残り 4% (< 5%) で使えないので推奨なし
+
+
+def test_set_json_invalid_serialization_preserves_existing(monkeypatch, capsys, tmp_path):
+    from quotacanvas import config
+    target = tmp_path / "config.toml"
+    target.write_text('[display]\nbrightness = 44\n', encoding="utf-8")
+    before = target.read_bytes()
+    monkeypatch.setattr(config, "format_toml", lambda cfg: '[routing.workers]\nglm.fast = ["glm:5h"]\n')
+    rc, out = _run(monkeypatch, capsys, ["--config", str(target), "config", "--set-json"], stdin="{}")
+    assert rc != 0 and json.loads(out)["error"]
+    assert target.read_bytes() == before
+    assert not target.with_name("config.toml.tmp").exists()
+
+
+def test_pick_fresh_status_without_recommendation_does_not_fetch(monkeypatch, capsys, tmp_path):
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps({"updated_at": datetime.now(timezone.utc).isoformat()}))
+    monkeypatch.setattr(cli, "STATUS_PATH", status_path)
+    def fail_fetch(*args, **kwargs):
+        raise AssertionError("fresh status should not fetch")
+    monkeypatch.setattr(cli.Poller, "fetch", fail_fetch)
+    rc, out = _run(monkeypatch, capsys, ["--config", str(tmp_path / "config.toml"), "pick", "--json"])
+    assert rc == 0 and json.loads(out) == {"recommendation": None}
+
+
+def test_set_json_roundtrips_quoted_values(monkeypatch, capsys, tmp_path):
+    target = tmp_path / "config.toml"
+    data = {"routing": {"workers": {"glm.fast": ["glm:5h"]}},
+            "layout": {"panels": [{"main": 'glm:"quoted"', "size": "large"}]}}
+    rc, out = _run(monkeypatch, capsys, ["--config", str(target), "config", "--set-json"], stdin=json.dumps(data))
+    assert rc == 0 and json.loads(out)["routing"]["workers"] == data["routing"]["workers"]
+    cfg = load_config(target)
+    assert cfg.routing.workers == data["routing"]["workers"]
+    assert cfg.layout.panels[0].main == 'glm:"quoted"'

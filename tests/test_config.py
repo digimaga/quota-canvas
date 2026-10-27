@@ -739,6 +739,33 @@ def test_save_config_atomic_replace(tmp_path):
     assert "paused = true" in target.read_text(encoding="utf-8")
 
 
+def test_overlapping_saves_use_separate_temporary_files_and_clean_up(tmp_path, monkeypatch):
+    from quotacanvas import config
+
+    target = tmp_path / "config.toml"
+    first = config_from_dict({"display": {"brightness": 40}})
+    second = config_from_dict({"display": {"brightness": 60}})
+    replace = config.os.replace
+    sources = []
+
+    def interleave(source, destination):
+        sources.append(source)
+        if len(sources) == 1:
+            original = source.read_bytes()
+            save_config(second, target)
+            assert source.read_bytes() == original
+            raise OSError("simulated replace failure")
+        replace(source, destination)
+
+    monkeypatch.setattr(config.os, "replace", interleave)
+    with pytest.raises(OSError, match="simulated replace failure"):
+        save_config(first, target)
+    assert len(sources) == 2 and sources[0] != sources[1]
+    assert all(source.parent == target.parent for source in sources)
+    assert load_config(target).display.brightness == 60
+    assert all(not source.exists() for source in sources)
+
+
 # --- build_cards: providers.<p>.windows フィルタ (表示時に適用) --------------------
 
 
@@ -1169,3 +1196,39 @@ def test_worker_array_saves_and_keeps_order(tmp_path):
     path = save_config(cfg, tmp_path / "config.toml")
     cfg2 = load_config(path)
     assert list(cfg2.routing.workers) == ["zeta", "alpha"]
+
+
+def test_quoted_worker_and_panel_main_roundtrip(tmp_path):
+    data = {"routing": {"workers": {"glm.fast": ["glm:5h"]}},
+            "layout": {"panels": [{"main": 'glm:"quoted"', "size": "large"}]}}
+    cfg = config_from_dict(data)
+    path = save_config(cfg, tmp_path / "config.toml")
+    restored = load_config(path)
+    assert restored.routing.workers == {"glm.fast": ["glm:5h"]}
+    assert restored.layout.panels[0].main == 'glm:"quoted"'
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("key", ["floor_percent", "floor_hours", "short_over_margin_minutes"])
+def test_routing_floats_reject_nonfinite(key, value):
+    with pytest.raises(ConfigError):
+        config_from_dict({"routing": {key: value}})
+
+
+@pytest.mark.parametrize("section", ["night", "sleep"])
+@pytest.mark.parametrize("value", ["23:00+09:00", "23:00Z", "2300", "23:00:00.1"])
+def test_wall_times_reject_offsets_and_nonstandard_forms(section, value):
+    times = {"start": value, "end": "08:00"}
+    data = {"display": {"night": dict(times, brightness=10)}} if section == "night" else {"pacing": {"sleep": times}}
+    with pytest.raises(ConfigError):
+        config_from_dict(data)
+
+
+def test_wall_time_seconds_survive_json_and_toml(tmp_path):
+    data = {"display": {"night": {"start": "23:01:02", "end": "07:01:03", "brightness": 10}},
+            "pacing": {"sleep": {"start": "00:01:04", "end": "08:01:05"}}}
+    cfg = config_from_dict(data)
+    restored = load_config(save_config(cfg, tmp_path / "config.toml"))
+    assert config_to_dict(restored)["display"]["night"] == data["display"]["night"]
+    assert config_to_dict(restored)["pacing"]["sleep"]["start"] == "00:01:04"
+    assert config_to_dict(restored)["pacing"]["sleep"]["end"] == "08:01:05"

@@ -157,7 +157,7 @@ def parse_until(value: str, now: datetime) -> Optional[datetime]:
             until += timedelta(days=1)
         return until
     dt = parse_dt(text)
-    return to_local(dt) if dt is not None else None
+    return to_local(dt) if dt is not None and dt > now else None
 
 
 # ------------------------------------------------------------------ status 入力
@@ -589,7 +589,7 @@ def format_line(result: RoutingResult, now: datetime, lang: Optional[str] = None
                 text += t("routing.gate.exhausts", dt=ex)
         n = result.reset_credits.get(w.provider) if w.provider else None
         if n:
-            text += "," + t("routing.gate.credits", n=n)
+            text += "," + t("routing.gate.credit_one" if n == 1 else "routing.gate.credits", n=n)
         if w.burn_until:
             b = fmt_reset(w.burn_until, now)
             if b:
@@ -628,8 +628,8 @@ def check_message(worker: WorkerResult, now: datetime, lang: Optional[str] = Non
     if worker.verdict == "reserve":
         reset = fmt_reset(worker.resets_at, now)
         if worker.remaining is not None:
-            detail = t("routing.check.remains_reset", pct=pct_str(worker.remaining),
-                       dt=reset or "")
+            detail = (t("routing.check.remains_reset", pct=pct_str(worker.remaining), dt=reset)
+                      if reset else t("routing.check.remains", pct=pct_str(worker.remaining)))
         else:
             detail = worker.status or "unknown"
         return t("routing.check.reserve", name=worker.name, detail=detail)
