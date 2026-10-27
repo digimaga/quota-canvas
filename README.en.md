@@ -100,7 +100,7 @@ The Routing settings tab enables routing, sets the remaining quota floor and dat
 
 ### Credentials
 
-- Claude reads Keychain `Claude Code-credentials`, Codex reads `~/.codex/auth.json`, and Grok reads `~/.grok/auth.json`. GLM checks Keychain `quota-canvas/glm`, then `ZAI_API_KEY`, `~/.config/glm-run/zai_api_key`, and `~/.dsh/.credentials.yaml`. A key saved with `set-key glm` takes priority.
+- Claude reads Keychain `Claude Code-credentials`, Codex reads `~/.codex/auth.json`, and Grok reads `~/.grok/auth.json`. GLM reads Keychain `quota-canvas/glm` (saved with `set-key glm` or in the app's settings) or the `ZAI_API_KEY` environment variable; the Keychain key takes priority.
 - Token refresh is delegated to each CLI. With the default `providers.claude.token_refresh = "cli"`, Claude runs `claude -p` once in the background when the token is near expiry or on HTTP 401/403, at most once per 30 minutes. `"off"` disables this and prompts the user to launch Claude on 401/403. `providers.grok.token_refresh` runs `grok models` on expiry or HTTP 401/403 without consuming quota. `providers.codex.token_refresh` runs `codex exec … ok` on HTTP 401/403, at most once per 30 minutes; it consumes a little quota.
 - Gemini uses Antigravity CLI's `agy -p "/usage" --output-format json`. This does not invoke a model or consume quota, and agy refreshes its own token. `providers.gemini.token_refresh` is accepted for compatibility but is no longer used. The windows are `gemini:weekly`, Gemini 4 Argon's `gemini:argon`, `gemini:5h`, and `gemini:claude` / `gemini:claude_5h` for Claude / GPT through Antigravity. The plan name is shown if it can be obtained with the Keychain token for service `gemini` / account `antigravity`; otherwise it is shown as “Gemini”.
 
