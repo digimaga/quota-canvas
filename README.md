@@ -76,6 +76,8 @@ Screen().show(pil_image)   # 1920×462 の横長画像
 
 [app/](app/) の QuotaCanvas.app はエンジンの状態、推奨、画面プレビューを表示し、設定や一時停止、通知を操作できる。Swift 6.2 以上と macOS 14 以上で、`cd app && ./scripts/build.sh` により `app/build/QuotaCanvas.app` をビルドする。詳しくは [app/README.md](app/README.md)。
 
+設定の「振り分け」タブでは、判定の有効化、残量の下限とデータの鮮度の設定、現在の判定の確認、使い切りモードの切り替え、ワーカーと窓の編集・並べ替えができる。Claude Code / Codex 用プラグインのインストールコマンドもコピーできる。
+
 ### 認証情報
 
 - Claude はキーチェーン `Claude Code-credentials`、Codex は `~/.codex/auth.json`、Grok は `~/.grok/auth.json` を読む。GLM はキーチェーン `quota-canvas/glm` → `ZAI_API_KEY` → `~/.config/glm-run/zai_api_key` → `~/.dsh/.credentials.yaml` の順。`set-key glm` で保存したキーが最優先。
@@ -86,6 +88,7 @@ Screen().show(pil_image)   # 1920×462 の横長画像
 
 - 履歴は `~/Library/Application Support/quota-canvas/history.jsonl` に 8 日分保存し、日別棒グラフと直近 24 時間の速度に使う。履歴が始まる前の日は「?」。
 - 判定は窓全体の平均速度と直近速度を半々に混ぜて予測する。リセット前に 100% に届くとペース超過、リセット時に 92% 以上なら使い切り、70% 以上なら順調、それ未満なら余裕あり。経過 3% 未満かつ使用 5% 未満はリセット直後。直近 2 時間の使用増加が 1% 以上、かつ速度が混合速度の 1.5 倍以上で、そのままではリセット前に尽きるときは黄色のアドバイスに枯渇時刻を表示する。同じサービスの 5 時間枠などが先に尽きるときもアドバイスで触れる。文言は `src/quotacanvas/render.py` の `advice_text()` で決まる。
+- 英語表示では「余裕あり」を `Spare`、「使い切り」を `Maxing out` と表示する。
 - リセットのたびに最終使用率を `periods.jsonl` に窓ごとに最新 20 件保存し、次の期間のカードに前回の残量を表示する。
 - ヘッダと `pick` は今使う先を表示する。点数はリセット時に使われず消える見込み量 × 窓の長さ ÷ リセットまでの時間。ペース超過・残り 5% 未満・取得失敗中・リセット待ちのサービスは選ばず、同じサービスの 1 日未満の窓が残り 20% 未満なら点数を半分にし、期限 24 時間以内の Codex リセット権があれば点数を 1.5 倍にする。`pick` は `status.json` がないか 20 分より古い場合、画面に送らず利用量を一度取得する。
 
@@ -113,6 +116,8 @@ argon = ["gemini:argon"]
 
 各ワーカーは窓 ID のリストで定義し、末尾の `*` は前方一致。並び順は `routing line` の表示順。内訳窓（`part_of`）は判定しない。`[routing.workers]` を省略または空にすると、取得したプロバイダごとに独立窓をまとめて 1 ワーカーにする。既定の `gemini` には Argon と Antigravity 経由の Claude / GPT の窓も含まれるため、分けたい場合は明示する。各ワーカーは対象窓のうち最も厳しい判定を採用し、同順位なら残量の少ない窓を代表にする。
 
+ワーカー名は 1〜40 文字の英数字、`.`、`_`、`-` を使う。`config --json` は表示順を `routing.worker_order` にも出力する。`config --set-json` では `routing.workers` に `{"name": ..., "windows": [...]}` の配列も使え、配列の順序が優先される。オブジェクト形式では `worker_order` で順序を指定できる。
+
 ### 判定
 
 | 判定 | 意味と条件 |
@@ -135,18 +140,40 @@ argon = ["gemini:argon"]
 .venv/bin/quota-canvas routing check gemini          # 1 ワーカーを判定
 .venv/bin/quota-canvas routing check gemini --json   # JSON で表示
 .venv/bin/quota-canvas routing burn                  # 有効な使い切りモードを一覧
+.venv/bin/quota-canvas routing burn --json           # 一覧を JSON で表示
 .venv/bin/quota-canvas routing burn gemini on        # 本日 23:59 まで有効
 .venv/bin/quota-canvas routing burn gemini on --until 18:00  # HH:MM または ISO 8601
 .venv/bin/quota-canvas routing burn gemini off       # 解除
+.venv/bin/quota-canvas routing hook                  # SessionStart 用の JSON
 ```
 
 `line` / `check` は `~/Library/Application Support/quota-canvas/status.json` を読み、サービスから取得しない。`run` が更新する `status.json` には有効時に `routing` とその `line` が書かれる。`line` は常に終了コード 0、無効時は無出力。`check` は `stop` で 3、それ以外は 0。通常は `stop` / `reserve` / `unknown` の注意を標準エラーに出し、`go` / `boost` は無出力。`--json` では判定を標準出力に出し、終了コードは同じ。無効時も無出力で 0。無効な名前は 2（有効な名前は既知のプロバイダ名または設定したワーカー名）。`QUOTA_GATE_FORCE=1` は `check` を無条件で通す。`--status PATH` / `QUOTA_STATUS_PATH` で主ファイル、`--fallback-status PATH` / `QUOTA_STATUS_FALLBACK` で主が使えないときの予備を指定できる。
 
-使い切りモードは期限内の `reserve` / `go` / `boost` を `boost` にするが、`stop` / `unknown` は変えない。状態は同ディレクトリの `routing-burn.json` に保存する。ワーカーを明示した場合、`burn` で指定できるのはその名前のみ。
+使い切りモードは期限内の `reserve` / `go` / `boost` を `boost` にするが、`stop` / `unknown` は変えない。状態は同ディレクトリの `routing-burn.json` に保存する。ワーカーを明示した場合、`on` で指定できるのはその名前のみ。設定から削除した名前でも、有効な使い切りモードが残っていれば `off` で解除できる。`--until` に HH:MM で過去の時刻を指定すると翌日のその時刻、ISO 8601 で過去を指定するとエラー（終了コード 2）。`burn --json` は一覧または変更後の有効な設定を JSON で返す。
+
+`hook` は `line` と同じデータを読み、判定と短い振り分けルールを `additionalContext` を含む 1 行の JSON で出す。データがない・古い・壊れている場合は判定できない旨だけを出す。無効時、ワーカーが 0 件のとき、設定や判定に問題があるときは無出力で、常に終了コード 0。`--event NAME` で JSON のイベント名を変更でき、既定は `SessionStart`。
 
 ### エージェントでの利用例
 
-Claude Code の `settings.json` に次を追加すると、SessionStart 時の標準出力がモデルのコンテキストに入る。`/path/to/quota-canvas` はこのリポジトリの実際の絶対パスに置き換える。既存の hooks がある場合は統合する。詳細は [Claude Code の hooks リファレンス](https://code.claude.com/docs/en/hooks)を参照。
+同梱の [quota-canvas-routing プラグイン](plugins/quota-canvas-routing/README.md) は、Claude Code / Codex の SessionStart で判定と振り分けルールを文脈に渡す。macOS でエンジンをインストール・常駐させ、上記のように routing を有効にしてからインストールする。
+
+Claude Code 内で:
+
+```text
+/plugin marketplace add digimaga/quota-canvas
+/plugin install quota-canvas-routing@quota-canvas
+```
+
+Codex では:
+
+```bash
+codex plugin marketplace add digimaga/quota-canvas
+codex plugin add quota-canvas-routing@quota-canvas
+```
+
+Codex はフックを信頼するまで実行しない。`codex exec` などでは確認も出ずに飛ばされるため、インストール後に対話の Codex で信頼する。更新でフックの中身が変わった場合も同様。フックは `QUOTA_CANVAS_BIN`、PATH、`~/dev/quota-canvas/.venv/bin/quota-canvas` の順に実行ファイルを探す。見つからない場合や routing が無効な場合は無出力で、セッション開始を止めない。
+
+補足として、Claude Code の `settings.json` に次を追加すれば、プラグインを使わず判定の 1 行だけを文脈に入れられる。`/path/to/quota-canvas` はこのリポジトリの実際の絶対パスに置き換え、既存の hooks があれば統合する。詳細は [Claude Code の hooks リファレンス](https://code.claude.com/docs/en/hooks)を参照。
 
 ```json
 {

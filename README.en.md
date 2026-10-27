@@ -76,6 +76,8 @@ See [docs/app-contract.md](docs/app-contract.md) for menu bar app integration. O
 
 [app/](app/) contains QuotaCanvas.app, which displays engine status, recommendations and a screen preview, and provides settings, pause and notifications. With Swift 6.2 or later and macOS 14 or later, run `cd app && ./scripts/build.sh` to build `app/build/QuotaCanvas.app`. See [app/README.md](app/README.md).
 
+The Routing settings tab enables routing, sets the remaining quota floor and data freshness, shows current verdicts, toggles burn mode, and edits and reorders workers and their windows. It also provides copy buttons for the Claude Code / Codex plugin installation commands.
+
 ### Credentials
 
 - Claude reads Keychain `Claude Code-credentials`, Codex reads `~/.codex/auth.json`, and Grok reads `~/.grok/auth.json`. GLM checks Keychain `quota-canvas/glm`, then `ZAI_API_KEY`, `~/.config/glm-run/zai_api_key`, and `~/.dsh/.credentials.yaml`. A key saved with `set-key glm` takes priority.
@@ -86,6 +88,7 @@ See [docs/app-contract.md](docs/app-contract.md) for menu bar app integration. O
 
 - Eight days of history are stored in `~/Library/Application Support/quota-canvas/history.jsonl`, for daily bar charts and the last 24 hours' rate. Days before history began show “?”.
 - Pace prediction blends the whole-window average and recent rate equally. Reaching 100% before reset means over pace; projected use of at least 92% at reset is tight, at least 70% is on track, and less is spare. Less than 3% elapsed and less than 5% used is fresh. If usage rose by at least 1% in the last two hours, the rate is at least 1.5 times the blended rate, and it would exhaust the quota before reset, yellow advice shows the projected exhaustion time. Advice also mentions another window of the same service, such as a five-hour window, if it runs out first. Wording is determined by `advice_text()` in `src/quotacanvas/render.py`.
+- The English display labels the spare state `Spare` and the tight state `Maxing out`.
 - On each reset, the final usage is saved in `periods.jsonl` (the latest 20 per window) and the next period's card shows the previous remaining amount.
 - The header and `pick` recommend a service to use now. The score is the amount projected to expire unused × window length ÷ time until reset. Services that are over pace, below 5% remaining, failing to fetch, or waiting for reset are excluded; the score is halved when a window shorter than a day has less than 20% remaining and multiplied by 1.5 for a Codex reset credit expiring within 24 hours. If `status.json` is absent or more than 20 minutes old, `pick` fetches usage once without sending anything to the screen.
 
@@ -113,6 +116,8 @@ argon = ["gemini:argon"]
 
 Each worker is a list of window IDs; a trailing `*` matches a prefix. Configuration order determines `routing line` order. Breakdown windows (`part_of`) are excluded. If `[routing.workers]` is absent or empty, each fetched provider becomes one worker containing all its independent windows. The default `gemini` worker also includes Argon and Claude / GPT through Antigravity; define workers explicitly to split them. The worst verdict among a worker's matched windows wins; ties use the window with less remaining quota.
 
+Worker names use 1–40 ASCII letters, digits, `.`, `_`, or `-`. `config --json` also returns the display order in `routing.worker_order`. `config --set-json` accepts `routing.workers` as an array of `{"name": ..., "windows": [...]}` objects, whose order takes priority; for an object, `worker_order` can specify the order.
+
 ### Verdicts
 
 | Verdict | Meaning and conditions |
@@ -135,18 +140,40 @@ The default freshness limit is 20 minutes (`stale_minutes`). An old `fetched_at`
 .venv/bin/quota-canvas routing check gemini          # check one worker
 .venv/bin/quota-canvas routing check gemini --json   # JSON output
 .venv/bin/quota-canvas routing burn                  # list active burn modes
+.venv/bin/quota-canvas routing burn --json           # list as JSON
 .venv/bin/quota-canvas routing burn gemini on        # enable until 23:59 today
 .venv/bin/quota-canvas routing burn gemini on --until 18:00  # HH:MM or ISO 8601
 .venv/bin/quota-canvas routing burn gemini off       # disable
+.venv/bin/quota-canvas routing hook                  # JSON for SessionStart
 ```
 
 `line` and `check` read `~/Library/Application Support/quota-canvas/status.json`; they do not fetch usage from services. When enabled, `run` writes `routing`, including its `line`, to `status.json`. `line` always exits 0 and is silent when disabled. `check` exits 3 for `stop` and 0 otherwise. Normally, `stop` / `reserve` / `unknown` print a note to stderr, while `go` / `boost` are silent. With `--json`, the verdict is printed to stdout with the same exit codes. It is also silent and exits 0 when disabled. An invalid name exits 2; valid names are known provider names or configured worker names. `QUOTA_GATE_FORCE=1` bypasses `check`. Use `--status PATH` / `QUOTA_STATUS_PATH` for the primary file and `--fallback-status PATH` / `QUOTA_STATUS_FALLBACK` for a backup when the primary cannot be used.
 
-While active, burn mode turns `reserve` / `go` / `boost` into `boost`, but leaves `stop` and `unknown` unchanged. Its state is saved in `routing-burn.json` in the same directory. When workers are explicitly configured, `burn` accepts only their names.
+While active, burn mode turns `reserve` / `go` / `boost` into `boost`, but leaves `stop` and `unknown` unchanged. Its state is saved in `routing-burn.json` in the same directory. When workers are explicitly configured, `on` accepts only their names. An active entry can still be cleared with `off` after its name has been removed from the configuration. A past `--until` time in HH:MM form means that time tomorrow; a past ISO 8601 time is an error (exit code 2). `burn --json` returns the active entries as JSON for both listing and after a change.
+
+`hook` reads the same data as `line` and prints one JSON line containing `additionalContext` with the verdict and short routing rules. If the data is missing, stale, or broken, it reports only that the verdict is unavailable. It prints nothing when disabled, when there are no workers, or when configuration or evaluation fails, and always exits 0. `--event NAME` changes the event name in the JSON; the default is `SessionStart`.
 
 ### Using routing with an agent
 
-Add the following to Claude Code's `settings.json` to include SessionStart stdout in the model's context. Replace `/path/to/quota-canvas` with the actual absolute path to this repository and merge with existing hooks if necessary. See the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks).
+The bundled [quota-canvas-routing plugin](plugins/quota-canvas-routing/README.md) adds the verdict and routing rules to Claude Code / Codex context at SessionStart. On macOS, install and run the engine and enable routing as above, then install the plugin.
+
+In Claude Code:
+
+```text
+/plugin marketplace add digimaga/quota-canvas
+/plugin install quota-canvas-routing@quota-canvas
+```
+
+For Codex:
+
+```bash
+codex plugin marketplace add digimaga/quota-canvas
+codex plugin add quota-canvas-routing@quota-canvas
+```
+
+Codex does not run the hook until it is trusted. Commands such as `codex exec` silently skip untrusted hooks, so trust it in an interactive Codex session after installation and again if a plugin update changes the hook. The hook looks for the executable in `QUOTA_CANVAS_BIN`, then PATH, then `~/dev/quota-canvas/.venv/bin/quota-canvas`. If it cannot find it or routing is disabled, it prints nothing and does not block session startup.
+
+Alternatively, add the following to Claude Code's `settings.json` to include only the one-line verdict in the model's context without the plugin. Replace `/path/to/quota-canvas` with the actual absolute path to this repository and merge with existing hooks if necessary. See the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks).
 
 ```json
 {
