@@ -18,7 +18,8 @@ from quotacanvas import i18n
 from quotacanvas.models import (Pace, PaceStatus, ProviderUsage, ResetCredit,
                                 Window)
 from quotacanvas.pacing import compute_pace
-from quotacanvas.render import (PanelSpec, advice_text, render, render_error)
+from quotacanvas.render import (PanelSpec, _fmt_clock, _fmt_dt, _fmt_dt_short,
+                                _fmt_time_short, advice_text, render, render_error)
 
 NOW = datetime(2026, 10, 24, 9, 0, 0, tzinfo=timezone.utc)
 NOW_L = NOW.astimezone()
@@ -134,6 +135,35 @@ def test_en_advice_texts_have_no_japanese():
     assert len(texts) == 140   # 全 7 ステータス × 2 枠 × 5 状態 × compact 2
     leaked = sorted({s for s in texts if _has_japanese(s)})
     assert leaked == [], "en の advice に日本語が混ざっている: %s" % leaked
+
+
+def test_dates_follow_display_language(monkeypatch):
+    monkeypatch.setattr("quotacanvas.render._local", lambda dt: dt)
+    monkeypatch.setattr(i18n, "_current", "en")
+    dt = datetime(2026, 10, 30, 3, 45, tzinfo=timezone.utc)
+    assert _fmt_clock(dt) == _fmt_dt(dt) == "Fri, Oct 30 03:45"
+    assert _fmt_dt_short(dt) == "Oct 30 03:45"
+    assert _fmt_time_short(dt, dt - timedelta(days=1)) == "Oct 30 03:45"
+    assert _fmt_time_short(dt, dt) == "03:45"
+    assert _fmt_dt(datetime(2026, 11, 7, 3, 45)) == "Sat, Nov 7 03:45"
+    assert [_fmt_dt_short(datetime(2026, month, 1)).split()[0]
+            for month in range(1, 13)] == [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
+                "Sep", "Oct", "Nov", "Dec"]
+    i18n.set_language("ja")
+    assert _fmt_clock(dt) == _fmt_dt(dt) == "10/30 (金) 03:45"
+    assert _fmt_dt_short(dt) == "10/30 03:45"
+
+
+def test_en_status_and_advice_wording(monkeypatch):
+    monkeypatch.setattr(i18n, "_current", "en")
+    assert i18n.t("render.badge.spare") == "Spare"
+    assert i18n.t("render.badge.tight") == "Maxing out"
+    assert i18n.t("render.badge_short.fresh") == "Spare"
+    assert i18n.t("render.badge_short.tight") == "Maxing"
+    assert i18n.t("render.advice.compact_per_day", pct=6) == "up to 6%/day"
+    assert i18n.t("render.advice.exhausted_reset", span="3h") == \
+        "Limit hit · resets in 3h"
 
 
 def test_ja_advice_texts_are_japanese_not_keys():

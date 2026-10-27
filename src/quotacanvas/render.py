@@ -103,6 +103,8 @@ def _brand_color(colors, provider):
 # 描画時に言語が決まる文字列はモジュール読み込み時に確定させない:
 # 定数は文言キーだけ持ち、描画時に t() で解決する
 _WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug",
+           "sep", "oct", "nov", "dec")
 
 
 def _weekday(dt):
@@ -338,16 +340,15 @@ def _local(dt):
 
 
 def _fmt_clock(dt):
-    """Header style: 10/24 (土) 20:35"""
-    l = _local(dt)
-    return "%d/%d (%s) %02d:%02d" % (l.month, l.day, _weekday(l),
-                                     l.hour, l.minute)
+    """Header date and time in the display language."""
+    return _fmt_dt(dt)
 
 
 def _fmt_dt(dt):
     l = _local(dt)
-    return "%d/%d (%s) %02d:%02d" % (l.month, l.day, _weekday(l),
-                                     l.hour, l.minute)
+    return t("render.date.full", weekday=_weekday(l),
+             month=t("render.month." + _MONTHS[l.month - 1]), day=l.day,
+             hour=l.hour, minute=l.minute)
 
 
 def _fmt_span(td):
@@ -404,7 +405,8 @@ def _tz_label(now):
 def _fmt_dt_short(dt):
     """10/30 03:45 (曜日なしの短い形、コンパクト表示用)"""
     l = _local(dt)
-    return "%d/%d %02d:%02d" % (l.month, l.day, l.hour, l.minute)
+    return t("render.date.short", month=t("render.month." + _MONTHS[l.month - 1]),
+             day=l.day, hour=l.hour, minute=l.minute)
 
 
 def _fmt_time_short(dt, now=None):

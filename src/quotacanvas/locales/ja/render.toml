@@ -14,6 +14,24 @@ fri = "金"
 sat = "土"
 sun = "日"
 
+[month]
+jan = "1"
+feb = "2"
+mar = "3"
+apr = "4"
+may = "5"
+jun = "6"
+jul = "7"
+aug = "8"
+sep = "9"
+oct = "10"
+nov = "11"
+dec = "12"
+
+[date]
+full = "{month}/{day} ({weekday}) {hour:02d}:{minute:02d}"
+short = "{month}/{day} {hour:02d}:{minute:02d}"
+
 [badge]
 over = "ペース超過"
 exhausted = "上限到達"
