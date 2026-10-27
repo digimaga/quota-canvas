@@ -52,4 +52,10 @@ Codex はフックを信頼（trust）するまで実行しません。信頼し
 quota-canvas routing check <ワーカー名>
 ```
 
-使い切りのときだけ exit 3 になります。ラッパーを `quota-canvas routing check <名前> || exit 3` のようにしておくと、stop のワーカーを起こさずに済みます（`QUOTA_GATE_FORCE=1` で無視）。
+使い切りのときだけ exit 3 になります。ラッパーでは終了コード 3 のときだけ停止します（`QUOTA_GATE_FORCE=1` で無視）。`set -e` が有効な場合も判定できる書き方です。
+
+```sh
+rc=0
+quota-canvas routing check <名前> || rc=$?
+if [ "$rc" -eq 3 ]; then exit 3; fi
+```

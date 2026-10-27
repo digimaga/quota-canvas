@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/session-start.sh\"",
+            "command": "bash \"${PLUGIN_ROOT}/scripts/session-start.sh\"",
             "timeout": 10
           }
         ]
