@@ -1075,3 +1075,97 @@ def test_routing_workers_empty_name_raises():
     # 空の名前は既存の workers_required (テーブルの形) で落とす
     with pytest.raises(ConfigError):
         config_from_dict({"routing": {"workers": {"": ["glm:5h"]}}})
+
+
+# --- routing.workers の順番 (config --json の worker_order / --set-json の配列形式)
+
+def test_config_json_carries_worker_order():
+    # JSON のオブジェクトはキー順を保てない (アプリの JSONSerialization が並べ替える)
+    # ため、config --json は表示順を worker_order でも返す
+    cfg = config_from_dict({"routing": {"workers": {"zeta": ["glm:5h"],
+                                                    "alpha": ["codex:*"]}}})
+    data = config_to_dict(cfg)
+    assert data["routing"]["worker_order"] == ["zeta", "alpha"]
+    assert data["routing"]["workers"] == {"zeta": ["glm:5h"], "alpha": ["codex:*"]}
+
+
+def test_set_json_accepts_worker_array():
+    # アプリは [{name, windows}] の配列で送る (配列の順が line の表示順になる)
+    cfg = config_from_dict({"routing": {"workers": [
+        {"name": "zeta", "windows": ["glm:5h"]},
+        {"name": "alpha", "windows": ["codex:*"]},
+    ]}})
+    assert list(cfg.routing.workers) == ["zeta", "alpha"]
+    assert config_to_dict(cfg)["routing"]["worker_order"] == ["zeta", "alpha"]
+
+
+def test_set_json_empty_worker_array_means_default():
+    # 空配列 = ワーカーなし (取得できているサービスごとの既定ワーカー)
+    cfg = config_from_dict({"routing": {"workers": []}})
+    assert cfg.routing.workers == {}
+    assert config_to_dict(cfg)["routing"]["worker_order"] == []
+
+
+def test_worker_order_reorders_dict_form():
+    # dict 形式 + worker_order ならその順に並べる (order 外は名前順で後ろ)
+    cfg = config_from_dict({"routing": {
+        "workers": {"a": ["glm:5h"], "b": ["codex:*"], "c": ["claude:weekly"]},
+        "worker_order": ["c", "b"],
+    }})
+    assert list(cfg.routing.workers) == ["c", "b", "a"]
+
+
+def test_worker_order_bad_type_raises():
+    with pytest.raises(ConfigError):
+        config_from_dict({"routing": {"workers": {"a": ["glm:5h"]},
+                                      "worker_order": "a"}})
+
+
+def test_worker_order_checked_with_array_form():
+    # 配列形式の workers と一緒に来ても worker_order の型は検査する
+    with pytest.raises(ConfigError):
+        config_from_dict({"routing": {"workers": [{"name": "a", "windows": ["glm:5h"]}],
+                                      "worker_order": "a"}})
+    # 正しければ配列の順を優先し、worker_order は無視
+    cfg = config_from_dict({"routing": {"workers": [
+        {"name": "zeta", "windows": ["glm:5h"]},
+        {"name": "alpha", "windows": ["codex:*"]},
+    ], "worker_order": ["alpha"]}})
+    assert list(cfg.routing.workers) == ["zeta", "alpha"]
+
+
+def test_worker_dict_strip_duplicate_raises():
+    # strip 後に重複する dict キー ("a" と " a ") も workers_duplicate で落とす
+    with pytest.raises(ConfigError) as ei:
+        config_from_dict({"routing": {"workers": {"a": ["glm:5h"], " a ": ["codex:*"]}}})
+    assert "重複" in str(ei.value) or "duplicate" in str(ei.value)
+
+
+def test_worker_array_bad_entry_raises():
+    with pytest.raises(ConfigError):  # windows が無い
+        config_from_dict({"routing": {"workers": [{"name": "a"}]}})
+    with pytest.raises(ConfigError):  # オブジェクトですらない
+        config_from_dict({"routing": {"workers": ["a"]}})
+    with pytest.raises(ConfigError):  # 名前が規則外
+        config_from_dict({"routing": {"workers": [
+            {"name": "has space", "windows": ["glm:5h"]}]}})
+
+
+def test_worker_array_duplicate_name_raises():
+    with pytest.raises(ConfigError) as ei:
+        config_from_dict({"routing": {"workers": [
+            {"name": "a", "windows": ["glm:5h"]},
+            {"name": "a", "windows": ["codex:*"]},
+        ]}})
+    assert "重複" in str(ei.value) or "duplicate" in str(ei.value)
+
+
+def test_worker_array_saves_and_keeps_order(tmp_path):
+    # TOML に保存して読み戻しても順番は保つ
+    cfg = config_from_dict({"routing": {"workers": [
+        {"name": "zeta", "windows": ["glm:5h"]},
+        {"name": "alpha", "windows": ["codex:*"]},
+    ]}})
+    path = save_config(cfg, tmp_path / "config.toml")
+    cfg2 = load_config(path)
+    assert list(cfg2.routing.workers) == ["zeta", "alpha"]

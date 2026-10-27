@@ -170,6 +170,80 @@ struct ConfigDocument {
         object["providers"] = providers
     }
 
+    // MARK: - routing（振り分け判定）
+
+    /// routing.workers の 1 件ぶん。配列で持つ（順番が `routing line` の表示順になる）。
+    struct RoutingWorker: Equatable {
+        var name: String
+        var windows: [String]
+    }
+
+    private var routing: [String: Any] {
+        get { object["routing"] as? [String: Any] ?? [:] }
+        set { object["routing"] = newValue }
+    }
+
+    /// 振り分け判定を使うか（既定オフ）。
+    var routingEnabled: Bool {
+        get { routing["enabled"] as? Bool ?? false }
+        set { var r = routing; r["enabled"] = newValue; routing = r }
+    }
+
+    /// 残り % がこの下限未満のワーカーは stop（既定 5）。
+    var routingFloorPercent: Double {
+        get { (routing["floor_percent"] as? NSNumber)?.doubleValue ?? 5 }
+        set {
+            var r = routing
+            let rounded = newValue.rounded()
+            // 整数値なら整数のまま送る（TOML に 5.0 と書かれないように）
+            r["floor_percent"] = newValue == rounded ? Int(rounded) : newValue
+            routing = r
+        }
+    }
+
+    /// fetched_at がこの分数より古い窓を含むワーカーは stale（既定 20）。
+    var routingStaleMinutes: Int {
+        get { (routing["stale_minutes"] as? NSNumber)?.intValue ?? 20 }
+        set { var r = routing; r["stale_minutes"] = newValue; routing = r }
+    }
+
+    /// ワーカーの一覧（routing.workers）。
+    /// 読み込み: エンジンは名前 → 窓 id 配列のオブジェクト + 表示順の `worker_order`
+    /// で返す（JSONSerialization はオブジェクトのキー順を保てないため）。順番は
+    /// worker_order のとおり、無ければ名前順。
+    /// 書き込み: 順番を運べる `[{"name": ..., "windows": [...]}]` の配列形式で送る
+    /// （worker_order はもう不要なので取り除く）。
+    var routingWorkers: [RoutingWorker] {
+        get {
+            let r = routing
+            if let arr = r["workers"] as? [[String: Any]] {
+                return arr.compactMap { item in
+                    guard let name = item["name"] as? String else { return nil }
+                    let ids = (item["windows"] as? [Any])?.compactMap { $0 as? String } ?? []
+                    return RoutingWorker(name: name, windows: ids)
+                }
+            }
+            guard let dict = r["workers"] as? [String: Any] else { return [] }
+            let order = r["worker_order"] as? [String] ?? []
+            var workers: [RoutingWorker] = []
+            for (name, value) in dict {
+                let ids = (value as? [Any])?.compactMap { $0 as? String } ?? []
+                workers.append(RoutingWorker(name: name, windows: ids))
+            }
+            return workers.sorted { a, b in
+                let ia = order.firstIndex(of: a.name) ?? Int.max
+                let ib = order.firstIndex(of: b.name) ?? Int.max
+                return ia == ib ? a.name < b.name : ia < ib
+            }
+        }
+        set {
+            var r = routing
+            r["workers"] = newValue.map { ["name": $0.name, "windows": $0.windows] }
+            r.removeValue(forKey: "worker_order")
+            routing = r
+        }
+    }
+
     // MARK: - layout.panels
 
     struct PanelConfig {

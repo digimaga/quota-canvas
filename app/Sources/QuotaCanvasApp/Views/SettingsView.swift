@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// 設定ウィンドウ: 「サービス」「配置」「表示」の 3 タブ + 全タブ共通の下部バー。
+/// 設定ウィンドウ: 「サービス」「配置」「表示」「振り分け」の 4 タブ + 全タブ共通の下部バー。
 struct SettingsRootView: View {
     var body: some View {
         VStack(spacing: 0) {
@@ -12,6 +12,8 @@ struct SettingsRootView: View {
                     .tabItem { Label("配置", systemImage: "rectangle.split.3x1") }
                 DisplaySettingsView()
                     .tabItem { Label("表示", systemImage: "slider.horizontal.3") }
+                RoutingSettingsView()
+                    .tabItem { Label("振り分け", systemImage: "arrow.triangle.branch") }
             }
             Divider()
             SettingsRefreshBar()

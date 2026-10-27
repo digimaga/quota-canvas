@@ -334,6 +334,8 @@ def _build(data: Dict[str, Any], path: Path) -> Config:
     routing = data.get("routing")
     if routing is not None:
         _need_table(routing, "routing", path)
+        workers_value: Any = None
+        order_value: Any = None
         for key, value in routing.items():
             if key == "enabled":
                 cfg.routing.enabled = _bool(value, "routing.enabled", path)
@@ -358,10 +360,31 @@ def _build(data: Dict[str, Any], path: Path) -> Config:
                                         range="> 0", value=value))
                 cfg.routing.short_over_margin_minutes = margin
             elif key == "workers":
-                cfg.routing.workers = _worker_map(value, path)
+                workers_value = value
+            elif key == "worker_order":
+                # config --json が併せて返す表示順 (JSON のオブジェクトはキー順を
+                # 保てないため、アプリ向けに順番だけ別キーで運ぶ)
+                order_value = value
             else:
                 _unknown(path, "routing." + key)
+        if workers_value is not None:
+            cfg.routing.workers = _worker_map(workers_value, path,
+                                              order=_worker_order_list(order_value, path))
     return cfg
+
+
+def _worker_order_list(order: Any, path: Path) -> Optional[List[str]]:
+    """routing.worker_order: 表示順 (文字列の配列)。形式だけここで検査する。
+
+    配列形式の workers と一緒に来たときも検査する (正しければ配列の順を優先し、
+    worker_order は無視。dict 形式のときはこの順に並べ直す)。
+    """
+    if order is None:
+        return None
+    if not isinstance(order, list) or any(not isinstance(n, str) for n in order):
+        raise ConfigError(t("config.list_required", path=path,
+                            name="routing.worker_order", example='["glm", "codex"]'))
+    return order
 
 
 def _panels(value: Any, key: str, path: Path) -> List[Panel]:
@@ -468,28 +491,58 @@ def _skip_list(value: Any, path: Path) -> List[str]:
     return items
 
 
-def _worker_map(value: Any, path: Path) -> Dict[str, List[str]]:
+def _worker_map(value: Any, path: Path,
+                order: Optional[List[str]] = None) -> Dict[str, List[str]]:
     """routing.workers: ワーカー名 → 判定に使う窓 id の配列 (末尾 * は前方一致)。
 
+    TOML / dict 形式のほかに、app の config --set-json 用に
+    [{"name": ..., "windows": [...]}] の配列形式も受け付ける (JSON の
+    オブジェクトはキー順を保てないため、アプリは順番のある配列で送る)。
+    order (routing.worker_order、_worker_order_list で検査済みの文字列の配列) は
+    dict 形式のときその順に並べ直す (order 外の名前は名前順で後ろに回る)。
+    配列形式の順が優先なので、order が併せて来ても無視する。
     値に part_of 付きの内訳窓を書いても判定に入らない (gate 側で除外)。
     空リストは「どの窓も使わない」になってしまうのでエラーにする。
     名前は gate.WORKER_NAME_RE (1 行の安全な短い名前) に限定する。判定の 1 行は
-    SessionStart フックで AI の文脈に入るため。
+    SessionStart フックで AI の文脈に入るため (strip 前後で重複する名前も
+    workers_duplicate で落とす)。
     """
-    if not isinstance(value, dict) or any(not isinstance(k, str) or not k.strip()
-                                          for k in value):
-        raise ConfigError(t("config.workers_required", path=path, value=value))
     from .gate import WORKER_NAME_RE  # 遅 import: gate は TYPE_CHECKING で config を参照
-    out: Dict[str, List[str]] = {}
-    for name, ids in value.items():
-        if not WORKER_NAME_RE.match(name.strip()):
+
+    def _entry(name: Any, ids: Any) -> Tuple[str, List[str]]:
+        if not isinstance(name, str) or not WORKER_NAME_RE.match(name.strip()):
             raise ConfigError(t("config.workers_bad_name", path=path,
-                                name=name.strip()))
+                                name=name if isinstance(name, str) else name))
         items = _windows_list(ids, "routing.workers.%s" % name.strip(), path,
                               example='["glm:5h", "glm:weekly"] または ["grok:*"]')
         if not items:
             raise ConfigError(t("config.workers_empty", path=path, name=name.strip()))
-        out[name.strip()] = items
+        return name.strip(), items
+
+    out: Dict[str, List[str]] = {}
+    if isinstance(value, list):
+        # アプリ (config --set-json) 用の配列形式。順番が line の表示順になる。
+        for i, item in enumerate(value):
+            if not isinstance(item, dict) or "name" not in item or "windows" not in item:
+                raise ConfigError(t("config.workers_entry_required", path=path,
+                                    index=i, value=item))
+            name, items = _entry(item["name"], item["windows"])
+            if name in out:
+                raise ConfigError(t("config.workers_duplicate", path=path, name=name))
+            out[name] = items
+        return out
+    if not isinstance(value, dict) or any(not isinstance(k, str) or not k.strip()
+                                          for k in value):
+        raise ConfigError(t("config.workers_required", path=path, value=value))
+    for name, ids in value.items():
+        stripped, items = _entry(name, ids)
+        if stripped in out:  # strip 後に重複するキー ("a" と " a " など)
+            raise ConfigError(t("config.workers_duplicate", path=path, name=stripped))
+        out[stripped] = items
+    if order is not None:
+        ranked = {n: i for i, n in enumerate(order)}
+        out = dict(sorted(out.items(),
+                          key=lambda kv: (ranked.get(kv[0], len(ranked)), kv[0])))
     return out
 
 
@@ -878,7 +931,10 @@ def config_to_dict(cfg: Config) -> Dict[str, Any]:
             "floor_hours": cfg.routing.floor_hours,
             "stale_minutes": cfg.routing.stale_minutes,
             "short_over_margin_minutes": cfg.routing.short_over_margin_minutes,
+            # JSON のオブジェクトはキー順を保てない (アプリの JSONSerialization が
+            # 並べ替える) ため、line の表示順は worker_order でも運ぶ
             "workers": {name: list(ids) for name, ids in cfg.routing.workers.items()},
+            "worker_order": list(cfg.routing.workers),
         },
     }
 

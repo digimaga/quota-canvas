@@ -13,7 +13,7 @@ import tomllib
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PIL import Image
 
@@ -773,13 +773,24 @@ def _cmd_routing_hook(args, cfg: Config) -> int:
     return 0
 
 
+def _burn_payload(active: Dict[str, datetime]) -> Dict[str, Any]:
+    """routing burn --json の応答: 有効な使い切りモードの一覧 (名前順)。"""
+    return {"burn": [{"name": name, "until": active[name].isoformat()}
+                     for name in sorted(active)]}
+
+
 def _cmd_routing_burn(args, cfg: Config) -> int:
     """routing burn: 使い切りモード。期限内はそのワーカーの reserve / go / boost を
-    boost とみなす (stop と unknown はそのまま)。"""
+    boost とみなす (stop と unknown はそのまま)。--json のときは一覧も on / off の
+    実行後も、有効なエントリを {"burn": [{"name", "until"}]} の形で出す
+    (--json なしのテキスト出力は従来どおり)。"""
     lang = current_language()
     now = gate.now_local()
     if not args.name:
         active = gate.load_burn(gate.BURN_PATH, now)
+        if args.json:
+            _print_json(_burn_payload(active))
+            return 0
         if not active:
             print(t("routing.burn.none"))
         for name in sorted(active):
@@ -788,24 +799,41 @@ def _cmd_routing_burn(args, cfg: Config) -> int:
         return 0
     action = args.action
     known = set(cfg.routing.workers) if cfg.routing.workers else set(gate.KNOWN_PROVIDERS)
-    if args.name not in known or action not in ("on", "off"):
-        print(t("routing.usage"), file=sys.stderr)
+    # off は workers / KNOWN_PROVIDERS に無い名前でも、burn 状態にその名前があれば
+    # 解除できる (設定から名前を消したあとに残ったエントリを掃除できるように。
+    # on の既知チェックはそのまま)。
+    active = gate.load_burn(gate.BURN_PATH, now)
+    valid = action in ("on", "off") and (args.name in known
+                                         or (action == "off" and args.name in active))
+    if not valid:
+        # 無効な引数は --json の有無に関係なく exit 2 (--json のときは {"error"} を出す)
+        if args.json:
+            print(json.dumps({"error": t("routing.usage")}, ensure_ascii=False))
+        else:
+            print(t("routing.usage"), file=sys.stderr)
         return 2
     until = now.replace(hour=23, minute=59, second=0, microsecond=0)
     if action == "on" and args.until:
         parsed = gate.parse_until(args.until, now)
         if parsed is None:
-            print(t("routing.burn.bad_until"), file=sys.stderr)
+            if args.json:
+                print(json.dumps({"error": t("routing.burn.bad_until")}, ensure_ascii=False))
+            else:
+                print(t("routing.burn.bad_until"), file=sys.stderr)
             return 2
         until = parsed
     if action == "on":
         gate.store_burn(gate.BURN_PATH, args.name, until, now)
-        print(t("routing.burn.set", host=os.uname().nodename.split(".")[0],
-                name=args.name, dt=until.strftime("%m/%d %H:%M")))
+        if not args.json:
+            print(t("routing.burn.set", host=os.uname().nodename.split(".")[0],
+                    name=args.name, dt=until.strftime("%m/%d %H:%M")))
     else:
         gate.clear_burn(gate.BURN_PATH, args.name, now)
-        print(t("routing.burn.cleared", host=os.uname().nodename.split(".")[0],
-                name=args.name))
+        if not args.json:
+            print(t("routing.burn.cleared", host=os.uname().nodename.split(".")[0],
+                    name=args.name))
+    if args.json:
+        _print_json(_burn_payload(gate.load_burn(gate.BURN_PATH, now)))
     return 0
 
 
@@ -947,6 +975,8 @@ def main(argv=None) -> int:
                         help='"on" or "off"')
     p_burn.add_argument("--until", default=None, metavar="HH:MM|ISO",
                         help="burn until this time (default: today 23:59)")
+    p_burn.add_argument("--json", action="store_true",
+                        help='print the active entries as {"burn": [...]} as JSON')
     p_hook = routing_subs.add_parser("hook", parents=[routing_common],
                                      help=t("cli.help.routing_hook"))
     p_hook.add_argument("--event", default="SessionStart", metavar="NAME",

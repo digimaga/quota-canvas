@@ -212,11 +212,16 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `pacing` is always `{"tight", "on_track"}` plus an optional `sleep` object
   (`{"start", "end", "skip", "advice"}`, absent when unset) — like `display.night`, unset
   sections are absent, so the app's copy-and-send-back round trip preserves keys it does
-  not edit.
+  not edit. `routing` additionally carries `worker_order` (array of worker names): JSON
+  objects have no key order (the app's JSONSerialization reshuffles them), so the
+  `[routing.workers]` order — which is the `routing line` display order — travels there too.
 - `quota-canvas config --set-json` — reads a full config object (same shape) on stdin,
   validates it, writes `~/.config/quota-canvas/config.toml`. The running engine watches the
   file's mtime once a second and picks it up within 1–2 seconds (redraw only, no refetch).
-  Prints the effective config back.
+  Prints the effective config back. `routing.workers` may also arrive as an array of
+  `{"name": …, "windows": […]}` objects (the app's form: an array keeps the order that
+  JSON objects cannot), and dict-form `workers` are reordered by `worker_order` when
+  present; the TOML is written in that order.
 - `quota-canvas refresh [--json]` — creates `refresh-request` (above) and exits; it does
   not check whether the engine is running. With `--json` it prints `{"requested": true}`.
 - `quota-canvas pick [--json]` — which service to use right now, as one line (the same
@@ -254,6 +259,10 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `boost` (display and judgment; `stop`/`unknown` stay). `stop`/`unknown` are never
   lifted. State lives in `~/Library/Application Support/quota-canvas/routing-burn.json`;
   expired entries are purged on write. `quota-canvas routing burn` lists active entries.
+  With `--json`, both the list and `on|off` print the active entries after the operation
+  as `{"burn": [{"name": "codex", "until": "2026-10-24T23:59:00+09:00"}, …]}` (name
+  order); on failure it exits 2 with `{"error": …}` on stdout. Without `--json` the
+  output is unchanged.
 - `quota-canvas routing hook [--event NAME]` — one line of JSON for the SessionStart hook
   of the bundled plugin (`plugins/quota-canvas-routing/`):
   `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "…"}}`
@@ -292,6 +301,10 @@ app may put into `providers.<p>.windows` (empty list = show every window).
 | `providers.claude.token_refresh` | `"cli"` \| `"off"`, default `"cli"` | Claude の OAuth トークンの自動更新。`"cli"` = 期限切れ間近 / HTTP 401/403 で `claude -p` を軽く 1 回バックグラウンド実行し、Claude Code CLI 自身にキーチェーンへ書き戻させる（30 分に 1 回まで。成功したら反映要求を出して 1 秒以内に取り直す）。`"off"` = 自動更新しない（401/403 は「トークン期限切れ（claude を一度起動してください）」のエラー表示） |
 | `providers.<p>.windows` | list of window keys, `[]` = all | サービス: checkbox per window the service reports |
 | `providers.<p>.color` | `"#RRGGBB"` or absent | サービス: theme color picker (bar fill + name dot). Absent = engine default brand color |
+| `routing.enabled` | bool（既定 `false`） | 振り分け: 「AI ワーカーの振り分け判定を使う」トグル。true で `routing line|check|hook` が判定を出し、status.json に `"routing"` が現れる |
+| `routing.floor_percent` | 0–100（既定 5） | 振り分け: 「止める下限（残り %）」Stepper。floor 適用中に残りがこれ未満のワーカーは stop |
+| `routing.stale_minutes` | 1 以上（既定 20） | 振り分け: 「古いとみなす（分）」Stepper。fetched_at がこれより古い窓を含むワーカーは stale |
+| `routing.workers` | ワーカー名 → 窓 id 配列（`config --set-json` は `[{"name", "windows"}]` の配列も可、`worker_order` でも順指定可）、空 = サービスごとの既定 | 振り分け: ワーカーエディタ（名前 + 窓 id のカンマ区切り、上下ボタンで並べ替え、「既定に戻す（サービスごと）」で空にする）。名前は `^[A-Za-z0-9._-]{1,40}$` |
 
 Strings the engine returns or draws — `advice`, `status_label`, `label`, `error`
 (in status.json and CLI `{"error"}`), panel text — are in the language chosen by

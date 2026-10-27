@@ -49,7 +49,7 @@ WinKey（~/dev/winkey-mac）と同じ方式。
   新フィールド（`recommendation` / `reset_credits` / `previous_used` / `stale_error` /
   `exhausts_at` / `burst_exhausts_at` / status `fresh`）はすべて Optional で受け、
   型が違ったり無かったりしても status 全体のデコードは壊れない（エンジンがまだ書いていない場合も表示は従来どおり）。
-- 設定（タブ 2 枚）:
+- 設定（タブ 4 枚）:
   - サービス: `detect --json` の一覧。有効トグル（最大 5 サービス）、検出状態、プラン、
     窓チェックボックス（全チェック = `[]` として保存）、`needs_key` サービスの
     SecureField + 保存/削除（`set-key`、キーは stdin 経由で引数に載せない）。
@@ -57,6 +57,27 @@ WinKey（~/dev/winkey-mac）と同じ方式。
   - 表示: ゲージ方式（remaining/used）、明るさ 0-100、夜間減光（開始/終了/明るさ）、
     通知を出す（F4）、エンジンのパス（UserDefaults、既定
     `~/dev/quota-canvas/.venv/bin/quota-canvas`）、ログイン時に起動（SMAppService.mainApp）。
+  - 振り分け: AI ワーカー振り分け判定（config.toml の `[routing]`、既定オフ）。
+    「AI ワーカーの振り分け判定を使う」トグル（`routing.enabled`）、
+    「止める下限（残り %）」Stepper（`routing.floor_percent` 0-50）と
+    「古いとみなす（分）」Stepper（`routing.stale_minutes` 5-120）。
+    「現在の判定」は status.json の `routing.workers` の一覧（判定ラベルは色付き:
+    stop=赤 / reserve=黄 / go=紫 / boost=緑 / unknown=灰、残り %、理由の短い文）。
+    行ごとの「使い切り（今日 23:59 まで）」トグルは `routing burn <名前> on|off --json`
+    を呼び、`refresh` と 2 秒後の再読込（`scheduleArtifactReload`）で status.json を
+    早めに取り直す。トグルは burn 一覧（`routing burn --json`、世代番号で古い応答を
+    捨てる）が取れるまで出ない。判定オフでも有効な burn があれば一覧と「解除」を出す。
+    「ワーカーの設定」は `routing.workers` のエディタ（名前は
+    `^[A-Za-z0-9._-]{1,40}$` をアプリ側でも検証、窓 id はカンマ区切り・末尾 `*`
+    で前方一致、上下ボタンで並べ替え）。1 文字ごとの自動保存はせず「保存」ボタン
+    （空行・不正な名前・重複・窓なしのときは無効と理由表示）と「元に戻す」。
+    行を消すのはゴミ箱と「既定に戻す（サービスごと）」（確認ダイアログ付きで
+    workers を空にする）だけ。保存は 1 本に直列化し、そのたびに `config --json`
+    を取り直して routing のキーだけを上書きして送る（他のタブの保存を壊さない）。
+    JSON のオブジェクトはキー順を保てないため、 workers は
+    `[{"name", "windows"}]` の配列で送り、読み込み時は `worker_order` の順。
+    「Claude Code / Codex への組み込み」はプラグインのインストールコマンドの
+    コピーボタン（設定ファイルは書き換えない旨の注記つき）。
   - 設定変更は `config --json` の現在値に反映して全体を `config --set-json` で保存。
     エラー JSON はアラート表示。
 - 画面プレビュー: `frame.png` を幅に合わせて縮小表示、10 秒ごとに再読込。
@@ -69,4 +90,4 @@ WinKey（~/dev/winkey-mac）と同じ方式。
 - `StatusStore.swift` — status.json の 10 秒ポーリング + ログイン時起動（SMAppService）
 - `NotificationPlanner.swift` — F4 通知の差分判定（純粋な型。前回 status → 通知リスト）
 - `NotificationCoordinator.swift` — 通知の投稿（UNUserNotificationCenter）+ 通知済みキーの保存（UserDefaults）
-- `Views/` — MenuPopoverView / SettingsView（表示タブ）/ ServiceSettingsView（サービスタブ）/ FramePreviewView
+- `Views/` — MenuPopoverView / SettingsView（表示タブ）/ ServiceSettingsView（サービスタブ）/ RoutingSettingsView（振り分けタブ）/ FramePreviewView

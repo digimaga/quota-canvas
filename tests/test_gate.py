@@ -694,7 +694,9 @@ def test_routing_config_load_and_roundtrip(tmp_path):
     assert d["routing"] == {"enabled": True, "floor_percent": 8.5, "floor_hours": 12.5, "stale_minutes": 15,
                             "short_over_margin_minutes": 12.5,
                             "workers": {"glm": ["glm:5h", "glm:weekly"],
-                                        "argon": ["gemini:argon"], "grok": ["grok:*"]}}
+                                        "argon": ["gemini:argon"], "grok": ["grok:*"]},
+                            # config --json は表示順も worker_order で返す (アプリ用)
+                            "worker_order": ["glm", "argon", "grok"]}
 
 
 def test_floor_hours_zero_roundtrip():

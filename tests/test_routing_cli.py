@@ -378,6 +378,99 @@ def test_burn_expired_entries_purged_on_write(tmp_path, burn_path):
     assert set(data) == set()
 
 
+# ------------------------------------------------------------------ burn --json
+
+
+def test_burn_json_list_empty(tmp_path):
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "--json"])
+    assert rc == 0
+    assert json.loads(out) == {"burn": []}
+
+
+def test_burn_json_on_off_and_list_share_shape(tmp_path, burn_path):
+    # on --json: 実行後の有効エントリを同じ形で出す
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "glm", "on", "--json"])
+    assert rc == 0
+    data = json.loads(out)
+    assert [e["name"] for e in data["burn"]] == ["glm"]
+    assert data["burn"][0]["until"][11:16] == "23:59"  # 既定は今日 23:59
+    assert "glm" in json.loads(burn_path.read_text(encoding="utf-8"))
+    # 一覧 --json も同じ形
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "--json"])
+    assert json.loads(out) == data
+    # off --json で消える
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "glm", "off", "--json"])
+    assert rc == 0
+    assert json.loads(out) == {"burn": []}
+    assert json.loads(burn_path.read_text(encoding="utf-8")) == {}
+
+
+def test_burn_json_list_sorted_by_name(tmp_path, burn_path):
+    _run(tmp_path, ["routing", "burn", "glm", "on"])
+    _run(tmp_path, ["routing", "burn", "codex", "on"])
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "--json"])
+    assert rc == 0
+    assert [e["name"] for e in json.loads(out)["burn"]] == ["codex", "glm"]
+
+
+def test_burn_json_unknown_name_exit2_error_json(tmp_path, burn_path):
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "nosuch", "on", "--json"])
+    assert rc == 2
+    assert "error" in json.loads(out)
+    assert not burn_path.exists()
+
+
+def test_burn_off_allows_name_absent_from_workers(tmp_path, burn_path):
+    # off は workers に無い名前でも、burn 状態にその名前があれば解除できる
+    now = datetime.now().astimezone()
+    burn_path.parent.mkdir(parents=True, exist_ok=True)
+    burn_path.write_text(json.dumps({
+        "legacy": (now + timedelta(hours=1)).isoformat(timespec="seconds"),
+    }, ensure_ascii=False), encoding="utf-8")
+    cfg = _write_config(tmp_path / "cfg.toml", workers={"glm": ["glm:5h"]})
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "legacy", "off"], config=cfg)
+    assert rc == 0 and "legacy" in out
+    assert json.loads(burn_path.read_text(encoding="utf-8")) == {}
+
+
+def test_burn_off_json_allows_burned_unknown_name(tmp_path, burn_path):
+    # --json でも同じ (実行後の一覧を同じ形で出す)
+    now = datetime.now().astimezone()
+    burn_path.parent.mkdir(parents=True, exist_ok=True)
+    burn_path.write_text(json.dumps({
+        "legacy": (now + timedelta(hours=1)).isoformat(timespec="seconds"),
+        "glm": (now + timedelta(hours=2)).isoformat(timespec="seconds"),
+    }, ensure_ascii=False), encoding="utf-8")
+    cfg = _write_config(tmp_path / "cfg.toml", workers={"glm": ["glm:5h"]})
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "legacy", "off", "--json"],
+                      config=cfg)
+    assert rc == 0
+    assert [e["name"] for e in json.loads(out)["burn"]] == ["glm"]
+    assert set(json.loads(burn_path.read_text(encoding="utf-8"))) == {"glm"}
+
+
+def test_burn_off_unknown_name_without_entry_exit2(tmp_path, burn_path):
+    # burn 状態にも無い未知名の off は従来どおり exit 2
+    cfg = _write_config(tmp_path / "cfg.toml", workers={"glm": ["glm:5h"]})
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "legacy", "off"], config=cfg)
+    assert rc == 2 and not burn_path.exists()
+
+
+def test_burn_on_still_rejects_unknown_name(tmp_path, burn_path):
+    # on の既知チェックはそのまま (workers に無い名前は exit 2)
+    cfg = _write_config(tmp_path / "cfg.toml", workers={"glm": ["glm:5h"]})
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "legacy", "on"], config=cfg)
+    assert rc == 2 and not burn_path.exists()
+
+
+def test_burn_without_json_output_unchanged(tmp_path):
+    # --json なしのテキスト出力は従来どおり
+    rc, out, _ = _run(tmp_path, ["routing", "burn"])
+    assert rc == 0 and "なし" in out and "{" not in out
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "glm", "on"])
+    assert rc == 0 and "23:59" in out and "{" not in out
+
+
 # ------------------------------------------------------------------ その他
 
 

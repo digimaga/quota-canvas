@@ -24,3 +24,5 @@ sleep_time_required = "{path}: '{name}' is required (an \"HH:MM\" time; specify 
 workers_required = "{path}: 'routing.workers' must be a table of worker name → window id list (e.g. glm = [\"glm:5h\"], got: {value!r})"
 workers_empty = "{path}: 'routing.workers.{name}' must not be an empty list (the worker would use no windows; remove it or list window ids)"
 workers_bad_name = "{path}: invalid worker name '{name}' (use up to 40 ASCII letters, digits, '.', '_' or '-')"
+workers_entry_required = "{path}: each element of the 'routing.workers' array must be an object with name and windows (index {index}; current: {value!r})"
+workers_duplicate = "{path}: duplicate worker name '{name}'"

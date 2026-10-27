@@ -24,3 +24,5 @@ sleep_time_required = "{path}: '{name}' は必須です（\"HH:MM\" 形式の時
 workers_required = "{path}: 'routing.workers' はワーカー名 → 窓 id 配列のテーブルで指定してください（例: glm = [\"glm:5h\"]、現在: {value!r}）"
 workers_empty = "{path}: 'routing.workers.{name}' に空の配列は指定できません（どの窓も使わないワーカーになってしまうため。削除するか窓 id を書いてください）"
 workers_bad_name = "{path}: ワーカー名 '{name}' は使えません（半角英数字と . _ - だけの 40 文字以内の名前にしてください）"
+workers_entry_required = "{path}: 'routing.workers' の配列の各要素は name と windows の入ったオブジェクトにしてください（{index} 番目、現在: {value!r}）"
+workers_duplicate = "{path}: ワーカー名 '{name}' が重複しています"

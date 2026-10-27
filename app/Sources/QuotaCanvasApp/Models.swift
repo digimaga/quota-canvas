@@ -20,11 +20,16 @@ struct EngineStatus: Decodable {
     /// Codex のリセット権: {provider: [{title, granted_at, expires_at}]}（expires 頇）。
     /// 1 つも無ければ省略。型が合わなければ nil。
     var resetCredits: [String: [ResetCredit]]?
+    /// 振り分け判定（[routing] enabled = true のときだけ書かれる）。無ければ nil。
+    var routing: StatusRouting?
+    /// 全窓（表示フィルタ前、part_of 付きの内訳窓も含む）。無ければ nil。
+    var windows: [StatusWindow]?
 
     enum CodingKeys: String, CodingKey {
         case updatedAtRaw = "updated_at"
         case paused, gauge, cards, errors, layout, colors
         case recommendation, resetCredits = "reset_credits"
+        case routing, windows
     }
 
     /// 旧形式の "layout": {"panels": [...]}
@@ -49,6 +54,8 @@ struct EngineStatus: Decodable {
         // F1 / リセット権も layout と同じ方針: 型が違えばそのキーだけ nil。
         recommendation = try? c.decodeIfPresent(Recommendation.self, forKey: .recommendation)
         resetCredits = try? c.decodeIfPresent([String: [ResetCredit]].self, forKey: .resetCredits)
+        routing = try? c.decodeIfPresent(StatusRouting.self, forKey: .routing)
+        windows = try? c.decodeIfPresent([StatusWindow].self, forKey: .windows)
     }
 
     var updatedAt: Date? {
@@ -206,6 +213,77 @@ struct ResetCredit: Decodable {
     var expiresAt: Date? { expiresAtRaw.flatMap(ISO8601Support.parse) }
 }
 
+// MARK: - status.json の "routing"（振り分け判定）と "windows"（全窓）
+
+/// status.json の "routing"（[routing] enabled = true のときだけ書かれる）。
+/// 無い・型が違うときは nil（status 全体のデコードは壊さない）。
+struct StatusRouting: Decodable {
+    var atRaw: String?
+    var workers: [RoutingWorkerStatus]?
+    var line: String?
+
+    enum CodingKeys: String, CodingKey { case at, workers, line }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        atRaw = try? c.decodeIfPresent(String.self, forKey: .at)
+        workers = try? c.decodeIfPresent([RoutingWorkerStatus].self, forKey: .workers)
+        line = try? c.decodeIfPresent(String.self, forKey: .line)
+    }
+
+    var at: Date? { atRaw.flatMap(ISO8601Support.parse) }
+}
+
+/// "routing.workers" の 1 ワーカーぶんの判定。どのキーも型が違えば nil。
+struct RoutingWorkerStatus: Decodable, Identifiable {
+    var name: String?
+    var verdict: String?      // stop | reserve | go | boost | unknown
+    var reason: String?       // exhausted / below_floor / over / tight / on_track / spare /
+                              // fresh / burn / stale / missing / missing_status / error / broken
+    var remaining: Double?    // 代表（一番悪い）窓の残り %
+    var resetsAtRaw: String?
+    var burnUntilRaw: String? // 使い切りモードの期限（有効なときだけ）
+    var stale: Bool?
+    var windows: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case name, verdict, reason, remaining, stale, windows
+        case resetsAtRaw = "resets_at"
+        case burnUntilRaw = "burn_until"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try? c.decodeIfPresent(String.self, forKey: .name)
+        verdict = try? c.decodeIfPresent(String.self, forKey: .verdict)
+        reason = try? c.decodeIfPresent(String.self, forKey: .reason)
+        remaining = try? c.decodeIfPresent(Double.self, forKey: .remaining)
+        resetsAtRaw = try? c.decodeIfPresent(String.self, forKey: .resetsAtRaw)
+        burnUntilRaw = try? c.decodeIfPresent(String.self, forKey: .burnUntilRaw)
+        stale = try? c.decodeIfPresent(Bool.self, forKey: .stale)
+        windows = try? c.decodeIfPresent([String].self, forKey: .windows)
+    }
+
+    var id: String { name ?? "?" }
+    var burnUntil: Date? { burnUntilRaw.flatMap(ISO8601Support.parse) }
+}
+
+/// status.json の "windows" の 1 窓ぶん（表示フィルタ前の全窓。内訳窓は part_of に親の id）。
+struct StatusWindow: Decodable, Identifiable {
+    var id: String?
+    var provider: String?
+    var partOf: String?
+
+    enum CodingKeys: String, CodingKey { case id, provider; case partOf = "part_of" }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try? c.decodeIfPresent(String.self, forKey: .id)
+        provider = try? c.decodeIfPresent(String.self, forKey: .provider)
+        partOf = try? c.decodeIfPresent(String.self, forKey: .partOf)
+    }
+}
+
 /// status.json の layout 配列の 1 要素:
 /// {"main": "claude:weekly", "subs": ["claude:weekly_fable"], "size": "large"|"small"}
 /// main は窓 ID（"provider:key"）。型が違うキーは nil にして無視する。
@@ -251,6 +329,16 @@ struct DetectWindow: Decodable, Identifiable {
     var label: String?
     var id: String { key }
     var displayLabel: String { label ?? key }
+}
+
+// MARK: - routing burn (CLI reply)
+
+/// `quota-canvas routing burn --json` の 1 エントリ（有効な使い切りモード）。
+struct RoutingBurnEntry: Decodable {
+    var name: String?
+    var until: String?   // 期限（ISO 8601）
+
+    var untilDate: Date? { until.flatMap(ISO8601Support.parse) }
 }
 
 // MARK: - error envelope ({"error": "..."})
