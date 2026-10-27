@@ -14,7 +14,7 @@ This repository is public on GitHub. Everything committed (including history) is
 
 - Never commit personal information: real names, user names (e.g. in `/Users/<name>/...`), email addresses, home or scratchpad paths, hostnames, IP addresses, serial numbers, or account IDs. Use `~`, `Path.home()`, `$HOME`, or placeholders like `example.test`.
 - Never commit secrets: API keys, OAuth tokens, cookies, keychain contents, `auth.json` / credentials files, or real `config.toml`. Tests use obvious dummy values only.
-- Never commit real usage data (`status.json`, `history.jsonl`, screenshots of the live panel). Preview images must use dummy data.
+- Never commit real usage data (`status.json`, `history.jsonl`, screenshots of the live panel). Preview images must use dummy data. Exception: the README sample images in `docs/images/` are real renders approved by the owner; replace them only when the owner asks, and check they show no account names or other personal information.
 - Commit author email must be the GitHub noreply address (`<id>+<user>@users.noreply.github.com`).
 - Keep machine-specific notes in `CLAUDE.local.md` / `AGENTS.local.md` (git-ignored), not in tracked files.
 - Before committing, check the diff for the items above (e.g. `git diff --cached | grep -nE '/Users/|@[a-z0-9-]+\.[a-z]|sk-|token'`).

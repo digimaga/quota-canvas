@@ -4,6 +4,8 @@
 
 A macOS tool that displays remaining quota and usage pace for Claude, Codex, GLM, Grok, and Gemini on a TURZX 9.2" USB screen. It consists of a Python engine and a menu bar app in `app/`.
 
+![QuotaCanvas example (remaining quota and pace for Codex, Claude, Gemini, Grok, and GLM)](docs/images/sample-en.png)
+
 ## Supported display / Where to buy
 
 TURZX 9.2-inch USB secondary screen, 1920×462 IPS. A single USB Type-C cable supplies power and data. macOS sees it as a USB device named `TURZX1.0` (VID `0x1cbe` / PID `0x0092`), not as a display. No dedicated driver is required; communication uses `libusb`.

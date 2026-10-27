@@ -4,6 +4,8 @@
 
 Claude / Codex / GLM / Grok / Gemini の利用枠の残量とペースを TURZX 9.2" USB 画面に表示する macOS 用ツール。Python エンジンと `app/` のメニューバーアプリで構成する。
 
+![QuotaCanvas の表示例（Codex・Claude・Gemini・Grok・GLM の残量とペース）](docs/images/sample-ja.png)
+
 ## 対応ディスプレイと購入先
 
 TURZX 9.2 インチ USB セカンダリースクリーン（1920×462 IPS）。USB Type-C ケーブル 1 本で給電と通信を行う。macOS のディスプレイとしては認識されず、USB 機器「TURZX1.0」（VID `0x1cbe` / PID `0x0092`）として扱う。専用ドライバーは不要で、通信には `libusb` を使う。
