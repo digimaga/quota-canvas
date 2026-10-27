@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 from pathlib import Path
 from typing import Union
 
@@ -43,6 +44,12 @@ ImageSource = Union[str, Path, Image.Image]
 
 
 def _backend():
+    override = os.environ.get("TURZX_LIBUSB")
+    if override:
+        backend = usb.backend.libusb1.get_backend(find_library=lambda _name: override)
+        if backend is None:
+            raise RuntimeError(f"Cannot load TURZX_LIBUSB: {override}")
+        return backend
     for path in _LIBUSB_CANDIDATES:
         if Path(path).exists():
             return usb.backend.libusb1.get_backend(find_library=lambda _name, p=path: p)

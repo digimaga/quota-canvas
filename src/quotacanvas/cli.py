@@ -474,6 +474,10 @@ def _effective_poll(args, cfg: Config) -> Tuple[int, int]:
 # ----------------------------------------------------------- config command
 
 def _find_example_file() -> Optional[Path]:
+    override = os.environ.get("QUOTA_CANVAS_EXAMPLE_CONFIG")
+    if override:
+        candidate = Path(override).expanduser()
+        return candidate if candidate.is_file() else None
     here = Path(__file__).resolve()
     for base in (here.parents[2], Path.cwd()):  # リポジトリ直下 / 実行ディレクトリ
         candidate = base / "config.example.toml"

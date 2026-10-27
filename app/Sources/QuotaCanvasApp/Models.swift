@@ -402,7 +402,13 @@ enum AppPaths {
 }
 
 enum AppDefaults {
-    static let enginePath = "~/dev/quota-canvas/.venv/bin/quota-canvas"
+    static let legacyEnginePath = "~/dev/quota-canvas/.venv/bin/quota-canvas"
+    static var bundledEnginePath: String? {
+        guard let resources = Bundle.main.resourceURL else { return nil }
+        let path = resources.appendingPathComponent("engine/bin/quota-canvas").path
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
+    static var enginePath: String { bundledEnginePath ?? legacyEnginePath }
     static let enginePathKey = "EnginePath"
 }
 

@@ -206,6 +206,7 @@ struct MenuPopoverView: View {
             }
 
             Button(role: .destructive) {
+                AppEngineAgent.shared.waitForPendingWork()
                 NSApp.terminate(nil)
             } label: {
                 Label("終了", systemImage: "power").frame(maxWidth: .infinity)

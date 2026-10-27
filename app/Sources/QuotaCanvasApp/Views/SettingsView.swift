@@ -25,7 +25,10 @@ struct SettingsRootView: View {
 // MARK: - 表示タブ
 
 struct DisplaySettingsView: View {
-    @AppStorage(AppDefaults.enginePathKey) private var enginePath = AppDefaults.enginePath
+    @State private var enginePathDraft = ""
+    @AppStorage(AppEngineAgent.enabledKey) private var agentEnabled = true
+    @AppStorage(AppEngineAgent.screenKey) private var agentScreen = true
+    @StateObject private var agent = AppEngineAgent.shared
     // F4: macOS 通知を出すか（UserDefaults、既定オン）
     @AppStorage(NotificationCoordinator.enabledDefaultsKey) private var notificationsOn = true
 
@@ -69,8 +72,11 @@ struct DisplaySettingsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .safeAreaInset(edge: .bottom) { Form { engineSection }.formStyle(.grouped).frame(height: 120) }
-        .task { await load() }
+        .safeAreaInset(edge: .bottom) { Form { engineSection }.formStyle(.grouped).frame(height: 220) }
+        .task {
+            enginePathDraft = UserDefaults.standard.string(forKey: AppDefaults.enginePathKey) ?? ""
+            await load()
+        }
         .alert("エラー", isPresented: Binding(
             get: { alertMessage != nil },
             set: { if !$0 { alertMessage = nil } }
@@ -206,23 +212,45 @@ struct DisplaySettingsView: View {
         Section("エンジン") {
             VStack(alignment: .leading, spacing: 4) {
                 LabeledContent("quota-canvas のパス") {
-                    TextField("~/dev/quota-canvas/.venv/bin/quota-canvas", text: $enginePath)
+                    TextField(AppDefaults.enginePath, text: $enginePathDraft)
                         .textFieldStyle(.squareBorder)
-                        .onSubmit { Task { await load() } }
+                        .onSubmit { applyEnginePath() }
                 }
                 HStack {
+                    Button("適用") { applyEnginePath() }
                     Button("規定に戻す") {
-                        enginePath = AppDefaults.enginePath
-                        Task { await load() }
+                        enginePathDraft = ""
+                        applyEnginePath()
                     }
                     Button("再読み込み") { Task { await load() } }
                     Spacer()
                 }
                 .controlSize(.small)
+                if AppDefaults.bundledEnginePath != nil {
+                    Toggle("エンジンを常駐させる", isOn: $agentEnabled)
+                        .onChange(of: agentEnabled) { _, _ in agent.reconcile() }
+                    Toggle("TURZX 画面を使う", isOn: $agentScreen)
+                        .onChange(of: agentScreen) { _, _ in agent.reconcile() }
+                    if agent.conflict {
+                        Text("既存のリポジトリ版 LaunchAgent があるため、同梱エンジンの常駐は開始しません。")
+                            .foregroundStyle(.orange)
+                    }
+                    if let error = agent.error { Text(error).foregroundStyle(.red) }
+                }
                 Text("この CLI が検出・設定・キー保存を行います。アプリはここで指定する以外の通信をしません。")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func applyEnginePath() {
+        let defaults = UserDefaults.standard
+        if enginePathDraft.isEmpty {
+            defaults.removeObject(forKey: AppDefaults.enginePathKey)
+        } else {
+            defaults.set(enginePathDraft, forKey: AppDefaults.enginePathKey)
+        }
+        agent.reconcile { Task { await load() } }
     }
 
     private var loginSection: some View {

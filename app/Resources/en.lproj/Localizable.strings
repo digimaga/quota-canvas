@@ -242,3 +242,9 @@
 "超過・枯渇は赤、余裕ありは緑。オフにすると全部白になります。" = "Over or exhausted is red; spare is green. When off, all values are white.";
 "使い切り" = "Burn";
 "判定の更新が古いか、更新時刻が不明です" = "Verdict is stale or its update time is unknown";
+"エンジンを常駐させる" = "Run the engine in the background";
+"TURZX 画面を使う" = "Use the TURZX screen";
+"既存のリポジトリ版 LaunchAgent があるため、同梱エンジンの常駐は開始しません。" = "A repository LaunchAgent already exists, so the bundled engine will not start in the background.";
+"エンジンの常駐設定に失敗しました: %@" = "Could not configure the background engine: %@";
+
+"適用" = "Apply";

@@ -1,15 +1,24 @@
 # QuotaCanvas.app（メニューバー常駐アプリ）
 
 quota-canvas エンジン（Python CLI / LaunchAgent）のフロントエンド。SwiftUI + SwiftPM、
-Command Line Tools だけでビルドできる。アプリは AI サービスや USB 画面と直接通信しない。
+配布ビルドには Command Line Tools が必要。アプリは AI サービスや USB 画面と直接通信しない。
 やり取りは `docs/app-contract.md` の CLI（`detect --json` / `config --json` /
 `config --set-json` / `set-key`）と `~/Library/Application Support/quota-canvas/` の
 `status.json`・`frame.png` の 2 ファイルのみ。
 
+## DMG からインストール
+
+Apple Silicon、macOS 14 以上で [Releases](https://github.com/digimaga/quota-canvas/releases) の DMG を開き、QuotaCanvas.app を Applications にドラッグする。Homebrew と Python は不要。ad-hoc 署名のため初回は右クリックして「開く」、または「システム設定 > プライバシーとセキュリティ」から許可する。
+
+設定の「表示」で同梱エンジンの常駐と TURZX 画面の使用を切り替える。リポジトリ版 LaunchAgent がある場合、同梱版は自動起動しない。
+
+アンインストールは、設定で「エンジンを常駐させる」をオフにしてからアプリを削除する。オフにせず削除した場合は `~/Library/LaunchAgents/com.digimaga.quota-canvas.app*.plist` の各ラベルを `launchctl bootout` で停止してから plist を削除する。
+
 ## ビルド
 
 ```sh
-cd app && ./scripts/build.sh   # → build/QuotaCanvas.app（ad-hoc 署名、起動はしない）
+cd app && ./scripts/build.sh && ./scripts/make-dmg.sh  # → build/QuotaCanvas-<version>.dmg
+# ./scripts/build.sh --no-engine  # エンジン無しの開発用ビルド
 ```
 
 Swift 6.2+ / swift-tools-version 6.0 / macOS 14 以上 / `swiftLanguageModes: [.v5]`。
@@ -56,7 +65,7 @@ SwiftPM で実行ファイルをビルドし、リソースと Info.plist を .a
     「再検出」ボタン。
   - 表示: ゲージ方式（remaining/used）、明るさ 0-100、夜間減光（開始/終了/明るさ）、
     通知を出す（F4）、エンジンのパス（UserDefaults、既定
-    `~/dev/quota-canvas/.venv/bin/quota-canvas`）、ログイン時に起動（SMAppService.mainApp）。
+    同梱エンジン、無ければ `~/dev/quota-canvas/.venv/bin/quota-canvas`）、ログイン時に起動（SMAppService.mainApp）。
   - 振り分け: AI ワーカー振り分け判定（config.toml の `[routing]`、既定オフ）。
     「AI ワーカーの振り分け判定を使う」トグル（`routing.enabled`）、
     「止める下限（残り %）」Stepper（`routing.floor_percent` 0-50）と

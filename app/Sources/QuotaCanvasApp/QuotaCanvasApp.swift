@@ -15,6 +15,7 @@ struct QuotaCanvasApp: App {
         Task { @MainActor in
             await NotificationCoordinator.shared.requestAuthorizationIfNeeded()
             store.start()
+            AppEngineAgent.shared.reconcile()
         }
     }
 

@@ -32,7 +32,7 @@ final class EngineClient: @unchecked Sendable {
     // MARK: - engine path
 
     var enginePathRaw: String {
-        enginePathOverride ?? UserDefaults.standard.string(forKey: AppDefaults.enginePathKey) ?? AppDefaults.enginePath
+        enginePathOverride ?? UserDefaults.standard.string(forKey: AppDefaults.enginePathKey).flatMap { $0.isEmpty ? nil : $0 } ?? AppDefaults.enginePath
     }
 
     var enginePath: String {

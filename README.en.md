@@ -16,7 +16,17 @@ TURZX 9.2-inch USB secondary screen, 1920×462 IPS. A single USB Type-C cable su
 
 Screens that look identical can have different internal specifications, including the PID. Other listings are not guaranteed to work.
 
-## Setup
+## Install from DMG
+
+On Apple Silicon with macOS 14 or later, open the DMG from [Releases](https://github.com/digimaga/quota-canvas/releases) and drag QuotaCanvas.app to Applications. No Homebrew or Python installation is needed. The app is ad-hoc signed: on first launch, right-click and choose Open, or allow it under System Settings > Privacy & Security.
+
+In Display settings, control the bundled background engine and TURZX screen. If a repository LaunchAgent exists, the bundled engine will not start automatically.
+
+To build the DMG, install Swift Command Line Tools, then run `cd app && ./scripts/build.sh && ./scripts/make-dmg.sh`. The output is in `app/build/`. For a development build without the engine, use `./scripts/build.sh --no-engine`.
+
+To uninstall, turn off “Run the engine in the background” in settings before deleting the app. If the app was deleted first, use `launchctl bootout` on each label in `~/Library/LaunchAgents/com.digimaga.quota-canvas.app*.plist`, then delete those plists.
+
+## Manual setup
 
 ```bash
 ./scripts/setup.sh
