@@ -18,7 +18,17 @@ TURZX 9.2 インチ USB セカンダリースクリーン（1920×462 IPS）。U
 
 ## DMG からインストール
 
-Apple Silicon、macOS 14 以上に対応。[Releases](https://github.com/digimaga/quota-canvas/releases) の DMG を開き、QuotaCanvas.app を Applications にドラッグする。Homebrew や Python のインストールは不要。ad-hoc 署名のため、初回は右クリックして「開く」、または「システム設定 > プライバシーとセキュリティ」から実行を許可する。
+Apple Silicon、macOS 14 以上に対応。Homebrew や Python のインストールは不要。
+
+1. [Releases](https://github.com/digimaga/quota-canvas/releases) から最新の `QuotaCanvas-<バージョン>.dmg` をダウンロードする。
+2. DMG を開き、QuotaCanvas.app を隣の「Applications」フォルダにドラッグする。
+3. 「アプリケーション」フォルダから QuotaCanvas を開く。Apple の公証を受けていないため、初回は「開発元を確認できません」などと出て開けない。次の手順で許可する。
+   - macOS 15 以降: 「システム設定 > プライバシーとセキュリティ」を開き、下の方にある QuotaCanvas の「このまま開く」を押す。
+   - macOS 14: Finder で QuotaCanvas を右クリックして「開く」を選ぶ。
+4. メニューバーにゲージのアイコンが出る。「設定… > サービス」で表示するサービスを選び、API キーが要るサービスはキーを入れる。
+5. TURZX 画面を USB でつなぐと、1 分ほどで残量が表示される。画面を使わない場合は「設定 > 表示」で「TURZX 画面を使う」をオフにする。
+
+更新するときは、新しい DMG の QuotaCanvas.app を同じように Applications へドラッグして置き換える。
 
 設定の「表示」で同梱エンジンの常駐と TURZX 画面の使用を切り替えられる。リポジトリ版 LaunchAgent が残っている場合、同梱エンジンは自動起動しない。
 

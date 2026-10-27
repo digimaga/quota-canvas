@@ -15,9 +15,11 @@ esac
 [ "$#" -le 1 ] || { echo "Usage: $0 [--no-engine]" >&2; exit 2; }
 cd "$ROOT"
 
-swift build -c release
+# Map source paths to "." so the binary does not embed the builder's home directory.
+SWIFT_FLAGS=(-c release -Xswiftc -file-prefix-map -Xswiftc "$ROOT=.")
+swift build "${SWIFT_FLAGS[@]}"
 
-BIN_DIR="$(swift build -c release --show-bin-path)"
+BIN_DIR="$(swift build "${SWIFT_FLAGS[@]}" --show-bin-path)"
 APP="$ROOT/build/QuotaCanvas.app"
 CONTENTS="$APP/Contents"
 
@@ -25,6 +27,8 @@ rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
 cp "$BIN_DIR/QuotaCanvasApp" "$CONTENTS/MacOS/QuotaCanvasApp"
+# Drop debug symbols; their object-file entries carry absolute build paths.
+strip -S -x "$CONTENTS/MacOS/QuotaCanvasApp"
 cp "$ROOT/Packaging/Info.plist" "$CONTENTS/Info.plist"
 printf 'APPL????' > "$CONTENTS/PkgInfo"
 
@@ -173,6 +177,13 @@ if errors:
     sys.exit(1)
 print(f"Checked {checked} Mach-O files: minimum macOS <= {minimum}")
 PY
+
+# The app is published; refuse to ship anything that names the builder's home directory.
+if grep -rlaF "$HOME" "$APP" | grep -q .; then
+    echo "Home directory path found in:" >&2
+    grep -rlaF "$HOME" "$APP" >&2
+    exit 1
+fi
 
 # Signing: ad-hoc. The app holds no TCC grants that must survive rebuilds.
 codesign --force --deep -s - "$APP"

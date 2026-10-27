@@ -18,7 +18,17 @@ Screens that look identical can have different internal specifications, includin
 
 ## Install from DMG
 
-On Apple Silicon with macOS 14 or later, open the DMG from [Releases](https://github.com/digimaga/quota-canvas/releases) and drag QuotaCanvas.app to Applications. No Homebrew or Python installation is needed. The app is ad-hoc signed: on first launch, right-click and choose Open, or allow it under System Settings > Privacy & Security.
+Requires Apple Silicon and macOS 14 or later. No Homebrew or Python installation is needed.
+
+1. Download the latest `QuotaCanvas-<version>.dmg` from [Releases](https://github.com/digimaga/quota-canvas/releases).
+2. Open the DMG and drag QuotaCanvas.app onto the Applications folder next to it.
+3. Open QuotaCanvas from Applications. The app is not notarized by Apple, so the first launch is blocked with a message such as "cannot verify the developer". Allow it as follows:
+   - macOS 15 or later: open System Settings > Privacy & Security, scroll down, and click "Open Anyway" for QuotaCanvas.
+   - macOS 14: right-click QuotaCanvas in Finder and choose Open.
+4. A gauge icon appears in the menu bar. In Settings… > Services, choose the services to show and enter an API key for services that need one.
+5. Connect the TURZX screen over USB; quotas appear within about a minute. Without the screen, turn off "Use the TURZX screen" in Settings > Display.
+
+To update, drag the QuotaCanvas.app from the new DMG to Applications and replace the old one.
 
 In Display settings, control the bundled background engine and TURZX screen. If a repository LaunchAgent exists, the bundled engine will not start automatically.
 
