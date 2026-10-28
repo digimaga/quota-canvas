@@ -265,7 +265,7 @@ struct RoutingWorkerStatus: Decodable, Identifiable {
     var name: String?
     var verdict: String?      // stop | reserve | go | boost | unknown
     var reason: String?       // exhausted / below_floor / over / tight / on_track / spare /
-                              // fresh / burn / stale / missing / missing_status / error / broken
+                              // fresh / burn / disabled / stale / missing / missing_status / error / broken
     var remaining: Double?    // 代表（一番悪い）窓の残り %
     var resetsAtRaw: String?
     var burnUntilRaw: String? // 使い切りモードの期限（有効なときだけ）
@@ -357,11 +357,12 @@ struct DetectWindow: Decodable, Identifiable {
     var displayLabel: String { label ?? key }
 }
 
-// MARK: - routing burn (CLI reply)
+// MARK: - routing mode (CLI reply)
 
-/// `quota-canvas routing burn --json` の 1 エントリ（有効な使い切りモード）。
-struct RoutingBurnEntry: Decodable {
+/// `quota-canvas routing mode --json` の 1 エントリ。
+struct RoutingModeEntry: Decodable {
     var name: String?
+    var mode: String
     var until: String?   // 期限（ISO 8601）
 
     var untilDate: Date? { until.flatMap(ISO8601Support.parse) }

@@ -171,7 +171,7 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
                  recommendation: Optional[Any] = None,
                  all_windows: Optional[Sequence[Tuple[ProviderUsage, Optional[Pace]]]] = None,
                  burn: Optional[Dict[str, datetime]] = None,
-                 previous: Optional[dict] = None) -> Dict[str, Any]:
+                 previous: Optional[dict] = None, off: Optional[set] = None) -> Dict[str, Any]:
     """status.json 1 件ぶんの dict を作る。cards は cli.build_cards の返り値。
 
     layout は render に渡した PanelSpec のリスト (None = 自動配置)。
@@ -179,7 +179,7 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
     all_windows は表示フィルタ前の全窓 (cli.all_window_paces の返り値)。
     None のときは cards から作る。burn は gate の使い切りモード
     ({ワーカー名: 期限}) で、[routing].enabled のとき status.json の
-    "routing" の評価に使う。
+    "routing" の評価に使う。off は監視のみのワーカー名の集合。
     """
     card_items = []
     for pu, pace in cards:
@@ -229,7 +229,7 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
         # 設定変更を即反映するため)。"line" は routing line と同じ 1 行で、
         # quota-canvas を入れていない Mac がコピーをそのまま表示するのに使う。
         try:
-            result = evaluate(payload, cfg.routing, burn or {}, now, previous=previous)
+            result = evaluate(payload, cfg.routing, burn or {}, now, previous=previous, off=off)
             payload["routing"] = dict(result.to_dict(), line=format_line(result, now))
         except Exception as exc:  # routing の失敗で常駐 run は落とさない (キーを省くだけ)
             logging.getLogger(__name__).warning("routing: %s", exc)

@@ -162,11 +162,11 @@ def test_hook_rules_follow_language(tmp_path):
     _write_status(status, [_win("glm:5h", "glm", "spare", 70.0)])
     rc, out, _ = _hook(tmp_path, status=status)
     ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-    assert "boost（余っている）" in ctx and "stop（使い切り）" in ctx
+    assert "boost（余っている）" in ctx and "stop（使い切り・監視のみ）" in ctx
     rc, out, _ = _hook(tmp_path, status=status,
                        config=_en_config(tmp_path / "cfg-en.toml"))
     ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-    assert "boost (headroom)" in ctx and "stop (used up)" in ctx
+    assert "boost (headroom)" in ctx and "stop (used up or monitor only)" in ctx
     # en の行サマリも en の書式 (as of ...)
     assert ctx.startswith("quota: glm=boost(")
 

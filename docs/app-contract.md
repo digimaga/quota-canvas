@@ -139,7 +139,7 @@ The app finds the CLI at the path stored in its settings (default
   `routing line` prints (for Macs without quota-canvas that only read a copied
   status.json). Per worker: `verdict` is one of
   - `stop` — do not use: exhausted (`reason: "exhausted"`) or below the floor
-    (`routing.floor_percent`, `reason: "below_floor"`);
+    (`routing.floor_percent`, `reason: "below_floor"`), or monitor-only mode (`reason: "disabled"`), even when data is missing, stale or in error;
   - `reserve` — usable but pace is over (`reason: "over"`); prefer another worker;
   - `go` — normal use (`reason: "tight"` / `"on_track"` / `"over_near_reset"`);
     `over_near_reset` means a short window is projected to exhaust within its reset margin;
@@ -156,8 +156,7 @@ The app finds the CLI at the path stored in its settings (default
   `gemini = ["gemini:weekly", "gemini:5h"]` / `argon = ["gemini:argon"]`).
   Never blocks anything by itself — an `unknown` verdict must not stop the app or the
   session from starting (fail-open). The engine itself never acts on `routing`; it is
-  information only. macOS only (the burn store lives under `~/Library/Application
-  Support/`).
+  information only. Mode state is stored in the platform data directory.
 
 - `layout` — an array of `{main, subs, size}`, the panel placement actually used for the
   last frame, in panel order
@@ -251,7 +250,8 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   0, even when status.json is stale (prints a `quota: stale（…）` line) or the judgment
   fails (one stderr line). With `--json`, a successful judgment is
   `{"at": ..., "reset_credits": {...}, "holds": {...}, "workers": [...]}` (no `line`);
-  stale status returns `{"state": "stale", "detail": "missing|old|broken|unreadable"}`.
+  stale status returns `{"state": "stale", "detail": "missing|old|broken|unreadable"}`;
+  if monitor-only workers exist, `workers` also contains their `stop` / `disabled` results.
   Silent and exits 0 when `routing.enabled = false`.
 - `quota-canvas routing check <name> [--json]` — for a SessionStart hook (10 s budget):
   `stop` → one stderr line, exit 3; `reserve` → one stderr note, exit 0; `unknown` → one
@@ -261,7 +261,7 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   status.json contains. A valid name whose windows are absent from status.json (or when
   status.json is missing / too old / unreadable) is `unknown` with exit 0; with `--json`
   the reason distinguishes `missing` (no windows) from `missing_status` / `stale` /
-  `broken` (the status.json itself). Silent exit 0 when `routing.enabled = false`, and
+  `broken` (the status.json itself). Monitor-only workers instead return `stop` / `disabled` even if status is missing or stale. Silent exit 0 when `routing.enabled = false`, and
   `QUOTA_GATE_FORCE=1` forces silent exit 0 (skips the gate). `--status PATH` /
   `QUOTA_STATUS_PATH` and `--fallback-status PATH` / `QUOTA_STATUS_FALLBACK` choose the
   status.json (the fallback is used when the primary is missing or older than
@@ -271,17 +271,31 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `boost` (display and judgment; `stop`/`unknown` stay). `stop`/`unknown` are never
   lifted. State lives in `~/Library/Application Support/quota-canvas/routing-burn.json`;
   expired entries are purged on write. `quota-canvas routing burn` lists active entries.
+  `burn NAME on` also clears monitor-only mode for that worker.
   With `--json`, both the list and `on|off` print the active entries after the operation
   as `{"burn": [{"name": "codex", "until": "2026-10-24T23:59:00+09:00"}, …]}` (name
   order); on failure it exits 2 with `{"error": …}` on stdout. Without `--json` the
   output is unchanged.
+- `quota-canvas routing mode [NAME [standard|burn|off] [--until HH:MM|ISO]] [--json]`
+  lists configured (or default) workers plus names in the mode stores. Setting `standard`
+  clears both states, `burn` clears monitor-only and sets the burn deadline (default next
+  23:59), and `off` clears burn and keeps monitoring without routing until cleared.
+  Monitor-only names are stored as a JSON list in `routing-off.json` alongside
+  `routing-burn.json` in the platform data directory, with atomic writes. `--until` is
+  valid only for burn. `--json` returns `{"modes": [{"name": "codex", "mode": "burn",
+  "until": "2026-10-24T23:59:00+09:00"}, {"name": "grok", "mode": "off", "until": null}]}`;
+  standard entries also appear. After a setting change the response is the new list.
+  Without `--json`, each worker is printed on a separate line in name order as
+  `name: standard`, `name: off`, or `name: burn (~ISO)` after the operation. Balance-only
+  providers (OpenRouter, DeepSeek and Kimi) are excluded from the list and cannot be set
+  to `burn` or `off` through this command.
 - `quota-canvas routing hook [--event NAME]` — one line of JSON for the SessionStart hook
   of the bundled plugin (`plugins/quota-canvas-routing/`):
   `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "…"}}`
   (`--event` renames `hookEventName`, default `SessionStart`). `additionalContext` is the
   same one-line verdict `routing line` prints plus short routing rules in the display
   language; when status.json is missing/too old/unreadable it is only the same
-  `quota: stale（…）` line. Same read path and options as `routing line` (`--status`,
+  `quota: stale（…）` line, with monitor-only stop entries appended when present. Same read path and options as `routing line` (`--status`,
   `--fallback-status`, `QUOTA_STATUS_PATH`, `QUOTA_STATUS_FALLBACK`); never fetches from
   the services. It always exits 0 and prints nothing on stdout when
   `routing.enabled = false`, when there is no worker to judge, when the config cannot be

@@ -3,8 +3,8 @@ import AppKit
 
 /// 「振り分け」タブ: AI ワーカー振り分け判定（config.toml の [routing]）の設定。
 /// 判定そのものはエンジン担当。アプリは config --set-json で設定を保存し、
-/// status.json の "routing" で現在の判定を表示し、`routing burn` CLI で
-/// 使い切りモードを切り替えるだけ（app/README.md の方針どおり直接通信しない）。
+/// status.json の "routing" で現在の判定を表示し、`routing mode` CLI で
+/// モードを切り替えるだけ（app/README.md の方針どおり直接通信しない）。
 /// 設定保存はアプリ共通の直列化された経路を使う。
 struct RoutingSettingsView: View {
     @State private var doc: ConfigDocument?
@@ -22,15 +22,15 @@ struct RoutingSettingsView: View {
     @State private var savedWorkers: [ConfigDocument.RoutingWorker] = []
     @State private var showResetConfirm = false
 
-    // 現在の判定（status.json の "routing"）と burn 一覧（CLI）
+    // 現在の判定（status.json の "routing"）とモード一覧（CLI）
     @State private var verdicts: [RoutingWorkerStatus] = []
     @State private var verdictTimestamp: Date?
     @State private var hasRoutingStatus = false // status.json に "routing" がある
     @State private var usableWindows: [String] = []
-    @State private var burnEntries: [RoutingBurnEntry] = []
-    @State private var burnLoaded = false  // burn 一覧を一度でも取れた
-    @State private var burnGeneration = 0  // 古い burn 一覧の応答を捨てる用
-    @State private var burnBusy = false
+    @State private var modeEntries: [RoutingModeEntry] = []
+    @State private var modeLoaded = false  // モード一覧を一度でも取れた
+    @State private var modeGeneration = 0  // 古いモード一覧の応答を捨てる用
+    @State private var modeBusy = false
 
     private let client = EngineClient()
 
@@ -134,13 +134,14 @@ struct RoutingSettingsView: View {
             if !routingOn {
                 Text("判定は無効です。「AI ワーカーの振り分け判定を使う」をオンにすると、エンジンの次の更新から判定が現れます。")
                     .font(.callout).foregroundStyle(.secondary)
-                burnOnlyRows
+                modeOnlyRows
             } else if !hasRoutingStatus {
                 Text("判定はまだ status.json にありません（エンジンの更新待ち）。")
                     .font(.callout).foregroundStyle(.secondary)
-                burnOnlyRows
+                modeOnlyRows
             } else if verdicts.isEmpty {
                 Text("判定できるワーカーがありません").font(.callout).foregroundStyle(.secondary)
+                modeOnlyRows
             } else {
                 ForEach(verdicts) { worker in
                     verdictRow(worker)
@@ -166,42 +167,51 @@ struct RoutingSettingsView: View {
                 Spacer()
             }
             Text(reasonText(worker)).font(.caption).foregroundStyle(.secondary)
-            // burn 一覧が取れるまでトグルは出さない（実態とずれないように）
-            if burnLoaded {
-                Toggle("使い切り（今日 23:59 まで）", isOn: burnBinding(worker))
-                    .font(.caption)
-                    .disabled(burnBusy)
+            if modeLoaded {
+                Picker("モード", selection: modeBinding(worker)) {
+                    Text("標準").tag("standard")
+                    Text("使い切り").tag("burn")
+                    Text("監視のみ").tag("off")
+                }
+                .pickerStyle(.segmented)
+                .disabled(modeBusy || !modeEntries.contains { $0.name == worker.name })
             } else {
-                Text("使い切り状態を取得中…").font(.caption2).foregroundStyle(.secondary)
+                Text("モードを取得中…").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 1)
     }
 
-    /// 判定オフや判定なしのときでも、有効な burn があれば一覧と「解除」を出す。
+    /// 判定がなくても CLI のモード一覧を表示し、変更・解除できる。
     @ViewBuilder
-    private var burnOnlyRows: some View {
-        if burnLoaded && !activeBurns.isEmpty {
-            ForEach(activeBurns, id: \.name) { burn in
-                HStack {
-                    Text(burn.name).font(.callout)
-                    if let until = burn.until {
-                        Text(String(localized: "使い切り \(Self.hhmm(until)) まで"))
-                            .font(.caption).foregroundStyle(.secondary)
+    private var modeOnlyRows: some View {
+        if modeLoaded {
+            ForEach(modeEntries, id: \.name) { entry in
+                if let name = entry.name {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(name).font(.callout)
+                            if entry.mode == "burn", let until = entry.untilDate {
+                                Text(String(localized: "使い切り \(Self.hhmm(until)) まで"))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if entry.mode != "standard" {
+                                Button("解除") { setMode(named: name, mode: "standard") }
+                                    .controlSize(.small).disabled(modeBusy)
+                            }
+                        }
+                        Picker("モード", selection: Binding(
+                            get: { modeEntries.first { $0.name == name }?.mode ?? "standard" },
+                            set: { setMode(named: name, mode: $0) })) {
+                            Text("標準").tag("standard")
+                            Text("使い切り").tag("burn")
+                            Text("監視のみ").tag("off")
+                        }
+                        .pickerStyle(.segmented).disabled(modeBusy)
                     }
-                    Spacer()
-                    Button("解除") { setBurn(named: burn.name, on: false) }
-                        .controlSize(.small)
-                        .disabled(burnBusy)
                 }
             }
-        }
-    }
-
-    private var activeBurns: [(name: String, until: Date?)] {
-        burnEntries.compactMap { entry in
-            guard let name = entry.name, !name.isEmpty else { return nil }
-            return (name, entry.untilDate)
         }
     }
 
@@ -226,7 +236,7 @@ struct RoutingSettingsView: View {
         }
     }
 
-    /// 理由の短い日本語文 + 使い切りモードの期限（期限は burn 一覧（CLI）に合わせる。
+    /// 理由の短い日本語文 + 使い切りモードの期限（期限はモード一覧（CLI）に合わせる。
     /// status.json の burn_until は再描画まで更新されないため）。
     private func reasonText(_ worker: RoutingWorkerStatus) -> String {
         let reason: String
@@ -240,6 +250,7 @@ struct RoutingSettingsView: View {
         case "spare": reason = String(localized: "余裕あり")
         case "fresh": reason = String(localized: "リセット直後")
         case "burn": reason = String(localized: "使い切りモード中")
+        case "disabled": reason = String(localized: "監視のみ（振り分けで使わない）")
         case "stale": reason = String(localized: "取得データが古い")
         case "missing": reason = String(localized: "窓が見つからない")
         case "missing_status": reason = String(localized: "status.json がない・古い")
@@ -248,58 +259,52 @@ struct RoutingSettingsView: View {
         default: reason = String(localized: "判定できない")
         }
         if let name = worker.name,
-           let entry = burnEntries.first(where: { $0.name == name }),
+           let entry = modeEntries.first(where: { $0.name == name && $0.mode == "burn" }),
            let until = entry.untilDate {
             return reason + " · " + String(localized: "使い切り \(Self.hhmm(until)) まで")
         }
         return reason
     }
 
-    /// トグルの状態は burn 一覧（CLI の応答）が真実値。切り替えたら CLI を呼び、
-    /// 返ってきた一覧で状態を更新し、status.json を早めに取り直させる。
-    private func burnBinding(_ worker: RoutingWorkerStatus) -> Binding<Bool> {
+    /// CLI の一覧を真実値とし、保存後に判定を更新する。
+    private func modeBinding(_ worker: RoutingWorkerStatus) -> Binding<String> {
         Binding(
-            get: { burnEntries.contains { $0.name == worker.name } },
-            set: { on in
-                if let name = worker.name { setBurn(named: name, on: on) }
+            get: { modeEntries.first { $0.name == worker.name }?.mode ?? "standard" },
+            set: { mode in
+                if let name = worker.name { setMode(named: name, mode: mode) }
             }
         )
     }
 
-    private func setBurn(named name: String, on: Bool) {
+    private func setMode(named name: String, mode: String) {
         guard !name.isEmpty else { return }
-        burnBusy = true
+        modeBusy = true
         Task {
-            defer { burnBusy = false }
+            defer { modeBusy = false }
             do {
-                let list = try await client.setRoutingBurn(name: name, on: on)
-                // 代入前に世代を進め、飛行中の古い一覧取得がこの結果を
-                // 古い一覧で上書きしないようにする。
-                burnGeneration += 1
-                burnEntries = list
-                burnLoaded = true
-                // エンジンに再描画を依頼し（失敗しても burn 自体は保存済み）、
-                // 2 秒後に status.json を読み直して判定を取り直す。
+                let list = try await client.setRoutingMode(name: name, mode: mode)
+                modeGeneration += 1
+                modeEntries = list
+                modeLoaded = true
                 try? await client.refresh()
                 EngineClient.scheduleArtifactReload()
             } catch {
                 alertMessage = error.localizedDescription
-                await reloadBurns() // 失敗したら実態に戻す
+                await reloadModes()
             }
         }
     }
 
-    /// burn 一覧を取り直す。世代番号で、古い応答は捨てる。失敗時は前回の一覧を保つ。
-    private func reloadBurns() async {
-        burnGeneration += 1
-        let generation = burnGeneration
+    private func reloadModes() async {
+        modeGeneration += 1
+        let generation = modeGeneration
         do {
-            let list = try await client.routingBurnList()
-            guard generation == burnGeneration else { return }
-            burnEntries = list
-            burnLoaded = true
+            let list = try await client.routingModes()
+            guard generation == modeGeneration else { return }
+            modeEntries = list
+            modeLoaded = true
         } catch {
-            // 取得失敗時は前回の一覧のまま（表示を実態とずらさない優先度は低い）
+            // 取得失敗時は前回の一覧を保つ。
         }
     }
 
@@ -501,11 +506,11 @@ struct RoutingSettingsView: View {
         await reloadVerdicts()
     }
 
-    /// 現在の判定（status.json の "routing" / "windows"）と burn 一覧（CLI）を取り直す。
-    /// burn 一覧は世代番号で古い応答を捨てる。失敗時は前回の一覧を保つ。
+    /// 現在の判定（status.json の "routing" / "windows"）とモード一覧（CLI）を取り直す。
+    /// モード一覧は世代番号で古い応答を捨てる。失敗時は前回の一覧を保つ。
     private func reloadVerdicts() async {
-        burnGeneration += 1
-        let generation = burnGeneration
+        modeGeneration += 1
+        let generation = modeGeneration
         let snapshot = StatusStore.loadStatusSnapshot()
         verdictTimestamp = snapshot?.routing?.at
         hasRoutingStatus = snapshot?.routing != nil
@@ -514,10 +519,10 @@ struct RoutingSettingsView: View {
             window.partOf == nil ? window.id : nil
         }
         do {
-            let list = try await client.routingBurnList()
-            guard generation == burnGeneration else { return } // 古い応答は捨てる
-            burnEntries = list
-            burnLoaded = true
+            let list = try await client.routingModes()
+            guard generation == modeGeneration else { return } // 古い応答は捨てる
+            modeEntries = list
+            modeLoaded = true
         } catch {
             // 取得失敗時は前回の一覧のまま
         }

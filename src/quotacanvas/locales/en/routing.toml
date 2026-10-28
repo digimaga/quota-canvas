@@ -1,8 +1,10 @@
 # Worker routing messages (gate.py / the routing CLI commands). The ja gate
 # strings mirror the old ~/.claude/bin/quota-gate line format.
-usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <worker> [--json] | quota-canvas routing burn [worker on|off [--until HH:MM|ISO]] | quota-canvas routing hook [--event NAME]"
+usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <worker> [--json] | quota-canvas routing burn [worker on|off [--until HH:MM|ISO]] | quota-canvas routing mode [NAME standard|burn|off] [--until HH:MM|ISO] [--json] | quota-canvas routing hook [--event NAME]"
+state_error = "Unable to save routing state: {detail}"
 
 [gate]
+disabled = "monitor only"
 line = "quota: {body} (as of {at})"
 over = "pace over"
 exhausts = " · ~{dt} projected to exhaust"
@@ -15,6 +17,7 @@ stale_reason_old = "too old to judge quota"
 stale_reason_broken = "unreadable, not judging quota"
 
 [check]
+disabled = "quota-canvas: {name}=stop (monitor only; excluded from routing). Set QUOTA_GATE_FORCE=1 to ignore"
 stop = "quota-canvas: {name}=stop ({detail}). Set QUOTA_GATE_FORCE=1 to ignore"
 reserve = "quota-canvas: {name}=reserve ({detail}). Prefer other workers if possible"
 unknown = "quota-canvas: {name}=unknown ({reason}). Cannot judge, continuing"
@@ -32,7 +35,7 @@ bad_until = "--until takes HH:MM or an ISO 8601 time"
 # Rules `routing hook` appends to the quota line in additionalContext (read by
 # the AI at session start, hence "the quota line above").
 rules = """The quota line above is quota-canvas's per-AI-worker quota verdict. It never stops this session's own work — use it only when handing work to subagents or other AI workers. If the user names a worker, follow them.
-- Prefer in this order: boost (headroom) > go (normal use) > reserve (pace is over; pick another worker if one fits). Do not assign new work to stop (used up).
+- Prefer in this order: boost (headroom) > go (normal use) > reserve (pace is over; pick another worker if one fits). Do not assign new work to stop (used up or monitor only).
 - =? / =stale mean the verdict is unavailable: ignore the numbers and choose as usual.
 - The remaining percentages only rank the candidates; they never outrank task fit.
 - Burn mode, QUOTA_GATE_FORCE, --force, and config changes only when the user asks.

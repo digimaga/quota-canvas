@@ -1,9 +1,11 @@
 # ワーカー振り分け判定 (gate.py / cli.py の routing コマンド) の文言。
 # gate 系の ja は旧 ~/.claude/bin/quota-gate の line と同じ書式
 # (ワーカーの並び順は [routing.workers] の設定順。CLAUDE.md がこの形を前提)。
-usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <ワーカー名> [--json] | quota-canvas routing burn [ワーカー名 on|off [--until HH:MM|ISO]] | quota-canvas routing hook [--event NAME]"
+usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <ワーカー名> [--json] | quota-canvas routing burn [ワーカー名 on|off [--until HH:MM|ISO]] | quota-canvas routing mode [NAME standard|burn|off] [--until HH:MM|ISO] [--json] | quota-canvas routing hook [--event NAME]"
+state_error = "routing の状態を保存できません: {detail}"
 
 [gate]
+disabled = "監視のみ"
 line = "quota: {body} ({at}時点)"
 over = "ペース超過"
 exhausts = "·~{dt}枯渇見込み"
@@ -16,6 +18,7 @@ stale_reason_old = "古いので残量は判断に使わない"
 stale_reason_broken = "読めないので残量は判断に使わない"
 
 [check]
+disabled = "quota-canvas: {name}=stop（監視のみ・振り分けで使わない）。QUOTA_GATE_FORCE=1 で無視"
 stop = "quota-canvas: {name}=stop（{detail}）。QUOTA_GATE_FORCE=1 で無視"
 reserve = "quota-canvas: {name}=reserve（{detail}）。可能なら他のワーカーを優先"
 unknown = "quota-canvas: {name}=unknown（{reason}）。判定できないためそのまま続行"
@@ -33,7 +36,7 @@ bad_until = "--until は HH:MM か ISO 形式"
 # routing hook が additionalContext に載せる振り分けのルール (セッション開始時に
 # AI に読ませるもの。line のすぐ後ろに入るので「上の quota 行」始まり)。
 rules = """上の quota 行は quota-canvas による AI ワーカーごとの利用枠の判定。このセッション自身の作業は止めない。使うのはサブエージェントや別の AI に作業を渡すときだけ。ユーザーが名指ししたワーカーにはそのまま従う。
-- boost（余っている）> go（普通に使う）> reserve（ペース超過。他に合う相手がいればそちら）の順に優先する。stop（使い切り）には新しく作業を割り当てない。
+- boost（余っている）> go（普通に使う）> reserve（ペース超過。他に合う相手がいればそちら）の順に優先する。stop（使い切り・監視のみ）には新しく作業を割り当てない。
 - =? / =stale は判定できない。残量を使わず普段どおりに選ぶ。
 - 残量は候補の間の優先度であって、作業への向き不向きより優先しない。
 - 使い切りモード（burn）・QUOTA_GATE_FORCE・--force・設定の変更は、ユーザーに言われたときだけ。

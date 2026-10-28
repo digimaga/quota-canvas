@@ -272,3 +272,9 @@
 "どちらでも通常のアプリのウィンドウより奥に表示されます" = "Both options appear behind normal app windows.";
 
 "残高" = "Balance";
+
+"標準" = "Standard";
+"監視のみ" = "Monitor only";
+"モード" = "Mode";
+"モードを取得中…" = "Fetching modes…";
+"監視のみ（振り分けで使わない）" = "Monitor only (excluded from routing)";

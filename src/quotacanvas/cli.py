@@ -301,10 +301,12 @@ def _write_app_files(cfg: Config, cards: List[Card], usages: List[ProviderUsage]
     recommendation は recommend.recommend の返り値 (None = 推奨なし)、
     all_windows は表示フィルタ前の全窓 (status.json の "windows" の材料)。"""
     burn = None
+    off = None
     previous = None
     if cfg.routing.enabled:
         try:
             burn = gate.load_burn(gate.BURN_PATH, now)
+            off = gate.load_off(gate.OFF_PATH)
         except Exception as exc:  # routing の失敗で常駐 run は落とさない
             log.warning("routing: %s", exc)
             burn = None
@@ -318,7 +320,7 @@ def _write_app_files(cfg: Config, cards: List[Card], usages: List[ProviderUsage]
     try:
         write_status(build_status(cfg, cards, usages, now, layout=layout,
                                   recommendation=recommendation, all_windows=all_windows,
-                                  burn=burn, previous=previous))
+                                  burn=burn, previous=previous, off=off))
     except OSError as exc:
         log.warning("status.json を書けません: %s", exc)
     if img is not None:
@@ -680,6 +682,25 @@ def _load_gate_status(args, cfg: Config) -> Tuple[str, Optional[dict], str, Path
     return state, data, detail, primary
 
 
+def _disabled_for_stale(data, cfg, now):
+    off = gate.load_off(gate.OFF_PATH)
+    if not off:
+        return []
+    result = gate.evaluate(data, cfg.routing, {}, now, off=off)
+    disabled = [worker for worker in result.workers if worker.reason == "disabled"]
+    for worker in disabled:
+        worker.stale = True
+    return disabled
+
+
+def _stale_line_with_disabled(detail, path, data, cfg, now, lang):
+    line = gate.format_stale_line(detail, path, data, now, lang)
+    disabled = _disabled_for_stale(data, cfg, now)
+    if disabled:
+        line += " " + gate.format_worker_segments(gate.RoutingResult(workers=disabled), now, lang)
+    return line
+
+
 def _cmd_routing_line(args, cfg: Config) -> int:
     """routing line: 判定の 1 行サマリ。常に exit 0 (例外でも stderr 1 行)。
     サービスへの取得は絶対にしない (status.json を読むだけ)。"""
@@ -691,18 +712,22 @@ def _cmd_routing_line(args, cfg: Config) -> int:
         now = gate.now_local()
         if args.json:
             if state != "ok":
-                _print_json({"state": "stale", "detail": detail})
+                payload = {"state": "stale", "detail": detail}
+                disabled = _disabled_for_stale(data, cfg, now)
+                if disabled:
+                    payload["workers"] = [worker.to_dict() for worker in disabled]
+                _print_json(payload)
             else:
                 result = gate.evaluate(data, cfg.routing,
                                        gate.load_burn(gate.BURN_PATH, now), now,
-                                       previous=data.get("routing"))
+                                       previous=data.get("routing"), off=gate.load_off(gate.OFF_PATH))
                 _print_json(result.to_dict())
             return 0
         if state != "ok":
-            print(gate.format_stale_line(detail, path, data, now, lang))
+            print(_stale_line_with_disabled(detail, path, data, cfg, now, lang))
             return 0
         result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
-                               previous=data.get("routing"))
+                               previous=data.get("routing"), off=gate.load_off(gate.OFF_PATH))
         line = gate.format_line(result, now, lang)
         if line:  # ワーカー 0 件のときは何も出さない (空白の崩れた行を出さない)
             print(line)
@@ -735,6 +760,18 @@ def _routing_check_impl(args, cfg: Config) -> int:
     if name not in known:  # 引数の妥当性は status.json の中身に依存させない
         return 2
     state, data, detail, _path = _load_gate_status(args, cfg)
+    off = gate.load_off(gate.OFF_PATH)
+    if name in off and state != "ok":
+        now = gate.now_local()
+        result = gate.evaluate(data, cfg.routing, {}, now, off=off)
+        worker = result.worker(name)
+        if worker is not None:
+            worker.stale = True
+            if args.json:
+                _print_json(worker.to_dict())
+            else:
+                print(gate.check_message(worker, now, lang), file=sys.stderr)
+            return 3
     if state != "ok":  # 無し / 古い / 壊れ → unknown (fail-open、起動は止めない)
         worker = gate.WorkerResult(name=name, verdict="unknown",
                                    reason=gate.stale_reason(detail), stale=True)
@@ -747,7 +784,7 @@ def _routing_check_impl(args, cfg: Config) -> int:
         return 0
     now = gate.now_local()
     result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
-                           previous=data.get("routing"))
+                           previous=data.get("routing"), off=off)
     worker = result.worker(name)
     if worker is None:  # そのワーカーの窓もエラーも status に無い → unknown (missing)
         worker = gate.WorkerResult(name=name, verdict="unknown", reason="missing")
@@ -786,10 +823,10 @@ def _cmd_routing_hook(args, cfg: Config) -> int:
         now = gate.now_local()
         if state != "ok":
             _print_hook_context(args.event,
-                                gate.format_stale_line(detail, path, data, now, lang))
+                                _stale_line_with_disabled(detail, path, data, cfg, now, lang))
             return 0
         result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
-                               previous=data.get("routing"))
+                               previous=data.get("routing"), off=gate.load_off(gate.OFF_PATH))
         line = gate.format_line(result, now, lang)
         if line:  # ワーカー 0 件のときは何も出さない (line と同じ)
             _print_hook_context(args.event, line + "\n\n" + t("routing.hook.rules"))
@@ -804,7 +841,7 @@ def _burn_payload(active: Dict[str, datetime]) -> Dict[str, Any]:
                      for name in sorted(active)]}
 
 
-def _cmd_routing_burn(args, cfg: Config) -> int:
+def _cmd_routing_burn_locked(args, cfg: Config) -> int:
     """routing burn: 使い切りモード。期限内はそのワーカーの reserve / go / boost を
     boost とみなす (stop と unknown はそのまま)。--json のときは一覧も on / off の
     実行後も、有効なエントリを {"burn": [{"name", "until"}]} の形で出す
@@ -830,6 +867,8 @@ def _cmd_routing_burn(args, cfg: Config) -> int:
     active = gate.load_burn(gate.BURN_PATH, now)
     valid = action in ("on", "off") and (args.name in known
                                          or (action == "off" and args.name in active))
+    if action == "on" and not gate.routing_worker(args.name, cfg.routing.workers.get(args.name, [])):
+        valid = False
     if not valid:
         # 無効な引数は --json の有無に関係なく exit 2 (--json のときは {"error"} を出す)
         if args.json:
@@ -849,6 +888,7 @@ def _cmd_routing_burn(args, cfg: Config) -> int:
         until = parsed
     if action == "on":
         gate.store_burn(gate.BURN_PATH, args.name, until, now)
+        gate.clear_off(gate.OFF_PATH, args.name)
         if not args.json:
             print(t("routing.burn.set", host=os.uname().nodename.split(".")[0],
                     name=args.name, dt=until.strftime("%m/%d %H:%M")))
@@ -862,13 +902,73 @@ def _cmd_routing_burn(args, cfg: Config) -> int:
     return 0
 
 
+def _cmd_routing_mode_locked(args, cfg: Config) -> int:
+    now = gate.now_local()
+    burn = gate.load_burn(gate.BURN_PATH, now)
+    off = gate.load_off(gate.OFF_PATH)
+    known = set(cfg.routing.workers) if cfg.routing.workers else set(gate.KNOWN_PROVIDERS)
+    excluded = {name for name, patterns in cfg.routing.workers.items()
+                if not gate.routing_worker(name, patterns)}
+    if args.name or args.mode or args.until:
+        valid = (args.name and gate.safe_worker_name(args.name)
+                 and (args.name not in excluded or args.mode == "standard")
+                 and (args.name not in gate.NON_ROUTING_PROVIDERS or args.mode == "standard")
+                 and args.mode in ("standard", "burn", "off")
+                 and (args.name in known or (args.mode == "standard" and args.name in (set(burn) | off)))
+                 and (not args.until or args.mode == "burn"))
+        until = gate.parse_until(args.until or "23:59", now) if args.mode == "burn" else None
+        if not valid or (args.mode == "burn" and until is None):
+            message = t("routing.burn.bad_until") if valid and args.mode == "burn" else t("routing.usage")
+            if args.json:
+                _print_json({"error": message})
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        if args.mode == "burn":
+            gate.store_burn(gate.BURN_PATH, args.name, until, now)
+            gate.clear_off(gate.OFF_PATH, args.name)
+        elif args.mode == "off":
+            gate.store_off(gate.OFF_PATH, args.name)
+            gate.clear_burn(gate.BURN_PATH, args.name, now)
+        else:
+            gate.clear_burn(gate.BURN_PATH, args.name, now)
+            gate.clear_off(gate.OFF_PATH, args.name)
+        burn = gate.load_burn(gate.BURN_PATH, now)
+        off = gate.load_off(gate.OFF_PATH)
+    names = (known | set(burn) | off) - gate.NON_ROUTING_PROVIDERS - excluded
+    modes = [{"name": name, "mode": "off" if name in off else "burn" if name in burn else "standard",
+              "until": burn[name].isoformat() if name in burn and name not in off else None}
+             for name in sorted(names) if gate.safe_worker_name(name)]
+    if args.json:
+        _print_json({"modes": modes})
+    else:
+        for item in modes:
+            print("%s: %s%s" % (item["name"], item["mode"], " (~%s)" % item["until"] if item["until"] else ""))
+    return 0
+
+
+def _cmd_routing_state(args, cfg: Config, operation) -> int:
+    try:
+        with gate.routing_state_lock():
+            return operation(args, cfg)
+    except OSError as exc:
+        message = t("routing.state_error", detail=" ".join(str(exc).splitlines()))
+        if args.json:
+            _print_json({"error": message})
+        else:
+            print(message, file=sys.stderr)
+        return 2
+
+
 def _cmd_routing(args, cfg: Config) -> int:
     if args.routing_cmd == "line":
         return _cmd_routing_line(args, cfg)
     if args.routing_cmd == "check":
         return _cmd_routing_check(args, cfg)
+    if args.routing_cmd == "mode":
+        return _cmd_routing_state(args, cfg, _cmd_routing_mode_locked)
     if args.routing_cmd == "burn":
-        return _cmd_routing_burn(args, cfg)
+        return _cmd_routing_state(args, cfg, _cmd_routing_burn_locked)
     if args.routing_cmd == "hook":
         return _cmd_routing_hook(args, cfg)
     print(t("routing.usage"), file=sys.stderr)
@@ -1002,6 +1102,11 @@ def main(argv=None) -> int:
                         help="burn until this time (default: today 23:59)")
     p_burn.add_argument("--json", action="store_true",
                         help='print the active entries as {"burn": [...]} as JSON')
+    p_mode = routing_subs.add_parser("mode", help=t("cli.help.routing_mode"))
+    p_mode.add_argument("name", nargs="?", metavar="NAME")
+    p_mode.add_argument("mode", nargs="?", metavar="standard|burn|off")
+    p_mode.add_argument("--until", default=None, metavar="HH:MM|ISO")
+    p_mode.add_argument("--json", action="store_true")
     p_hook = routing_subs.add_parser("hook", parents=[routing_common],
                                      help=t("cli.help.routing_hook"))
     p_hook.add_argument("--event", default="SessionStart", metavar="NAME",

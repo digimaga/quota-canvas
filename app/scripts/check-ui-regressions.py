@@ -15,6 +15,10 @@ checks = {
         'while !Task.isCancelled' in routing and '60_000_000_000' in routing and 'await reloadVerdicts()' in routing,
     'routing freshness uses verdict timestamp': 'verdictTimestamp = snapshot?.routing?.at' in routing,
     'outdated color translation is removed': '超過・枯渇は赤、ギリギリは黄、余裕ありは緑。' not in en,
+    'routing uses the segmented CLI mode picker':
+        '.pickerStyle(.segmented)' in routing and 'client.routingModes()' in routing
+        and 'client.setRoutingMode(name: name, mode: mode)' in routing
+        and 'Text("監視のみ").tag("off")' in routing,
     'burn fallback has an English translation': '"使い切り" = "Burn";' in en,
 }
 for name, passed in checks.items():

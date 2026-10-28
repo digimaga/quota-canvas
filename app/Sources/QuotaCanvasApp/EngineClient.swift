@@ -227,26 +227,18 @@ final class EngineClient: @unchecked Sendable {
         }
     }
 
-    // MARK: - routing burn
+    // MARK: - routing modes
 
-    /// `quota-canvas routing burn --json`: 有効な使い切りモードの一覧。
-    func routingBurnList() async throws -> [RoutingBurnEntry] {
-        struct Reply: Decodable {
-            var burn: [RoutingBurnEntry]?
-        }
-        let reply = try decode(Reply.self, from: try await run(["routing", "burn", "--json"]))
-        return reply.burn ?? []
+    func routingModes() async throws -> [RoutingModeEntry] {
+        struct Reply: Decodable { var modes: [RoutingModeEntry] }
+        return try decode(Reply.self, from: try await run(["routing", "mode", "--json"])).modes
     }
 
-    /// `quota-canvas routing burn <name> on|off --json`（実行後の有効な一覧を返す）。
-    /// 期限は省略（CLI の既定 = 今日 23:59 まで）。
     @discardableResult
-    func setRoutingBurn(name: String, on: Bool) async throws -> [RoutingBurnEntry] {
-        struct Reply: Decodable {
-            var burn: [RoutingBurnEntry]?
-        }
-        let out = try await run(["routing", "burn", name, on ? "on" : "off", "--json"])
-        return try decode(Reply.self, from: out).burn ?? []
+    func setRoutingMode(name: String, mode: String) async throws -> [RoutingModeEntry] {
+        struct Reply: Decodable { var modes: [RoutingModeEntry] }
+        let out = try await run(["routing", "mode", name, mode, "--json"])
+        return try decode(Reply.self, from: out).modes
     }
 
     /// 設定保存（config --set-json）後、エンジンが 1〜2 秒で描き直すのに合わせて

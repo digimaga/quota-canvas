@@ -954,6 +954,7 @@ def test_engine_writes_and_reuses_previous_routing(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "STATUS_PATH", path)
     monkeypatch.setattr(cli, "write_status", lambda payload: write_status(payload, path))
     monkeypatch.setattr(gate, "BURN_PATH", tmp_path / "burn.json")
+    monkeypatch.setattr(gate, "OFF_PATH", tmp_path / "off.json")
     cards, usages = _engine_cards()
     pu, pace = cards[0]
     reset = pace.window.resets_at
@@ -1064,3 +1065,58 @@ def test_english_credit_singular_and_plural():
 def test_parse_until_rejects_past_and_equal_iso():
     assert gate.parse_until(NOW.isoformat(), NOW) is None
     assert gate.parse_until((NOW - timedelta(seconds=1)).isoformat(), NOW) is None
+
+
+@pytest.mark.parametrize("case", ["boost", "burn", "stale", "error", "missing"])
+def test_monitor_only_overrides_verdict_and_keeps_display_data(case):
+    window = win("grok:weekly", "grok", "spare" if case == "boost" else "over", 63,
+                 fetched=NOW - timedelta(hours=2) if case == "stale" else NOW)
+    data = status(*([] if case == "missing" else [window]),
+                  errors=[{"provider": "grok"}] if case == "error" else None)
+    result = evaluate(data, cfg(workers={"grok": ["grok:weekly"]}),
+                      {"grok": NOW + timedelta(hours=1)}, NOW, off={"grok"})
+    worker = result.worker("grok")
+    assert (worker.verdict, worker.reason, worker.burn_until) == ("stop", "disabled", None)
+    if case != "missing":
+        assert worker.remaining == 63 and worker.resets_at == window["resets_at"]
+    assert "grok=stop(" in format_line(result, NOW, "ja")
+    assert "監視のみ" in format_line(result, NOW, "ja")
+    assert "monitor only" in format_line(result, NOW, "en")
+    assert "監視のみ" in gate.check_message(worker, NOW, "ja")
+    assert "monitor only" in gate.check_message(worker, NOW, "en")
+
+
+def test_off_store_clear(tmp_path):
+    path = tmp_path / "off.json"
+    gate.store_off(path, "grok")
+    gate.store_off(path, "codex")
+    assert json.loads(path.read_text()) == ["codex", "grok"]
+    gate.clear_off(path, "grok")
+    assert gate.load_off(path) == {"codex"}
+
+
+def test_engine_reads_monitor_only_and_records_it(tmp_path, monkeypatch):
+    from quotacanvas import cli
+    from quotacanvas.status import write_status
+    path = tmp_path / "status.json"
+    monkeypatch.setattr(cli, "STATUS_PATH", path)
+    monkeypatch.setattr(cli, "write_status", lambda payload: write_status(payload, path))
+    monkeypatch.setattr(gate, "BURN_PATH", tmp_path / "burn.json")
+    monkeypatch.setattr(gate, "OFF_PATH", tmp_path / "off.json")
+    gate.store_off(gate.OFF_PATH, "grok")
+    cards, usages = _engine_cards()
+    settings = _engine_cfg(tmp_path, '[routing]\nenabled = true\n')
+    cli._write_app_files(settings, cards, usages, NOW, None)
+    result = json.loads(path.read_text())
+    worker = next(w for w in result["routing"]["workers"] if w["name"] == "grok")
+    assert (worker["verdict"], worker["reason"], worker["remaining"]) == ("stop", "disabled", 70.0)
+    assert any(w["id"] == "grok:weekly" for w in result["windows"])
+
+
+@pytest.mark.parametrize("name", ["openrouter", "deepseek", "kimi"])
+def test_off_does_not_include_balance_only_workers(name):
+    data = status(win(name + ":daily", name, "spare", 63))
+    result = evaluate(data, cfg(workers={name: [name + ":daily"],
+                                         "balance_alias": [name + ":daily"]}),
+                      {}, NOW, off={name, "balance_alias"})
+    assert not result.workers

@@ -16,9 +16,11 @@ status.json のトップレベル "windows" (表示フィルタ前の全窓) を
 from __future__ import annotations
 
 import json
+import fcntl
 import math
 import os
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -64,6 +66,7 @@ DEFAULT_STALE_MINUTES = 20
 
 # 使い切りモード (burn) の状態ファイル。status.json と同じディレクトリ。
 BURN_PATH = Path.home() / "Library" / "Application Support" / "quota-canvas" / "routing-burn.json"
+OFF_PATH = Path.home() / "Library" / "Application Support" / "quota-canvas" / "routing-off.json"
 
 
 # ---------------------------------------------------------------- parsing helpers
@@ -252,6 +255,19 @@ def stale_time_str(path: Path, data: Optional[dict]) -> str:
 
 # ------------------------------------------------------------------ burn 状態
 
+@contextmanager
+def routing_state_lock():
+    """両状態ファイルの読み取りと更新をコマンド間で直列化する。"""
+    directory = BURN_PATH.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    with open(directory / "routing-state.lock", "a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def load_burn(path: Path, now: Optional[datetime] = None) -> Dict[str, datetime]:
     """有効な使い切りモード {ワーカー名: 期限}。壊れたファイル・期限切れは無視。"""
     if now is None:
@@ -292,6 +308,35 @@ def clear_burn(path: Path, name: str, now: Optional[datetime] = None) -> None:
     active = load_burn(path, now)
     active.pop(name, None)
     _write_burn(path, {k: v.isoformat() for k, v in sorted(active.items())})
+
+
+def load_off(path: Path) -> Set[str]:
+    """監視のみのワーカー名を読む。"""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return set()
+    return {name for name in raw if safe_worker_name(name)} if isinstance(raw, list) else set()
+
+
+def _write_off(path: Path, names: Set[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(sorted(names), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def store_off(path: Path, name: str) -> None:
+    names = load_off(path)
+    names.add(name)
+    _write_off(path, names)
+
+
+def clear_off(path: Path, name: str) -> None:
+    names = load_off(path)
+    names.discard(name)
+    _write_off(path, names)
 
 
 # ------------------------------------------------------------------ 判定
@@ -428,6 +473,13 @@ def _worker_providers(name: str, patterns: List[str]) -> Set[str]:
     return out or {name}
 
 
+def routing_worker(name: str, patterns: List[str]) -> bool:
+    """evaluate と mode 一覧で共通の対象判定。"""
+    return (name not in NON_ROUTING_PROVIDERS
+            and (not patterns or any(p.split(":", 1)[0] not in NON_ROUTING_PROVIDERS
+                                     for p in patterns)))
+
+
 def _one_provider(providers: Set[str]) -> str:
     return next(iter(providers)) if len(providers) == 1 else ""
 
@@ -477,7 +529,7 @@ def _worst(entries: List[dict], floor_percent: float, floor_hours: float, now: d
 
 def evaluate(status: Optional[dict], routing_cfg: "Routing",
              burn: Dict[str, datetime], now: datetime,
-             previous: Optional[dict] = None) -> RoutingResult:
+             previous: Optional[dict] = None, off: Optional[Set[str]] = None) -> RoutingResult:
     """status.json の windows からワーカーごとの判定を作る (純粋関数)。
 
     routing_cfg は config.Routing (workers / floor_percent / stale_minutes を
@@ -492,6 +544,11 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
     floor_hours = float(getattr(routing_cfg, "floor_hours", DEFAULT_FLOOR_HOURS))
     stale_min = int(getattr(routing_cfg, "stale_minutes", DEFAULT_STALE_MINUTES))
     specs: Dict[str, List[str]] = getattr(routing_cfg, "workers", None) or default_workers(status)
+    off = off or set()
+    specs = dict(specs)
+    for name in sorted(off):
+        if safe_worker_name(name) and name not in NON_ROUTING_PROVIDERS:
+            specs.setdefault(name, [])
     previous_holds = previous.get("holds") if isinstance(previous, dict) else None
     if not isinstance(previous_holds, dict):
         previous_holds = {}
@@ -507,7 +564,7 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
 
     workers: List[WorkerResult] = []
     for name, patterns in specs.items():
-        if name in NON_ROUTING_PROVIDERS:
+        if not routing_worker(name, patterns):
             continue
         original_patterns = patterns or []
         patterns = [p for p in original_patterns
@@ -516,6 +573,26 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             continue
         providers = _worker_providers(name, patterns) - NON_ROUTING_PROVIDERS
         mine = [w for w in windows if w.get("provider") in providers]
+        matched = _match_windows(list(patterns or []), windows)
+        if name in off:
+            # 表示に使えるデータは残す。hold の計算も通常どおり続ける。
+            display_windows = matched or mine
+            # 未指定の窓は表示だけに使い、通常の hold に影響させない。
+            display_holds = (dict(holds) if not matched or providers & errors
+                             or any(_is_stale_window(w, stale_min, now) for w in mine) else holds)
+            picked = _worst(display_windows, floor, floor_hours, now, previous_holds,
+                            margin_minutes, display_holds)
+            entry = picked[0] if picked else {}
+            workers.append(WorkerResult(
+                name=name, verdict="stop", reason="disabled",
+                windows=[w["id"] for w in display_windows if isinstance(w.get("id"), str)],
+                remaining=norm_remaining(entry.get("remaining")),
+                status=norm_status(entry.get("status")) if entry else None,
+                resets_at=entry.get("resets_at") if isinstance(entry.get("resets_at"), str) else None,
+                exhausts_at=entry.get("exhausts_at") if isinstance(entry.get("exhausts_at"), str) else None,
+                stale=any(_is_stale_window(w, stale_min, now) for w in mine),
+                provider=_one_provider(providers)))
+            continue
         if any(_is_stale_window(w, stale_min, now) for w in mine):
             workers.append(WorkerResult(name=name, verdict="unknown", reason="stale",
                                         stale=True, provider=_one_provider(providers)))
@@ -524,7 +601,6 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             workers.append(WorkerResult(name=name, verdict="unknown", reason="error",
                                         provider=_one_provider(providers)))
             continue
-        matched = _match_windows(list(patterns or []), windows)
         if not matched:
             workers.append(WorkerResult(name=name, verdict="unknown", reason="missing",
                                         provider=_one_provider(providers)))
@@ -574,16 +650,9 @@ def stale_reason(detail: str) -> str:
     return "broken"
 
 
-def format_line(result: RoutingResult, now: datetime, lang: Optional[str] = None) -> str:
-    """quota-gate line と同じ形の 1 行。
-
-    `quota: glm=boost(58%,~17:00) grok=reserve(85%,ペース超過·~10/28 21:11枯渇見込み,
-    ~11/02 10:45) ... (17:29時点)`。判定できないワーカーは `=?`、古いデータは
-    `=stale` (quota-gate と同じ)。
-    """
+def format_worker_segments(result: RoutingResult, now: datetime, lang: Optional[str] = None) -> str:
+    """ワーカーごとの表示部分を、接頭辞や時点なしで返す。"""
     _set_lang(lang)
-    if not result.workers:
-        return ""  # ワーカーが 1 つも無いときは崩れた行ではなく何も出さない
     parts: List[str] = []
     for w in result.workers:
         if not safe_worker_name(w.name):
@@ -592,6 +661,8 @@ def format_line(result: RoutingResult, now: datetime, lang: Optional[str] = None
             parts.append("%s=%s" % (w.name, "stale" if w.reason == "stale" else "?"))
             continue
         text = "%s=%s(%s" % (w.name, w.verdict, pct_str(w.remaining))
+        if w.reason == "disabled":
+            text += "," + t("routing.gate.disabled")
         if w.status == "over":
             text += "," + t("routing.gate.over")
             ex = fmt_reset(w.exhausts_at, now)
@@ -611,8 +682,16 @@ def format_line(result: RoutingResult, now: datetime, lang: Optional[str] = None
             # リセット時刻が分からないときだけ生の status を添える (quota-gate と同じ)
             text += "," + w.status
         parts.append(text + ")")
+    return " ".join(parts)
+
+
+def format_line(result: RoutingResult, now: datetime, lang: Optional[str] = None) -> str:
+    """quota-gate line と同じ形の 1 行。"""
+    if not result.workers:
+        return ""
+    body = format_worker_segments(result, now, lang)
     at = fmt_hhmm(parse_dt(result.at)) or "--:--"
-    return t("routing.gate.line", body=" ".join(parts), at=at)
+    return t("routing.gate.line", body=body, at=at)
 
 
 def format_stale_line(detail: str, path: Path, data: Optional[dict],
@@ -629,6 +708,8 @@ def format_stale_line(detail: str, path: Path, data: Optional[dict],
 def check_message(worker: WorkerResult, now: datetime, lang: Optional[str] = None) -> Optional[str]:
     """`routing check` の stderr 1 行。go / boost は None (無言)。"""
     _set_lang(lang)
+    if worker.reason == "disabled":
+        return t("routing.check.disabled", name=worker.name)
     if worker.verdict == "stop":
         if worker.remaining is not None:
             detail = t("routing.check.remains", pct=pct_str(worker.remaining))

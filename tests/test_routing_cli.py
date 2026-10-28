@@ -46,6 +46,7 @@ def burn_path(monkeypatch, tmp_path):
     実機の使い切りモードが line / check の結果に漏れないようにする)。"""
     path = tmp_path / "routing-burn.json"
     monkeypatch.setattr(gate, "BURN_PATH", path)
+    monkeypatch.setattr(gate, "OFF_PATH", tmp_path / "routing-off.json")
     return path
 
 
@@ -626,3 +627,193 @@ def test_burn_rejects_past_iso_and_default_rolls_to_tomorrow(tmp_path, burn_path
     rc, out, _ = _run(tmp_path, ["routing", "burn", "glm", "on", "--json"])
     assert rc == 0
     assert datetime.fromisoformat(json.loads(out)["burn"][0]["until"]) == (now + timedelta(days=1)).replace(hour=23, minute=59, second=0, microsecond=0)
+
+
+def test_routing_mode_list_settings_and_legacy_burn_exclusivity(tmp_path, burn_path):
+    def run(*args):
+        rc, out, err = _run(tmp_path, ["routing", *args, "--json"])
+        assert not err
+        return rc, json.loads(out)
+
+    rc, payload = run("mode")
+    assert rc == 0 and {item["name"] for item in payload["modes"]} == set(gate.KNOWN_PROVIDERS)
+    assert all(item["mode"] == "standard" and item["until"] is None for item in payload["modes"])
+    rc, payload = run("mode", "grok", "off")
+    assert rc == 0 and next(x for x in payload["modes"] if x["name"] == "grok")["mode"] == "off"
+    rc, payload = run("mode", "grok", "burn", "--until", "23:59")
+    entry = next(x for x in payload["modes"] if x["name"] == "grok")
+    assert rc == 0 and entry["mode"] == "burn" and entry["until"] and not gate.load_off(gate.OFF_PATH)
+    run("mode", "grok", "off")
+    assert "grok" not in gate.load_burn(burn_path)
+    run("burn", "grok", "on")
+    assert "grok" not in gate.load_off(gate.OFF_PATH)
+    rc, payload = run("mode", "grok", "standard")
+    assert rc == 0 and next(x for x in payload["modes"] if x["name"] == "grok")["mode"] == "standard"
+    assert "grok" not in gate.load_burn(burn_path)
+    assert run("mode", "invalid", "off")[0] == 2
+    assert run("mode", "grok", "off", "--until", "23:59")[0] == 2
+
+
+def test_monitor_only_check_and_line_with_missing_or_stale_status(tmp_path):
+    gate.store_off(gate.OFF_PATH, "grok")
+    missing = tmp_path / "missing.json"
+    rc, out, err = _run(tmp_path, ["routing", "check", "grok", "--json"], status=missing)
+    assert rc == 3 and json.loads(out)["reason"] == "disabled" and not err
+    rc, out, err = _run(tmp_path, ["routing", "line"], status=missing)
+    assert rc == 0 and out == "quota: stale（status.json なし） grok=stop(?%,監視のみ)\n"
+    stale = tmp_path / "stale.json"
+    _write_status(stale, [_win("grok:weekly", "grok", "spare", 63)], age_seconds=7200)
+    rc, out, err = _run(tmp_path, ["routing", "check", "grok", "--json"], status=stale)
+    assert rc == 3 and json.loads(out)["remaining"] == 63 and json.loads(out)["reason"] == "disabled"
+    rc, out, err = _run(tmp_path, ["routing", "line", "--json"], status=stale)
+    assert json.loads(out)["workers"][0]["reason"] == "disabled"
+
+
+def test_routing_mode_retired_name_can_be_listed_and_cleared(tmp_path):
+    gate.store_off(gate.OFF_PATH, "retired")
+    rc, out, _ = _run(tmp_path, ["routing", "mode", "--json"])
+    assert any(x["name"] == "retired" and x["mode"] == "off" for x in json.loads(out)["modes"])
+    rc, out, _ = _run(tmp_path, ["routing", "mode", "retired", "standard", "--json"])
+    assert rc == 0 and "retired" not in gate.load_off(gate.OFF_PATH)
+
+
+def test_monitor_only_unconfigured_worker_uses_provider_data(tmp_path):
+    config = _write_config(tmp_path / "cfg.toml", workers={"glm": ["glm:5h"]})
+    gate.store_off(gate.OFF_PATH, "grok")
+    path = tmp_path / "status.json"
+    window = _win("grok:weekly", "grok", "spare", 63)
+    _write_status(path, [window])
+    rc, out, _ = _run(tmp_path, ["routing", "check", "grok", "--json"], status=path, config=config)
+    worker = json.loads(out)
+    assert rc == 3 and (worker["reason"], worker["remaining"], worker["resets_at"], worker["windows"]) == (
+        "disabled", 63, window["resets_at"], ["grok:weekly"])
+
+
+@pytest.mark.parametrize("command", ["mode", "burn"])
+def test_burn_transition_keeps_off_when_clear_fails(tmp_path, monkeypatch, command):
+    gate.store_off(gate.OFF_PATH, "grok")
+    def fail_clear(*args, **kwargs):
+        raise OSError("simulated failure")
+    monkeypatch.setattr(gate, "clear_off", fail_clear)
+    rc, out, err = _run(tmp_path, ["routing", command, "grok", "burn" if command == "mode" else "on"])
+    assert rc == 2 and not out and len(err.splitlines()) == 1
+    assert "grok" in gate.load_off(gate.OFF_PATH)
+    assert "grok" in gate.load_burn(gate.BURN_PATH)
+
+
+def test_off_transition_keeps_off_when_burn_clear_fails(tmp_path, monkeypatch):
+    gate.store_burn(gate.BURN_PATH, "grok", datetime.now().astimezone() + timedelta(hours=1))
+    def fail_clear(*args, **kwargs):
+        raise OSError("simulated failure")
+    monkeypatch.setattr(gate, "clear_burn", fail_clear)
+    rc, out, err = _run(tmp_path, ["routing", "mode", "grok", "off"])
+    assert rc == 2 and not out and len(err.splitlines()) == 1
+    assert "grok" in gate.load_off(gate.OFF_PATH)
+    assert "grok" in gate.load_burn(gate.BURN_PATH)
+
+
+@pytest.mark.parametrize("name", ["openrouter", "deepseek", "kimi"])
+def test_balance_only_provider_off_is_excluded(tmp_path, name):
+    config = _write_config(tmp_path / "cfg.toml", workers={name: [name + ":daily"]})
+    gate.store_off(gate.OFF_PATH, name)
+    rc, out, _ = _run(tmp_path, ["routing", "mode", "--json"], config=config)
+    assert rc == 0 and all(item["name"] != name for item in json.loads(out)["modes"])
+    rc, _, _ = _run(tmp_path, ["routing", "mode", name, "off", "--json"], config=config)
+    assert rc == 2
+    path = tmp_path / "status.json"
+    _write_status(path, [_win(name + ":daily", name, "spare", 63)])
+    rc, out, _ = _run(tmp_path, ["routing", "check", name, "--json"], status=path, config=config)
+    assert rc == 0 and json.loads(out)["reason"] == "missing"
+    rc, out, _ = _run(tmp_path, ["routing", "check", name, "--json"], status=tmp_path / "missing.json", config=config)
+    assert rc == 0 and json.loads(out)["reason"] == "missing_status"
+    gate.store_burn(gate.BURN_PATH, name, datetime.now().astimezone() + timedelta(hours=1))
+    rc, _, _ = _run(tmp_path, ["routing", "burn", name, "off", "--json"], config=config)
+    assert rc == 0 and name not in gate.load_burn(gate.BURN_PATH)
+    rc, _, _ = _run(tmp_path, ["routing", "mode", name, "standard", "--json"], config=config)
+    assert rc == 0 and name not in gate.load_off(gate.OFF_PATH)
+
+
+def test_mode_excludes_balance_alias_but_includes_mixed_worker(tmp_path):
+    config = _write_config(tmp_path / "cfg.toml", workers={"balance_alias": ["grok:weekly"]})
+    rc, _, _ = _run(tmp_path, ["routing", "mode", "balance_alias", "off", "--json"], config=config)
+    assert rc == 0
+    config = _write_config(tmp_path / "cfg.toml", workers={
+        "balance_alias": ["openrouter:daily", "kimi:daily"],
+        "mixed": ["openrouter:daily", "grok:weekly"],
+    })
+    gate.store_burn(gate.BURN_PATH, "balance_alias", datetime.now().astimezone() + timedelta(hours=1))
+    rc, out, _ = _run(tmp_path, ["routing", "mode", "--json"], config=config)
+    assert rc == 0 and {x["name"] for x in json.loads(out)["modes"]} == {"mixed"}
+    for mode in ("burn", "off"):
+        rc, out, _ = _run(tmp_path, ["routing", "mode", "balance_alias", mode, "--json"], config=config)
+        assert rc == 2 and json.loads(out)["error"]
+    rc, _, _ = _run(tmp_path, ["routing", "mode", "balance_alias", "standard", "--json"], config=config)
+    assert rc == 0 and "balance_alias" not in gate.load_off(gate.OFF_PATH)
+    assert "balance_alias" not in gate.load_burn(gate.BURN_PATH)
+    rc, out, _ = _run(tmp_path, ["routing", "burn", "balance_alias", "on", "--json"], config=config)
+    assert rc == 2 and json.loads(out)["error"]
+    gate.store_burn(gate.BURN_PATH, "balance_alias", datetime.now().astimezone() + timedelta(hours=1))
+    rc, _, _ = _run(tmp_path, ["routing", "burn", "balance_alias", "off", "--json"], config=config)
+    assert rc == 0 and "balance_alias" not in gate.load_burn(gate.BURN_PATH)
+    rc, _, _ = _run(tmp_path, ["routing", "mode", "mixed", "off", "--json"], config=config)
+    assert rc == 0
+
+
+@pytest.mark.parametrize("command,action", [("mode", "burn"), ("mode", "off"), ("burn", "on"), ("burn", "off")])
+@pytest.mark.parametrize("language", ["ja", "en"])
+@pytest.mark.parametrize("as_json", [False, True])
+def test_routing_state_write_error_is_reported(tmp_path, monkeypatch, command, action, language, as_json):
+    config = _write_config(tmp_path / "cfg.toml")
+    config.write_text(config.read_text().replace('language = "ja"', 'language = "%s"' % language))
+    def fail(*args, **kwargs):
+        raise OSError("write failed\nsecond line")
+    monkeypatch.setattr(gate, "_write_burn" if action != "off" or command == "burn" else "_write_off", fail)
+    args = ["routing", command, "grok", action] + (["--json"] if as_json else [])
+    rc, out, err = _run(tmp_path, args, config=config)
+    assert rc == 2
+    message = json.loads(out)["error"] if as_json else err.strip()
+    assert (not err if as_json else not out) and len(message.splitlines()) == 1
+    assert "write failed second line" in message
+    assert ("保存できません" if language == "ja" else "Unable to save") in message
+
+
+@pytest.mark.parametrize("second_command", ["mode", "burn"])
+def test_routing_state_transitions_are_serialized(tmp_path, monkeypatch, second_command):
+    import threading
+    from types import SimpleNamespace
+    from quotacanvas.config import Config
+
+    started, release, second_done = threading.Event(), threading.Event(), threading.Event()
+    original = gate.store_off
+    def pause_store(*args, **kwargs):
+        original(*args, **kwargs)
+        started.set()
+        assert release.wait(5)
+    monkeypatch.setattr(gate, "store_off", pause_store)
+    monkeypatch.setattr(cli, "_print_json", lambda value: None)
+    cfg = Config()
+    first = SimpleNamespace(name="grok", mode="off", until=None, json=True)
+    second = SimpleNamespace(name="grok", mode="burn", action="on", until=None, json=True)
+    results = []
+    def invoke(args, operation, done=None):
+        try:
+            results.append(cli._cmd_routing_state(args, cfg, operation))
+        finally:
+            if done:
+                done.set()
+    one = threading.Thread(target=invoke, args=(first, cli._cmd_routing_mode_locked))
+    operation = cli._cmd_routing_mode_locked if second_command == "mode" else cli._cmd_routing_burn_locked
+    two = threading.Thread(target=invoke, args=(second, operation, second_done))
+    one.start()
+    try:
+        assert started.wait(5)
+        two.start()
+        assert not second_done.wait(0.2)
+    finally:
+        release.set()
+        one.join(5)
+        if two.ident is not None:
+            two.join(5)
+    assert not one.is_alive() and not two.is_alive() and results == [0, 0]
+    assert "grok" in gate.load_burn(gate.BURN_PATH)
+    assert "grok" not in gate.load_off(gate.OFF_PATH)
