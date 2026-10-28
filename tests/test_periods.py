@@ -211,3 +211,13 @@ def test_periods_file_is_jsonl(tmp_path):
         "used": 64.0,
         "closed_at": (T0 + timedelta(days=7)).astimezone(UTC).isoformat(),
     }
+
+
+def test_invalid_utf8_periods_are_ignored(tmp_path):
+    path = tmp_path / "periods.jsonl"
+    periods = Periods(path)
+    periods.record_closed("claude:5h", T0, 64.0, T0)
+    with path.open("ab") as handle:
+        handle.write(b"\xff\n")
+    assert len(periods.periods("claude:5h")) == 1
+    assert periods.previous_used("claude:5h") == 64.0

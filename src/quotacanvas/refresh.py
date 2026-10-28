@@ -30,6 +30,9 @@ REFRESH_REQUEST_PATH = DATA_DIR / "refresh-request"
 
 PathLike = Union[str, Path]
 
+# 削除できなかった要求だけを記録し、同じファイルで繰り返し起床しない。
+_failed_requests = {}
+
 
 def request_refresh(path: Optional[PathLike] = None) -> Path:
     """反映要求ファイルを作る (空でよい)。作ったパスを返す。"""
@@ -40,21 +43,25 @@ def request_refresh(path: Optional[PathLike] = None) -> Path:
 
 
 def consume_refresh_request(path: Optional[PathLike] = None) -> bool:
-    """反映要求があれば削除して True を返す。中身は見ない。
-
-    削除に失敗しても (権限など) 警告だけで True: 要求はあったものとして扱い、
-    毎秒の確認が無限に待ちを打ち切り続けるのを防ぐ。
-    """
+    """反映要求を一度処理し、削除に失敗した同一要求は再処理しない。"""
     p = Path(path).expanduser() if path is not None else REFRESH_REQUEST_PATH
     try:
-        if not p.exists():
-            return False
+        st = p.stat()
+    except FileNotFoundError:
+        _failed_requests.pop(p, None)
+        return False
     except OSError:
+        return False
+    state = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+    if _failed_requests.get(p) == state:
         return False
     try:
         p.unlink()
     except OSError as exc:
+        _failed_requests[p] = state
         log.warning("反映要求ファイル %s を削除できません (%s)", p, exc)
+    else:
+        _failed_requests.pop(p, None)
     return True
 
 

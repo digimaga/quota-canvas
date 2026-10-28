@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .atomic import atomic_write
 from .models import ProviderUsage, ResetCredit, Window
 
 log = logging.getLogger("quotacanvas")
@@ -144,12 +145,15 @@ class LastGood:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return {}
+        except UnicodeDecodeError as exc:
+            log.warning("last-good.json が壊れているため無視します: %s", exc)
+            return {}
         except OSError as exc:
             log.warning("last-good.json を読めません: %s", exc)
             return {}
         try:
             raw = json.loads(text)
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        except json.JSONDecodeError as exc:
             log.warning("last-good.json が壊れているため無視します: %s", exc)
             return {}
         if not isinstance(raw, dict):
@@ -172,10 +176,7 @@ class LastGood:
         """現在の data を全体を書き込む。失敗しても例外を出さない。"""
         payload = {pid: _encode_usage(u) for pid, u in self.data.items()}
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
-                           encoding="utf-8")
-            os.replace(tmp, self.path)
+            data = json.dumps(payload, ensure_ascii=False, indent=1).encode("utf-8")
+            atomic_write(self.path, lambda handle: handle.write(data))
         except OSError as exc:
             log.warning("last-good.json に保存できません: %s", exc)

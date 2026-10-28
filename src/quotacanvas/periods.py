@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, List, Optional
 
+from .atomic import atomic_write
+
 MAX_PER_WINDOW = 20   # 窓ごとに残す閉じた期間の上限
 RESET_TOLERANCE = 60.0  # resets_at の API の揺れを吸う秒数 (history.py と同じ)
 
@@ -133,11 +135,14 @@ class Periods:
 
     def _iter_file(self) -> Iterator[ClosedPeriod]:
         try:
-            text = self.path.read_text(encoding="utf-8")
-        except (FileNotFoundError, NotADirectoryError, OSError):
+            lines = self.path.read_bytes().splitlines()
+        except OSError:
             return
-        for line in text.splitlines():
-            line = line.strip()
+        for raw_line in lines:
+            try:
+                line = raw_line.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                continue
             if not line:
                 continue
             period = decode_line(line)
@@ -153,9 +158,8 @@ class Periods:
         for items in by_window.values():
             items.sort(key=lambda p: p.closed_at)
             keep.extend(items[-MAX_PER_WINDOW:])
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        with tmp.open("w", encoding="utf-8") as handle:
+        def write(handle):
             for entry in keep:
-                handle.write(encode_period(entry) + "\n")
-        os.replace(tmp, self.path)
+                handle.write((encode_period(entry) + "\n").encode("utf-8"))
+
+        atomic_write(self.path, write)

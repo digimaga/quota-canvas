@@ -322,3 +322,13 @@ def test_backoff_substitute_keeps_last_success_fetch_time(tmp_path, monkeypatch)
     later = NOW + timedelta(minutes=1)
     assert poller.fetch(later)[0].fetched_at == NOW          # 429 を受けた周回
     assert poller.fetch(later + timedelta(minutes=1))[0].fetched_at == NOW  # バックオフ中
+
+
+def test_last_good_invalid_utf8_is_treated_as_corrupt(tmp_path, caplog):
+    path = tmp_path / LAST_GOOD
+    path.write_bytes(b'\xff')
+    cache = LastGood(path)
+    assert cache.data == {}
+    assert "壊れている" in caplog.text
+    cache.set(_usage("claude", [_win("claude", "weekly")], fetched_at=NOW))
+    assert "claude" in LastGood(path).data

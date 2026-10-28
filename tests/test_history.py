@@ -223,3 +223,13 @@ def test_record_does_not_close_period_when_new_resets_unknown(tmp_path):
     history.record([_win(used=2.0, resets=None)], now=T0 + timedelta(days=7))
     assert history.periods.previous_used("claude:5h") is None
     assert not (tmp_path / "periods.jsonl").exists()
+
+
+def test_invalid_utf8_history_is_ignored(tmp_path):
+    path = tmp_path / "history.jsonl"
+    history = History(path)
+    history.record([_win()], now=T0)
+    with path.open("ab") as handle:
+        handle.write(b"\xff\n")
+    assert len(history.samples("claude:5h")) == 1
+    assert "claude:5h" in history.latest_by_window()

@@ -1064,3 +1064,39 @@ def test_english_credit_singular_and_plural():
 def test_parse_until_rejects_past_and_equal_iso():
     assert gate.parse_until(NOW.isoformat(), NOW) is None
     assert gate.parse_until((NOW - timedelta(seconds=1)).isoformat(), NOW) is None
+
+
+def test_burn_concurrent_updates_preserve_each_worker(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    import time
+
+    path = tmp_path / "burn.json"
+    original_load = gate.load_burn
+    start = Barrier(8)
+
+    def slow_load(*args, **kwargs):
+        result = original_load(*args, **kwargs)
+        time.sleep(0.01)
+        return result
+
+    monkeypatch.setattr(gate, "load_burn", slow_load)
+
+    def update(i):
+        start.wait(timeout=5)
+        gate.store_burn(path, f"worker{i}", NOW + timedelta(hours=1), NOW)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(update, range(8)))
+    assert set(original_load(path, NOW)) == {f"worker{i}" for i in range(8)}
+
+
+@pytest.mark.parametrize("patterns", [
+    ["codex:weekly", "codex:5h"],
+    ["codex:weekly", "codex:short*"],
+])
+def test_partial_window_match_is_missing_even_with_burn(patterns):
+    routing = cfg(workers={"codex": patterns})
+    data = status(win("codex:weekly", "codex", "spare", 80))
+    result = evaluate(data, routing, {"codex": NOW + timedelta(hours=1)}, NOW)
+    assert (result.workers[0].verdict, result.workers[0].reason) == ("unknown", "missing")
