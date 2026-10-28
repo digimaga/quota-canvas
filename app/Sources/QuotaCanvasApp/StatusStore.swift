@@ -57,12 +57,7 @@ final class StatusStore: ObservableObject {
                 let previous = status
                 status = decoded
                 fileError = nil
-                let stamp = decoded.updatedAt ?? result.modifiedAt
-                if let stamp {
-                    isStale = Date().timeIntervalSince(stamp) > Self.staleInterval
-                } else {
-                    isStale = true
-                }
+                isStale = Self.engineIsStale(updatedAt: decoded.updatedAt, now: Date())
                 // F4: 前回との差分から通知を組み立てる（純粋な判定は NotificationPlanner）
                 NotificationCoordinator.shared.process(previous: previous, current: decoded)
             } catch {
@@ -79,9 +74,13 @@ final class StatusStore: ObservableObject {
         loadedAt = Date()
     }
 
+    static func engineIsStale(updatedAt: Date?, now: Date) -> Bool {
+        guard let updatedAt else { return true }
+        return now.timeIntervalSince(updatedAt) > staleInterval
+    }
+
     private struct ReadResult {
         var data: Data?
-        var modifiedAt: Date?
         var message: String?
     }
 
@@ -92,8 +91,7 @@ final class StatusStore: ObservableObject {
         }
         do {
             let data = try Data(contentsOf: url)
-            let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
-            return ReadResult(data: data, modifiedAt: attrs[.modificationDate] as? Date, message: nil)
+            return ReadResult(data: data, message: nil)
         } catch {
             return ReadResult(message: String(localized: "status.json を読めません: \(error.localizedDescription)"))
         }

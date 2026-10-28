@@ -6,7 +6,14 @@ root = Path(__file__).resolve().parents[1]
 display = (root / 'Sources/QuotaCanvasApp/Views/SettingsView.swift').read_text()
 routing = (root / 'Sources/QuotaCanvasApp/Views/RoutingSettingsView.swift').read_text()
 en = (root / 'Resources/en.lproj/Localizable.strings').read_text()
+app = (root / 'Sources/QuotaCanvasApp/QuotaCanvasApp.swift').read_text()
 checks = {
+    'app starts the StateObject instance':
+        '@StateObject private var statusStore: StatusStore' in app
+        and 'let store = StatusStore()' in app
+        and '_statusStore = StateObject(wrappedValue: store)' in app
+        and 'store.start()' in app
+        and 'let store = statusStore' not in app,
     'engine settings are outside the config-dependent form':
         display.index('.safeAreaInset(edge: .bottom) { Form { engineSection }') > display.index('} else if loadFailed'),
     'engine path can reload the config': 'Button("再読み込み") { Task { await load() } }' in display,

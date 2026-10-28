@@ -248,3 +248,6 @@
 "エンジンの常駐設定に失敗しました: %@" = "Could not configure the background engine: %@";
 
 "適用" = "Apply";
+
+"取得: %@" = "Fetched: %@";
+"取得時刻: 不明" = "Fetch time: unknown";

@@ -8,7 +8,7 @@ struct RegressionTests {
         guard condition() else { fatalError("Failed: \(message)") }
     }
 
-    static func main() async throws {
+    @MainActor static func main() async throws {
         let original = ConfigDocument(object: ["display": ["paused": false, "brightness": 100],
             "providers": ["example": ["color": "#123456", "enabled": true]],
             "routing": ["enabled": false, "floor_percent": 5, "stale_minutes": 20]])
@@ -45,6 +45,48 @@ struct RegressionTests {
         check(!RoutingSettingsView.verdictIsStale(now.addingTimeInterval(-300), now: now), "fresh threshold")
         check(RoutingSettingsView.verdictIsStale(now.addingTimeInterval(-301), now: now), "stale threshold")
         check(RoutingSettingsView.verdictIsStale(nil, now: now), "missing timestamp")
+
+        let configPanels = [
+            ConfigDocument.PanelConfig(main: "alpha:week", subs: ["alpha:day"], size: "large"),
+            ConfigDocument.PanelConfig(main: "", subs: nil, size: "small"),
+            ConfigDocument.PanelConfig(main: "beta:day", subs: nil, size: "small"),
+            ConfigDocument.PanelConfig(main: "gamma:week", subs: nil, size: "large"),
+            ConfigDocument.PanelConfig(main: "delta:week", subs: [], size: "large")
+        ]
+        let staleLayout = try JSONDecoder().decode([LayoutPanel].self, from: Data(#"[{"main":"old:week","size":"large","subs":["old:day"]},{"main":"gamma:week","size":"large","subs":["gamma:day"]}]"#.utf8))
+        for status in [[], staleLayout] {
+            let restored = LayoutSettingsView.restoreLayout(config: configPanels, status: status)
+            var slots = restored.slots
+            check(slots[0].main == "alpha:week" && slots[0].subs == ["alpha:day"], "manual large from config")
+            check(restored.splits[1] && slots[4].main == nil && slots[5].main == "beta:day", "manual split and empty top preserved")
+            check(slots[6].main == "gamma:week" && slots[6].subs == nil, "automatic subs preserved")
+            check(slots[9].subs == [], "explicit empty subs preserved")
+            check(restored.resolvedSubs.isEmpty, "stale layout does not supply mismatched subs")
+            slots[0].main = "alpha:new"
+            let savedPanels = LayoutSettingsView.panelsForSave(slots: slots, splits: restored.splits)
+            check(savedPanels.map(\.main) == ["alpha:new", "", "beta:day", "gamma:week", "delta:week"], "editing one slot preserves others")
+            check(savedPanels[0].subs == ["alpha:day"] && savedPanels[3].subs == nil && savedPanels[4].subs == [], "saving retains sub modes")
+        }
+        let auto = LayoutSettingsView.restoreLayout(config: [], status: staleLayout)
+        check(auto.slots[0].main == "old:week" && auto.slots[3].main == "gamma:week", "auto placement comes from status")
+        check(auto.resolvedSubs["old:week"] == ["old:day"], "auto resolved subs come from status")
+        let matchingStatus = try JSONDecoder().decode([LayoutPanel].self, from: Data(#"[{"main":"alpha:week","size":"large","subs":["alpha:resolved"]}]"#.utf8))
+        let matching = LayoutSettingsView.restoreLayout(config: configPanels, status: matchingStatus)
+        check(matching.resolvedSubs["alpha:week"] == ["alpha:resolved"], "matching status supplies resolved subs")
+
+        let statusJSON = #"{"updated_at":"2026-10-28T12:00:00Z","cards":[{"id":"one","fetched_at":"2026-10-28T10:00:00Z"},{"id":"two","fetched_at":42},{"id":"three"}]}"#
+        let decoded = try JSONDecoder().decode(EngineStatus.self, from: Data(statusJSON.utf8))
+        let reference = ISO8601Support.parse("2026-10-28T12:00:30Z")!
+        let first = decoded.cards![0]
+        check(first.fetchedAt == ISO8601Support.parse("2026-10-28T10:00:00Z"), "card fetch time decoded")
+        check(decoded.cards![1].fetchedAt == nil && decoded.cards![2].fetchedAt == nil, "malformed and missing fetch time are unknown")
+        check(!StatusStore.engineIsStale(updatedAt: decoded.updatedAt, now: reference), "engine freshness uses update time")
+        check(StatusStore.engineIsStale(updatedAt: decoded.updatedAt, now: reference.addingTimeInterval(300)), "engine stale after update threshold")
+        check(StatusStore.engineIsStale(updatedAt: nil, now: reference), "missing engine timestamp is unknown")
+        let fetchText = CardRow(card: first, gauge: nil).fetchText(now: reference)
+        let expectedAge = RelativeDateTimeFormatter().localizedString(for: first.fetchedAt!, relativeTo: reference)
+        check(fetchText.contains(expectedAge), "card shows fetch age independent of redraw")
+        check(CardRow(card: decoded.cards![1], gauge: nil).fetchText(now: reference) == String(localized: "取得時刻: 不明"), "unknown fetch time shown")
 
         let input = Data(repeating: 65, count: 1_000_000)
         let code = "import sys; sys.stderr.buffer.write(b'e'*1000000); sys.stderr.flush(); sys.stdout.buffer.write(b'o'*1000000); sys.stdout.flush(); data=sys.stdin.buffer.read(); sys.stdout.buffer.write(str(len(data)).encode())"

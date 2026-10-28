@@ -75,6 +75,8 @@ struct StatusCard: Decodable {
     var statusLabel: String?
     var advice: String?
     var resetsAtRaw: String?
+    /// 実際に残量データを取得した時刻。再描画では変わらない。
+    var fetchedAtRaw: String?
     /// F7: 取得失敗中に最後の成功値を出しているときの失敗理由。無ければ nil。
     var staleError: String?
     /// F3: 前回の期間の最終使用率（%）。無ければ nil。
@@ -88,6 +90,7 @@ struct StatusCard: Decodable {
         case id, provider, name, label, used, remaining, status, advice
         case statusLabel = "status_label"
         case resetsAtRaw = "resets_at"
+        case fetchedAtRaw = "fetched_at"
         case staleError = "stale_error"
         case previousUsed = "previous_used"
         case exhaustsAtRaw = "exhausts_at"
@@ -108,6 +111,7 @@ struct StatusCard: Decodable {
         statusLabel = try? c.decodeIfPresent(String.self, forKey: .statusLabel)
         advice = try? c.decodeIfPresent(String.self, forKey: .advice)
         resetsAtRaw = try? c.decodeIfPresent(String.self, forKey: .resetsAtRaw)
+        fetchedAtRaw = try? c.decodeIfPresent(String.self, forKey: .fetchedAtRaw)
         staleError = try? c.decodeIfPresent(String.self, forKey: .staleError)
         previousUsed = try? c.decodeIfPresent(Double.self, forKey: .previousUsed)
         exhaustsAtRaw = try? c.decodeIfPresent(String.self, forKey: .exhaustsAtRaw)
@@ -118,6 +122,8 @@ struct StatusCard: Decodable {
         guard let raw = resetsAtRaw else { return nil }
         return ISO8601Support.parse(raw)
     }
+
+    var fetchedAt: Date? { fetchedAtRaw.flatMap(ISO8601Support.parse) }
 
     var exhaustsAt: Date? { exhaustsAtRaw.flatMap(ISO8601Support.parse) }
     var burstExhaustsAt: Date? { burstExhaustsAtRaw.flatMap(ISO8601Support.parse) }
