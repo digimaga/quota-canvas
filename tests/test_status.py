@@ -6,6 +6,7 @@ import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from PIL import Image
 
 from quotacanvas.config import load_config
@@ -343,3 +344,128 @@ def test_stale_card_reports_last_successful_fetch_time(tmp_path):
     card = build_status(_cfg(tmp_path), [(pu, _pace(win))], [pu], NOW)["cards"][0]
     assert card["stale_error"] == "HTTP 429"
     assert card["fetched_at"] == fetched.astimezone().isoformat(timespec="seconds")
+
+@pytest.mark.parametrize("kind", ["status", "lastgood", "burn"])
+def test_concurrent_atomic_writes_have_unique_temporary_files(tmp_path, monkeypatch, kind):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from quotacanvas import atomic, gate
+    from quotacanvas.lastgood import LastGood
+    from quotacanvas.models import ProviderUsage
+
+    path = tmp_path / "state.json"
+    barrier = Barrier(2)
+    real_replace = atomic.os.replace
+    temp_paths = []
+
+    def replace_after_both_ready(source, destination):
+        temp_paths.append(source)
+        barrier.wait(timeout=5)
+        real_replace(source, destination)
+
+    monkeypatch.setattr(atomic.os, "replace", replace_after_both_ready)
+
+    def write(i):
+        if kind == "status":
+            write_status({"writer": i}, path)
+        elif kind == "lastgood":
+            LastGood(path).set(ProviderUsage(f"provider{i}", "Dummy", [], None, None))
+        else:
+            gate._write_burn(path, {"writer": str(i)})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(write, range(2)))
+    assert len(temp_paths) == len(set(temp_paths)) == 2
+    assert isinstance(json.loads(path.read_text()), dict)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["state.json"]
+
+
+def test_atomic_write_fsync_and_failed_replace_cleanup(tmp_path, monkeypatch):
+    from quotacanvas import atomic
+
+    path = tmp_path / "status.json"
+    path.write_text('{"old": true}', encoding="utf-8")
+    synced = []
+    real_fsync = atomic.os.fsync
+
+    def track_fsync(fd):
+        synced.append(fd)
+        real_fsync(fd)
+
+    def fail_replace(source, destination):
+        assert synced
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(atomic.os, "fsync", track_fsync)
+    monkeypatch.setattr(atomic.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        write_status({"new": True}, path)
+    assert json.loads(path.read_text()) == {"old": True}
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["status.json"]
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o640, 0o644, 0o664])
+def test_atomic_write_preserves_existing_permissions(tmp_path, mode):
+    import stat
+
+    path = tmp_path / "status.json"
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(mode)
+    write_status({"updated": True}, path)
+    assert stat.S_IMODE(path.stat().st_mode) == mode
+
+
+@pytest.mark.parametrize("mask, expected", [(0o022, 0o644), (0o077, 0o600), (0o002, 0o664)])
+def test_new_atomic_file_uses_process_umask(tmp_path, mask, expected):
+    import subprocess
+    import sys
+
+    path = tmp_path / "new.json"
+    # umask is process-wide, so set it only in an isolated child process.
+    program = (
+        "import os, pathlib, sys; "
+        "from quotacanvas.status import write_status; "
+        "os.umask(int(sys.argv[2], 8)); "
+        "write_status({}, pathlib.Path(sys.argv[1]))"
+    )
+    subprocess.run([sys.executable, "-c", program, str(path), oct(mask)], check=True)
+    assert path.stat().st_mode & 0o777 == expected
+
+
+@pytest.mark.parametrize("kind", ["history", "periods"])
+def test_concurrent_jsonl_rewrites_use_unique_temporary_files(tmp_path, monkeypatch, kind):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from quotacanvas import atomic
+    from quotacanvas.history import History, encode_sample
+    from quotacanvas.models import Sample
+    from quotacanvas.periods import ClosedPeriod, Periods
+
+    path = tmp_path / "state.jsonl"
+    if kind == "history":
+        path.write_text(encode_sample(Sample("dummy:weekly", NOW - timedelta(days=9), 10.0, None)) + "\n"
+                        + encode_sample(Sample("dummy:weekly", NOW, 20.0, None)) + "\n", encoding="utf-8")
+        writers = [History(path), History(path)]
+        def rewrite(i):
+            writers[i]._prune_old(NOW)
+    else:
+        writers = [Periods(path), Periods(path)]
+        def rewrite(i):
+            writers[i]._rewrite([ClosedPeriod("dummy:weekly", NOW, float(i), NOW)])
+
+    barrier = Barrier(2)
+    original_replace = atomic.os.replace
+    temp_paths = []
+
+    def replace_after_both_ready(source, destination):
+        temp_paths.append(source)
+        barrier.wait(timeout=5)
+        original_replace(source, destination)
+
+    monkeypatch.setattr(atomic.os, "replace", replace_after_both_ready)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(rewrite, range(2)))
+    assert len(temp_paths) == len(set(temp_paths)) == 2
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1 and isinstance(json.loads(lines[0]), dict)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["state.jsonl"]

@@ -3,7 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 /// 「配置」タブ: 画面の形を模した図で layout.panels（手動配置）を編集する。
-/// 初期表示は status.json の layout（無ければ空スロット）。変更は即 config --set-json で保存。
+/// 手動配置は config、 自動配置は status.json の layout から復元。変更は即 config --set-json で保存。
 /// 4 列 ×（大 1 or 小 2）。各列の「2 段に分ける」で上下 2 枚の小スロット（全部 2 段なら最大 8 枚）。
 struct LayoutSettingsView: View {
     static let columnCount = 4
@@ -428,57 +428,51 @@ struct LayoutSettingsView: View {
             alertMessage = String(localized: "窓の一覧を取得できません: \(error.localizedDescription)")
         }
 
-        if let snapshot {
-            providerColors = snapshot.colors ?? [:]
-            applyLayout(snapshot.layout ?? [],
-                        config: doc?.layoutPanels ?? [])
-        }
+        providerColors = snapshot?.colors ?? [:]
+        let restored = Self.restoreLayout(config: doc?.layoutPanels ?? [], status: snapshot?.layout ?? [])
+        slots = restored.slots
+        splits = restored.splits
+        resolvedSubsByMain = restored.resolvedSubs
     }
 
-    /// status.json の layout（解決済み subs）+ config の layout.panels（nil = 自動）→ 列への初期配置。
-    /// エンジンの規則: 前から順に、large は 1 枚で 1 列。small は直前の列が small 列で
-    /// まだ 1 枚なら同じ列の下段、そうでなければ新しい small 列の上段。列は最大 4（超過分は捨てる）。
-    /// small の main "" は空き段（位置だけ保持）。
-    /// subs は config の panels と status の layout を「同じ並び位置」で対応づける
-    /// （同じ窓が複数のパネルに現れてもずれない）。枚数が違うとき（自動配置の表示・
-    /// 未知の窓をエンジンが無視した場合など）は対応づけ不能なので全パネル「自動」扱いにする。
-    private func applyLayout(_ panels: [LayoutPanel], config: [ConfigDocument.PanelConfig]) {
-        var next = Self.emptySlots()
-        var nextSplits = [Bool](repeating: false, count: Self.columnCount)
-        resolvedSubsByMain = [:]
-        let indexedSubs: [[String]?] = config.count == panels.count
-            ? config.map(\.subs)
-            : Array(repeating: nil, count: panels.count)
-
-        var col = -1          // 直前のパネルが入った列（-1 = まだない）
+    /// 手動配置は config が正。status は自動配置と、対応するパネルの解決済みサブ表示に使う。
+    static func restoreLayout(config: [ConfigDocument.PanelConfig], status: [LayoutPanel])
+        -> (slots: [LayoutSlot], splits: [Bool], resolvedSubs: [String: [String]]) {
+        let panels: [ConfigDocument.PanelConfig] = config.isEmpty
+            ? status.map { ConfigDocument.PanelConfig(main: $0.main ?? "", subs: nil, size: $0.size ?? "large") }
+            : config
+        var next = emptySlots()
+        var nextSplits = [Bool](repeating: false, count: columnCount)
+        var resolvedSubs: [String: [String]] = [:]
+        var col = -1
         var colIsSmall = false
-        var colFilled = 0     // その列に並んだパネル数
+        var colFilled = 0
         for (i, panel) in panels.enumerated() {
-            let main = panel.main ?? ""
+            let main = panel.main
             let isSmall = panel.size == "small"
             let continues = isSmall && colIsSmall && colFilled == 1
             if !continues {
                 col += 1
-                guard col < Self.columnCount else { break }
+                guard col < columnCount else { break }
                 colIsSmall = isSmall
                 colFilled = 0
                 nextSplits[col] = isSmall
             }
             if isSmall {
                 if !main.isEmpty {
-                    next[Self.slotIndex(col, continues ? 2 : 1)].main = main
+                    next[slotIndex(col, continues ? 2 : 1)].main = main
                 }
             } else {
-                next[Self.slotIndex(col, 0)].main = main.isEmpty ? nil : main
-                next[Self.slotIndex(col, 0)].subs = indexedSubs[i]
-                if !main.isEmpty {
-                    resolvedSubsByMain[main] = panel.subs ?? []
+                next[slotIndex(col, 0)].main = main.isEmpty ? nil : main
+                next[slotIndex(col, 0)].subs = panel.subs
+                if !main.isEmpty, i < status.count,
+                   status[i].main == main, (status[i].size ?? "large") == panel.size {
+                    resolvedSubs[main] = status[i].subs ?? []
                 }
             }
             colFilled += 1
         }
-        slots = next
-        splits = nextSplits
+        return (next, nextSplits, resolvedSubs)
     }
 
     /// 表示中のスロットから layout.panels を組み立てて即保存。
@@ -488,6 +482,12 @@ struct LayoutSettingsView: View {
     private func commit() {
         guard let original = doc else { return }
         var updated = original
+        updated.layoutPanels = Self.panelsForSave(slots: slots, splits: splits)
+        doc = updated
+        Task { await save(original, updated) }
+    }
+
+    static func panelsForSave(slots: [LayoutSlot], splits: [Bool]) -> [ConfigDocument.PanelConfig] {
         var panels: [ConfigDocument.PanelConfig] = []
         for col in 0..<Self.columnCount {
             if splits[col] {
@@ -503,9 +503,7 @@ struct LayoutSettingsView: View {
                 }
             }
         }
-        updated.layoutPanels = panels
-        doc = updated
-        Task { await save(original, updated) }
+        return panels
     }
 
     private func save(_ original: ConfigDocument, _ docToSave: ConfigDocument) async {

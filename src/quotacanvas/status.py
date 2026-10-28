@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
+from .atomic import atomic_write as _atomic_write
 from .config import Config
 from .gate import evaluate, format_line
 from .i18n import t
@@ -234,21 +234,6 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
         except Exception as exc:  # routing の失敗で常駐 run は落とさない (キーを省くだけ)
             logging.getLogger(__name__).warning("routing: %s", exc)
     return payload
-
-
-def _atomic_write(path: Path, write_body: Callable) -> None:
-    """一時ファイルに書いて rename する (途中で読んでも完全なファイルしか見えない)。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        with tmp.open("wb") as handle:
-            write_body(handle)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 def write_status(payload: Dict[str, Any], path: Path = STATUS_PATH) -> None:

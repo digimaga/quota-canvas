@@ -318,6 +318,7 @@ struct CardRow: View {
                     .foregroundStyle(.orange)
             }
             HStack(spacing: 8) {
+                Text(fetchText(now: Date())).font(.caption2).foregroundStyle(.secondary)
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.counterclockwise").font(.caption2)
                     Text(resetText).font(.caption2).foregroundStyle(.secondary)
@@ -329,6 +330,12 @@ struct CardRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    func fetchText(now: Date) -> String {
+        guard let fetched = card.fetchedAt else { return String(localized: "取得時刻: 不明") }
+        let relative = RelativeDateTimeFormatter().localizedString(for: fetched, relativeTo: now)
+        return String(localized: "取得: \(relative)")
     }
 
     /// F3: 「前回 36% 余り」。gauge=used のときは「前回 64% 使用」。

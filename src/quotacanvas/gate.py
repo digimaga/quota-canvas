@@ -15,8 +15,8 @@ status.json のトップレベル "windows" (表示フィルタ前の全窓) を
 
 from __future__ import annotations
 
-import json
 import fcntl
+import json
 import math
 import os
 import re
@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
+from .atomic import atomic_write
 from .i18n import t
 
 if TYPE_CHECKING:  # 循環 import を避ける (実行時は duck typing)
@@ -286,28 +287,34 @@ def load_burn(path: Path, now: Optional[datetime] = None) -> Dict[str, datetime]
 
 
 def _write_burn(path: Path, data: Dict[str, str]) -> None:
+    encoded = (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    atomic_write(path, lambda handle: handle.write(encoded))
+
+
+def _update_burn(path: Path, name: str, until: Optional[datetime], now: datetime) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    # Lock a separate, stable inode: the data file itself is replaced on every write.
+    with path.with_name(path.name + ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            active = load_burn(path, now)
+            if until is None:
+                active.pop(name, None)
+            else:
+                active[name] = to_local(until)
+            _write_burn(path, {k: v.isoformat() for k, v in sorted(active.items())})
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def store_burn(path: Path, name: str, until: datetime, now: Optional[datetime] = None) -> None:
-    """使い切りモードを 1 件設定する (書き込み時に期限切れのエントリを掃除)。"""
-    if now is None:
-        now = now_local()
-    active = load_burn(path, now)
-    active[name] = to_local(until)
-    _write_burn(path, {k: v.isoformat() for k, v in sorted(active.items())})
+    """使い切りモードを 1 件設定し、期限切れを掃除する。"""
+    _update_burn(path, name, until, now if now is not None else now_local())
 
 
 def clear_burn(path: Path, name: str, now: Optional[datetime] = None) -> None:
-    """使い切りモードを 1 件解除する (書き込み時に期限切れのエントリを掃除)。"""
-    if now is None:
-        now = now_local()
-    active = load_burn(path, now)
-    active.pop(name, None)
-    _write_burn(path, {k: v.isoformat() for k, v in sorted(active.items())})
+    """使い切りモードを 1 件解除し、期限切れを掃除する。"""
+    _update_burn(path, name, None, now if now is not None else now_local())
 
 
 def load_off(path: Path) -> Set[str]:
@@ -601,7 +608,8 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             workers.append(WorkerResult(name=name, verdict="unknown", reason="error",
                                         provider=_one_provider(providers)))
             continue
-        if not matched:
+        if not matched or any(
+                not _match_windows([pattern], windows) for pattern in (patterns or [])):
             workers.append(WorkerResult(name=name, verdict="unknown", reason="missing",
                                         provider=_one_provider(providers)))
             continue

@@ -3,7 +3,7 @@ import AppKit
 
 @main
 struct QuotaCanvasApp: App {
-    @StateObject private var statusStore = StatusStore()
+    @StateObject private var statusStore: StatusStore
 
     init() {
         // 起動時に 1 回だけ:
@@ -11,7 +11,8 @@ struct QuotaCanvasApp: App {
         // - status.json の定期読み込み開始。以前は MenuPopoverView の .task が唯一の
         //   呼び出し元で、メニューを閉じている間は通知もメニューバーの点の灰色化も
         //   動かなかった。start() 内の started フラグで二重起動はガード済み。
-        let store = statusStore
+        let store = StatusStore()
+        _statusStore = StateObject(wrappedValue: store)
         Task { @MainActor in
             await NotificationCoordinator.shared.requestAuthorizationIfNeeded()
             store.start()

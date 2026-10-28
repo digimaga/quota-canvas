@@ -249,6 +249,9 @@
 
 "適用" = "Apply";
 
+"取得: %@" = "Fetched: %@";
+"取得時刻: 不明" = "Fetch time: unknown";
+
 /* Desktop overlay */
 "デスクトップ" = "Desktop";
 "デスクトップに表示" = "Show on desktop";

@@ -1275,21 +1275,22 @@ def main(argv=None) -> int:
             last_fetch = time.monotonic()
             next_fetch = last_fetch + interval  # 取り直したら定期取得もそこから interval 後へ
             deferred_fetch = None
-        cards = build_cards(usages, history, now, order=_window_order(args, cfg),
+        visible_usages = [u for u in usages if u.provider in cfg.providers.enabled()]
+        cards = build_cards(visible_usages, history, now, order=_window_order(args, cfg),
                             tight=cfg.pacing.tight, on_track=cfg.pacing.on_track,
                             provider_windows={name: cfg.providers.windows_for(name)
                                               for name in PROVIDERS},
                             sleep=cfg.pacing.sleep)
         # status.json の "windows" (表示フィルタ前の全窓) 用。判定材料なので
         # [routing].enabled に関係なく毎周回作る (compute_pace は純粋計算だけ)。
-        windows_all = all_window_paces(usages, history, now, tight=cfg.pacing.tight,
+        windows_all = all_window_paces(visible_usages, history, now, tight=cfg.pacing.tight,
                                        on_track=cfg.pacing.on_track, sleep=cfg.pacing.sleep)
-        rec = recommend(usages, history, now, tight=cfg.pacing.tight,
+        rec = recommend(visible_usages, history, now, tight=cfg.pacing.tight,
                         on_track=cfg.pacing.on_track, sleep=cfg.pacing.sleep)
         layout = _render_layout(cfg, cards)
         if cfg.display.paused:
             # 一時停止中: 画面には何も送らず status.json だけ更新する (frame.png はそのまま)
-            _write_app_files(cfg, cards, usages, now, None, layout=layout,
+            _write_app_files(cfg, cards, visible_usages, now, None, layout=layout,
                              recommendation=rec, all_windows=windows_all)
         elif sleeping:
             # Mac が眠っている: 黒 1 枚と明るさ 0 を送ってからは黙る
@@ -1297,7 +1298,7 @@ def main(argv=None) -> int:
             with guard.lock:
                 if not guard.dimmed:
                     guard.dimmed = _sleep_screen(screen)
-            _write_app_files(cfg, cards, usages, now, None, layout=layout,
+            _write_app_files(cfg, cards, visible_usages, now, None, layout=layout,
                              recommendation=rec, all_windows=windows_all)
         else:
             # ロックは USB 操作 (_open_screen / 明るさ / 送画) の短い区間だけで
@@ -1332,7 +1333,7 @@ def main(argv=None) -> int:
                         applied_brightness = _apply_brightness(sent_to, cfg, None)
                     screen = sent_to
             # 送ったフレームだけ frame.png に書く (黒で消したときはそのまま)
-            _write_app_files(cfg, cards, usages, now, sent, layout=layout,
+            _write_app_files(cfg, cards, visible_usages, now, sent, layout=layout,
                              recommendation=rec, all_windows=windows_all, offset=shift)
         # 待ち時間を 1 秒刻みに分け、設定変更・反映要求・スリープ状態の変化を監視する。
         # 延期した取り直しがあれば、その時刻で待ちを打ち切る (眠っている間は縮めない)。

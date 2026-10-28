@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, List, Optional
 
+from .atomic import atomic_write
 from .models import Sample, Window
 from .periods import Periods
 
@@ -154,13 +155,14 @@ class History:
 
     def _iter_file(self) -> Iterator[Sample]:
         try:
-            text = self.path.read_text(encoding="utf-8")
-        except (FileNotFoundError, NotADirectoryError):
-            return
+            lines = self.path.read_bytes().splitlines()
         except OSError:
             return
-        for line in text.splitlines():
-            line = line.strip()
+        for raw_line in lines:
+            try:
+                line = raw_line.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                continue
             if not line:
                 continue
             sample = decode_line(line)
@@ -184,9 +186,8 @@ class History:
         keep = [s for s in all_samples if s.at >= cutoff]
         if len(keep) == len(all_samples):
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        with tmp.open("w", encoding="utf-8") as handle:
+        def write(handle):
             for sample in keep:
-                handle.write(encode_sample(sample) + "\n")
-        os.replace(tmp, self.path)
+                handle.write((encode_sample(sample) + "\n").encode("utf-8"))
+
+        atomic_write(self.path, write)

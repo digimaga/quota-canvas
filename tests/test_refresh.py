@@ -107,6 +107,14 @@ def test_consume_unlink_failure_warns_but_consumes(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Path, "unlink", boom)
     assert refresh.consume_refresh_request(p) is True  # 削除失敗でも要求は処理した
+    assert refresh.consume_refresh_request(p) is False
+    clock = FakeClock(limit=60)
+    _patch_clock(monkeypatch, clock)
+    assert refresh.wait_for_wakeup(load_config(None), 4) == ""
+    assert clock.now == 4
+    p.write_text("new request", encoding="utf-8")
+    assert refresh.consume_refresh_request(p) is True
+    assert refresh.consume_refresh_request(p) is False
 
 
 def test_request_refresh_creates_file_and_parents(tmp_path):
@@ -731,3 +739,37 @@ def test_fetched_at_stays_while_display_asleep(monkeypatch, tmp_path):
     assert len(asleep) >= 3                         # 眠っている間の周回
     assert len({p["updated_at"] for p in asleep}) == len(asleep)   # updated_at は進む
     assert written[-1]["cards"][0]["fetched_at"] > first           # 起きて取り直すと進む
+
+
+def test_run_filters_cached_usage_on_config_reload_and_restores_on_enable(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    enabled = "[routing]\nenabled = true\n" + CONFIG_TOML
+    disabled = "[providers.claude]\nenabled = false\n" + enabled
+    calls, written, rendered = [], [], []
+    _mock_fetch(monkeypatch, calls)
+    monkeypatch.setattr(cli, "render", lambda cards, now, **kw: rendered.append(
+        [pu.provider for pu, _ in cards]) or Image.new("RGB", (8, 8)))
+    monkeypatch.setattr(cli, "render_error", lambda *a, **k: rendered.append([]) or Image.new("RGB", (8, 8)))
+    monkeypatch.setattr(cli, "write_status", lambda payload, *a, **kw: written.append(payload))
+    monkeypatch.setattr(cli, "write_frame", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "STATUS_PATH", tmp_path / "status.json")
+    monkeypatch.setattr(cli.gate, "BURN_PATH", tmp_path / "burn.json")
+    clock = FakeClock(limit=8, plan=[
+        (2, lambda: cfg_path.write_text(disabled, encoding="utf-8")),
+        (4, lambda: cfg_path.write_text(enabled, encoding="utf-8")),
+    ])
+    _patch_clock(monkeypatch, clock)
+    cfg_path.write_text(enabled, encoding="utf-8")
+    with pytest.raises(StopLoop):
+        cli.main(["--config", str(cfg_path), "--no-screen",
+                  "--history", str(tmp_path / "history.jsonl"), "run"])
+    assert len(calls) == 1
+    assert rendered[:3] == [["claude"], [], ["claude"]]
+    first, hidden, restored = written[:3]
+    assert first["cards"] and first["windows"]
+    assert first["recommendation"]["provider"] == "claude"
+    assert hidden["cards"] == hidden["windows"] == hidden["errors"] == []
+    assert "recommendation" not in hidden
+    assert hidden["routing"]["workers"] == []
+    assert restored["cards"] and restored["windows"]
+    assert restored["recommendation"]["provider"] == "claude"
