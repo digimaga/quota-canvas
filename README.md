@@ -1,124 +1,124 @@
 # quota-canvas
 
-日本語 | [English](README.en.md)
+English | [日本語](README.ja.md)
 
-Claude / Codex / GLM / Grok / Gemini の利用枠の残量とペースを TURZX 9.2" USB 画面に表示する macOS 用ツール。Python エンジンと `app/` のメニューバーアプリで構成する。
+A macOS tool that displays remaining quota and usage pace for Claude, Codex, GLM, Grok, and Gemini on a TURZX 9.2" USB screen. It consists of a Python engine and a menu bar app in `app/`.
 
-![QuotaCanvas の表示例（Codex・Claude・Gemini・Grok・GLM の残量とペース）](docs/images/sample-ja.png)
+![QuotaCanvas example (remaining quota and pace for Codex, Claude, Gemini, Grok, and GLM)](docs/images/sample-en.png)
 
-## 対応ディスプレイと購入先
+## Supported display / Where to buy
 
-TURZX 9.2 インチ USB セカンダリースクリーン（1920×462 IPS）。USB Type-C ケーブル 1 本で給電と通信を行う。macOS のディスプレイとしては認識されず、USB 機器「TURZX1.0」（VID `0x1cbe` / PID `0x0092`）として扱う。専用ドライバーは不要で、通信には `libusb` を使う。
+TURZX 9.2-inch USB secondary screen, 1920×462 IPS. A single USB Type-C cable supplies power and data. macOS sees it as a USB device named `TURZX1.0` (VID `0x1cbe` / PID `0x0092`), not as a display. No dedicated driver is required; communication uses `libusb`.
 
-[AliExpress で購入する](https://s.click.aliexpress.com/e/_c3EptWGn)（作者の手元で動作確認済み）
+[Buy on AliExpress](https://s.click.aliexpress.com/e/_c3EptWGn) (tested by the author)
 
-※ アフィリエイトリンク（広告）。購入額に応じて作者に紹介料が入り、購入価格は変わらない。
+**Affiliate link (advertisement):** the author receives a commission based on purchases, at no extra cost to you.
 
-同じ見た目でも PID など内部仕様が異なる個体があり得るため、別の出品の動作は保証しない。
+Screens that look identical can have different internal specifications, including the PID. Other listings are not guaranteed to work.
 
-## DMG からインストール
+## Install from DMG
 
-Apple Silicon、macOS 14 以上に対応。Homebrew や Python のインストールは不要。
+Requires Apple Silicon and macOS 14 or later. No Homebrew or Python installation is needed.
 
-1. [Releases](https://github.com/digimaga/quota-canvas/releases) から最新の `QuotaCanvas-<バージョン>.dmg` をダウンロードする。
-2. DMG を開き、QuotaCanvas.app を隣の「Applications」フォルダにドラッグする。
-3. 「アプリケーション」フォルダから QuotaCanvas を開く。Apple の公証を受けていないため、初回は「開発元を確認できません」などと出て開けない。次の手順で許可する。
-   - macOS 15 以降: 「システム設定 > プライバシーとセキュリティ」を開き、下の方にある QuotaCanvas の「このまま開く」を押す。
-   - macOS 14: Finder で QuotaCanvas を右クリックして「開く」を選ぶ。
-4. メニューバーにゲージのアイコンが出る。「設定… > サービス」で表示するサービスを選び、API キーが要るサービスはキーを入れる。
-5. TURZX 画面を USB でつなぐと、1 分ほどで残量が表示される。画面を使わない場合は「設定 > 表示」で「TURZX 画面を使う」をオフにする。
+1. Download the latest `QuotaCanvas-<version>.dmg` from [Releases](https://github.com/digimaga/quota-canvas/releases).
+2. Open the DMG and drag QuotaCanvas.app onto the Applications folder next to it.
+3. Open QuotaCanvas from Applications. The app is not notarized by Apple, so the first launch is blocked with a message such as "cannot verify the developer". Allow it as follows:
+   - macOS 15 or later: open System Settings > Privacy & Security, scroll down, and click "Open Anyway" for QuotaCanvas.
+   - macOS 14: right-click QuotaCanvas in Finder and choose Open.
+4. A gauge icon appears in the menu bar. In Settings… > Services, choose the services to show and enter an API key for services that need one.
+5. Connect the TURZX screen over USB; quotas appear within about a minute. Without the screen, turn off "Use the TURZX screen" in Settings > Display.
 
-更新するときは、新しい DMG の QuotaCanvas.app を同じように Applications へドラッグして置き換える。
+To update, drag the QuotaCanvas.app from the new DMG to Applications and replace the old one.
 
-設定の「表示」で同梱エンジンの常駐と TURZX 画面の使用を切り替えられる。リポジトリ版 LaunchAgent が残っている場合、同梱エンジンは自動起動しない。
+In Display settings, control the bundled background engine and TURZX screen. If a repository LaunchAgent exists, the bundled engine will not start automatically.
 
-DMG をビルドするには Swift Command Line Tools を用意し、`cd app && ./scripts/build.sh && ./scripts/make-dmg.sh` を実行する。成果物は `app/build/` に作られる。エンジンを同梱しない開発用ビルドは `./scripts/build.sh --no-engine`。
+To build the DMG, install Swift Command Line Tools, then run `cd app && ./scripts/build.sh && ./scripts/make-dmg.sh`. The output is in `app/build/`. For a development build without the engine, use `./scripts/build.sh --no-engine`.
 
-アンインストールは、設定で「エンジンを常駐させる」をオフにしてからアプリを削除する。オフにせず削除した場合は `~/Library/LaunchAgents/com.digimaga.quota-canvas.app*.plist` の各ラベルを `launchctl bootout` で停止してから plist を削除する。
+To uninstall, turn off “Run the engine in the background” in settings before deleting the app. If the app was deleted first, use `launchctl bootout` on each label in `~/Library/LaunchAgents/com.digimaga.quota-canvas.app*.plist`, then delete those plists.
 
-## 手動セットアップ
+## Manual setup
 
 ```bash
 ./scripts/setup.sh
 ```
 
-Homebrew の `libusb` を入れ、`.venv` にこのパッケージをインストールする。sudo は不要。
+This installs Homebrew's `libusb` and the package in `.venv`. No sudo is required.
 
-## turzx：画像を表示する
+## turzx: Displaying images
 
 ```bash
-.venv/bin/turzx test                 # 向き確認用のテストパターン
-.venv/bin/turzx show picture.png     # 横長画像を表示（1920×462 に合わせて拡大・切り抜き）
-.venv/bin/turzx brightness 80        # 明るさ 0〜100
-.venv/bin/turzx sync                 # 接続確認（応答を 16 進で表示。ASCII では "turzx_0001_0015" を含む）
+.venv/bin/turzx test                 # test pattern for checking orientation
+.venv/bin/turzx show picture.png     # scale and crop a landscape image to 1920×462
+.venv/bin/turzx brightness 80        # brightness from 0 to 100
+.venv/bin/turzx sync                 # connection check; prints the reply in hex ("turzx_0001_0015" in ASCII)
 ```
 
-Python から使う場合:
+From Python:
 
 ```python
 from turzx import Screen
-Screen().show(pil_image)   # 1920×462 の横長画像
+Screen().show(pil_image)   # 1920×462 landscape image
 ```
 
-画像は PNG で送る。デバイスが受け取るのは **縦向き 462×1920** のフレームで、`show` は横長 1920×462 の画像を `--rotation`（既定 90 度）だけ回転させる。1920×462 や 480×1920 をそのまま送ると表示が崩れる。縦向きの画像を回転なしで送るときは `show-raw` を使う。
+Images are sent as PNG. The device expects a **portrait 462×1920** frame; `show` rotates a landscape 1920×462 image by `--rotation` (90 degrees by default). Sending 1920×462 or 480×1920 directly distorts the display. Use `show-raw` to send a portrait image without rotation.
 
-## QuotaCanvas：利用枠の表示
+## QuotaCanvas: Displaying quotas
 
-利用枠を取得し、今のペースで使い続けるとリセット前に尽きるかを表示する。
+QuotaCanvas fetches usage and shows whether the current pace will exhaust a quota before its reset.
 
 ```bash
-.venv/bin/quota-canvas once                     # 1 回取得して表示
-.venv/bin/quota-canvas run                      # 15 分ごとに取得・1 分ごとに再描画
-.venv/bin/quota-canvas --no-screen --out a.png once   # 画面に送らず PNG だけ
-.venv/bin/quota-canvas --only claude:weekly codex:weekly once   # 表示する枠を絞る
-.venv/bin/quota-canvas config                   # 実際に使われる設定と窓 ID の一覧
-.venv/bin/quota-canvas config --init            # 設定ファイルをひな形から作成
-.venv/bin/quota-canvas detect --json            # 使えるサービスとプラン/窓を表示
-.venv/bin/quota-canvas set-key glm              # GLM の API キーをキーチェーンに保存
-.venv/bin/quota-canvas pick                     # 今使う先を 1 行で表示（--json も可）
-./scripts/install-agent.sh                      # ログイン時に自動起動（--uninstall で解除）
-./scripts/install-auto-update.sh                # 10 分ごとに main の新しい commit を取り込み、常駐を再起動（--uninstall で解除）
+.venv/bin/quota-canvas once                     # fetch and display once
+.venv/bin/quota-canvas run                      # fetch every 15 minutes, redraw every minute
+.venv/bin/quota-canvas --no-screen --out a.png once   # save a PNG without sending it to the screen
+.venv/bin/quota-canvas --only claude:weekly codex:weekly once   # select windows to display
+.venv/bin/quota-canvas config                   # show effective settings and window IDs
+.venv/bin/quota-canvas config --init            # create a config file from the template
+.venv/bin/quota-canvas detect --json            # show available services, plans and windows
+.venv/bin/quota-canvas set-key glm              # save a GLM API key in Keychain
+.venv/bin/quota-canvas pick                     # show a recommendation (--json is also available)
+./scripts/install-agent.sh                      # start at login; --uninstall removes it
+./scripts/install-auto-update.sh                # pull new main commits every 10 minutes and restart; --uninstall removes it
 ```
 
-### 設定とアプリ連携
+### Configuration and app integration
 
-設定ファイルは `~/.config/quota-canvas/config.toml`、ひな形は [config.example.toml](config.example.toml)。ファイルがなければ既定値を使い、`run` 中の変更は自動で読み直す。主な設定は次のとおり。
+The config file is `~/.config/quota-canvas/config.toml`; see [config.example.toml](config.example.toml) for the template. Defaults apply if the file is absent, and `run` reloads changes automatically. Key settings:
 
-- `display.windows` は表示する窓の選択・順序、`display.brightness` / `display.night` は明るさと夜間減光、`display.paused` は一時停止。`display.sleep_with_mac`（既定 true）は Mac のスリープに合わせて画面を消灯・復帰し、スリープ中は取得しない。`display.gauge` は `"remaining"`（残量）または `"used"`（使用量）。
-- `poll` は取得・再描画間隔、`pacing` はペース判定の閾値。`pacing.sleep` で睡眠帯を除いた起きている時間を基準にでき、`pacing.sleep.advice = "bedtime"` ならアドバイスの残り時間を寝るまでで表示する。
-- `providers.*.enabled` / `providers.*.windows` でプロバイダの有効・無効と表示する窓を指定する。窓が空の `[]` なら全部。`--only` / `--interval` / `--redraw` は設定ファイルより優先し、`--config PATH` で設定の場所を変えられる。
+- `display.windows` selects and orders windows; `display.brightness` / `display.night` control brightness and night dimming; `display.paused` pauses the screen. `display.sleep_with_mac` (default true) turns the screen off and restores it with the Mac; usage is not fetched while asleep. `display.gauge` is `"remaining"` or `"used"`.
+- `poll` controls fetch and redraw intervals; `pacing` controls pace thresholds. `pacing.sleep` can judge pace using waking hours, and `pacing.sleep.advice = "bedtime"` shows time until bedtime in the advice.
+- `providers.*.enabled` / `providers.*.windows` enable services and select their windows; an empty `[]` means all windows. `--only` / `--interval` / `--redraw` override the config, and `--config PATH` selects another config file.
 
-メニューバーアプリとの連携は [docs/app-contract.md](docs/app-contract.md) を参照。`run` は再描画のたびに `~/Library/Application Support/quota-canvas/` へ `status.json` と `frame.png` を原子的に書く。`display.paused = true` の間は画面に送らず、`status.json` だけを更新する。アプリは `detect --json` / `config --json` / `config --set-json` / `set-key` / `refresh` でエンジンを操作する。
+See [docs/app-contract.md](docs/app-contract.md) for menu bar app integration. On every redraw, `run` atomically writes `status.json` and `frame.png` under `~/Library/Application Support/quota-canvas/`. While `display.paused = true`, it sends nothing to the screen and updates only `status.json`. The app controls the engine via `detect --json` / `config --json` / `config --set-json` / `set-key` / `refresh`.
 
-`quota-canvas refresh` は同ディレクトリに `refresh-request` を作る。`run` が 1 秒以内に検知して再描画し、前回の取得から 30 秒以上経過していれば利用量も取り直す。設定の保存も 1〜2 秒で画面に反映される。
+`quota-canvas refresh` creates `refresh-request` in that directory. `run` detects it within one second and redraws; it also fetches usage again if at least 30 seconds have elapsed since the last fetch. Saving the config also updates the screen within 1–2 seconds.
 
-### メニューバーアプリ
+### Menu bar app
 
-[app/](app/) の QuotaCanvas.app はエンジンの状態、推奨、画面プレビューを表示し、設定や一時停止、通知を操作できる。Swift 6.2 以上と macOS 14 以上で、`cd app && ./scripts/build.sh` により `app/build/QuotaCanvas.app` をビルドする。詳しくは [app/README.md](app/README.md)。
+[app/](app/) contains QuotaCanvas.app, which displays engine status, recommendations and a screen preview, and provides settings, pause and notifications. With Swift 6.2 or later and macOS 14 or later, run `cd app && ./scripts/build.sh` to build `app/build/QuotaCanvas.app`. See [app/README.md](app/README.md).
 
-設定の「振り分け」タブでは、判定の有効化、残量の下限とデータの鮮度の設定、現在の判定の確認、使い切りモードの切り替え、ワーカーと窓の編集・並べ替えができる。Claude Code / Codex 用プラグインのインストールコマンドもコピーできる。
+The Routing settings tab enables routing, sets the remaining quota floor and data freshness, shows current verdicts, toggles burn mode, and edits and reorders workers and their windows. It also provides copy buttons for the Claude Code / Codex plugin installation commands.
 
-### 認証情報
+### Credentials
 
-- Claude はキーチェーン `Claude Code-credentials`、Codex は `~/.codex/auth.json`、Grok は `~/.grok/auth.json` を読む。GLM はキーチェーン `quota-canvas/glm`（`set-key glm` またはアプリの設定で保存）か環境変数 `ZAI_API_KEY` を読む。キーチェーンのキーが最優先。
-- トークンの更新は各 CLI に任せる。Claude は既定の `providers.claude.token_refresh = "cli"` で期限切れ間近または HTTP 401/403 のとき `claude -p` をバックグラウンドで 1 回実行し、CLI に更新させる（30 分に 1 回まで）。`"off"` なら自動更新せず、401/403 では Claude の起動を促す。Grok の `providers.grok.token_refresh` は期限切れまたは HTTP 401/403 のとき枠を使わない `grok models` を実行する。Codex の `providers.codex.token_refresh` は HTTP 401/403 のとき `codex exec … ok` を実行する（枠を少し使うため 30 分に 1 回まで）。
-- Gemini は Antigravity CLI の `agy -p "/usage" --output-format json` から取得する。モデルを呼ばず枠を消費せず、トークンも agy が更新する。`providers.gemini.token_refresh` は旧設定との互換用で現在は使われない。窓は `gemini:weekly`、Gemini 4 Argon の `gemini:argon`、`gemini:5h`、Antigravity 経由の Claude / GPT の `gemini:claude` と `gemini:claude_5h`。プラン名はキーチェーン service `gemini` / account `antigravity` のトークンで取得できれば表示し、取れなければ「Gemini」とする。
+- Claude reads Keychain `Claude Code-credentials`, Codex reads `~/.codex/auth.json`, and Grok reads `~/.grok/auth.json`. GLM reads Keychain `quota-canvas/glm` (saved with `set-key glm` or in the app's settings) or the `ZAI_API_KEY` environment variable; the Keychain key takes priority.
+- Token refresh is delegated to each CLI. With the default `providers.claude.token_refresh = "cli"`, Claude runs `claude -p` once in the background when the token is near expiry or on HTTP 401/403, at most once per 30 minutes. `"off"` disables this and prompts the user to launch Claude on 401/403. `providers.grok.token_refresh` runs `grok models` on expiry or HTTP 401/403 without consuming quota. `providers.codex.token_refresh` runs `codex exec … ok` on HTTP 401/403, at most once per 30 minutes; it consumes a little quota.
+- Gemini uses Antigravity CLI's `agy -p "/usage" --output-format json`. This does not invoke a model or consume quota, and agy refreshes its own token. `providers.gemini.token_refresh` is accepted for compatibility but is no longer used. The windows are `gemini:weekly`, Gemini 4 Argon's `gemini:argon`, `gemini:5h`, and `gemini:claude` / `gemini:claude_5h` for Claude / GPT through Antigravity. The plan name is shown if it can be obtained with the Keychain token for service `gemini` / account `antigravity`; otherwise it is shown as “Gemini”.
 
-### 履歴・ペース・推薦
+### History, pace and recommendations
 
-- 履歴は `~/Library/Application Support/quota-canvas/history.jsonl` に 8 日分保存し、日別棒グラフと直近 24 時間の速度に使う。履歴が始まる前の日は「?」。
-- 判定は窓全体の平均速度と直近速度を半々に混ぜて予測する。リセット前に 100% に届くとペース超過、リセット時に 92% 以上なら使い切り、70% 以上なら順調、それ未満なら余裕あり。経過 3% 未満かつ使用 5% 未満はリセット直後。直近 2 時間の使用増加が 1% 以上、かつ速度が混合速度の 1.5 倍以上で、そのままではリセット前に尽きるときは黄色のアドバイスに枯渇時刻を表示する。同じサービスの 5 時間枠などが先に尽きるときもアドバイスで触れる。文言は `src/quotacanvas/render.py` の `advice_text()` で決まる。
-- 英語表示では「余裕あり」を `Spare`、「使い切り」を `Maxing out` と表示する。
-- リセットのたびに最終使用率を `periods.jsonl` に窓ごとに最新 20 件保存し、次の期間のカードに前回の残量を表示する。
-- ヘッダと `pick` は今使う先を表示する。点数はリセット時に使われず消える見込み量 × 窓の長さ ÷ リセットまでの時間。ペース超過・残り 5% 未満・取得失敗中・リセット待ちのサービスは選ばず、同じサービスの 1 日未満の窓が残り 20% 未満なら点数を半分にし、期限 24 時間以内の Codex リセット権があれば点数を 1.5 倍にする。`pick` は `status.json` がないか 20 分より古い場合、画面に送らず利用量を一度取得する。
+- Eight days of history are stored in `~/Library/Application Support/quota-canvas/history.jsonl`, for daily bar charts and the last 24 hours' rate. Days before history began show “?”.
+- Pace prediction blends the whole-window average and recent rate equally. Reaching 100% before reset means over pace; projected use of at least 92% at reset is tight, at least 70% is on track, and less is spare. Less than 3% elapsed and less than 5% used is fresh. If usage rose by at least 1% in the last two hours, the rate is at least 1.5 times the blended rate, and it would exhaust the quota before reset, yellow advice shows the projected exhaustion time. Advice also mentions another window of the same service, such as a five-hour window, if it runs out first. Wording is determined by `advice_text()` in `src/quotacanvas/render.py`.
+- The English display labels the spare state `Spare` and the tight state `Maxing out`.
+- On each reset, the final usage is saved in `periods.jsonl` (the latest 20 per window) and the next period's card shows the previous remaining amount.
+- The header and `pick` recommend a service to use now. The score is the amount projected to expire unused × window length ÷ time until reset. Services that are over pace, below 5% remaining, failing to fetch, or waiting for reset are excluded; the score is halved when a window shorter than a day has less than 20% remaining and multiplied by 1.5 for a Codex reset credit expiring within 24 hours. If `status.json` is absent or more than 20 minutes old, `pick` fetches usage once without sending anything to the screen.
 
-## AI ワーカー振り分け（routing）
+## AI worker routing
 
-複数の AI サブスクの枠を無駄なく使うため、コーディングエージェントが残量とペースから作業を回すワーカーやモデルを選べるようにする。判定は情報であり、エンジン自体はワーカーを起動・停止しない。既定は OFF。
+To make better use of multiple AI subscriptions, routing gives coding agents quota and pace information for choosing which worker or model to use. The verdict is informational: the engine does not start or stop workers itself. Routing is OFF by default.
 
-### 有効化とワーカーの定義
+### Enabling and defining workers
 
-`config.toml` に次のように設定する。窓 ID は `config` で確認できる。
+Add settings like these to `config.toml`. Use `config` to find window IDs.
 
 ```toml
 [routing]
@@ -126,7 +126,7 @@ enabled = true
 floor_percent = 5
 floor_hours = 24
 stale_minutes = 20
-# short_over_margin_minutes = 30   # 省略時は窓長の 10%
+# short_over_margin_minutes = 30   # defaults to 10% of the window length
 
 [routing.workers]
 claude = ["claude:*"]
@@ -134,66 +134,66 @@ gemini = ["gemini:weekly", "gemini:5h"]
 argon = ["gemini:argon"]
 ```
 
-各ワーカーは窓 ID のリストで定義し、末尾の `*` は前方一致。並び順は `routing line` の表示順。内訳窓（`part_of`）は判定しない。`[routing.workers]` を省略または空にすると、取得したプロバイダごとに独立窓をまとめて 1 ワーカーにする。既定の `gemini` には Argon と Antigravity 経由の Claude / GPT の窓も含まれるため、分けたい場合は明示する。各ワーカーは対象窓のうち最も厳しい判定を採用し、同順位なら残量の少ない窓を代表にする。
+Each worker is a list of window IDs; a trailing `*` matches a prefix. Configuration order determines `routing line` order. Breakdown windows (`part_of`) are excluded. If `[routing.workers]` is absent or empty, each fetched provider becomes one worker containing all its independent windows. The default `gemini` worker also includes Argon and Claude / GPT through Antigravity; define workers explicitly to split them. The worst verdict among a worker's matched windows wins; ties use the window with less remaining quota.
 
-ワーカー名は 1〜40 文字の英数字、`.`、`_`、`-` を使う。`config --json` は表示順を `routing.worker_order` にも出力する。`config --set-json` では `routing.workers` に `{"name": ..., "windows": [...]}` の配列も使え、配列の順序が優先される。オブジェクト形式では `worker_order` で順序を指定できる。
+Worker names use 1–40 ASCII letters, digits, `.`, `_`, or `-`. `config --json` also returns the display order in `routing.worker_order`. `config --set-json` accepts `routing.workers` as an array of `{"name": ..., "windows": [...]}` objects, whose order takes priority; for an object, `worker_order` can specify the order.
 
-### 判定
+### Verdicts
 
-| 判定 | 意味と条件 |
+| Verdict | Meaning and conditions |
 | --- | --- |
-| `stop` | 枠を使い切った、または残量が `floor_percent`（既定 5%）未満。残量による `stop` は、リセットまで `floor_hours`（既定 24 時間）以上ある窓とリセット時刻が不明な窓だけに適用する（`floor_hours = 0` なら常に適用）。 |
-| `reserve` | ペース超過でリセット前に尽きる見込み。可能なら別のワーカーを優先する。短い窓は下記の例外あり。 |
-| `go` | 順調（24 時間以上の窓）またはほぼ使い切るペース。窓のペース判定自体が不明な場合も `go`。 |
-| `boost` | 使い残しが見込まれる、リセット直後、24 時間未満の窓で順調、または使い切りモードが有効。積極的に使う候補。 |
-| `unknown` | 対象窓なし、プロバイダの取得エラー、古いデータなどで判定できない。fail-open のため起動は止めない。 |
+| `stop` | Exhausted, or remaining quota is below `floor_percent` (default 5%). The low-remaining `stop` applies only to windows whose reset is at least `floor_hours` (default 24 hours) away, or whose reset time is unknown (`floor_hours = 0` applies it always). |
+| `reserve` | Over pace and projected to run out before reset; prefer another worker if possible. Short windows have an exception (below). |
+| `go` | On track (windows of 24 hours or longer) or nearly fully used by reset. Also used when the window's pace status itself is unknown. |
+| `boost` | Quota is projected to remain unused, the window has just reset, a window shorter than 24 hours is on track, or burn mode is active; a candidate for active use. |
+| `unknown` | No matching window, provider fetch error, stale data, or another reason prevents a judgment. Fail-open: do not block startup. |
 
-**24 時間未満の窓（5 時間枠など）** は繰り越しがなく、リセットでちょうど使い切るのが理想なので扱いを変える。猶予 margin を `short_over_margin_minutes`（省略時は窓長の 10%。5 時間なら 30 分）とし、ペース超過でも枯渇見込みがリセットの margin 未満前なら `go`、それより早ければ `reserve`。一度 `reserve` になった窓は、同じリセットまでの間は margin の 2/3 を切るまで `reserve` を保つ（判定が行き来しないように `status.json` の `routing.holds` に記録する）。残量による `stop` は、リセットまで margin 以上ある間だけ適用し、それより後は 0% まで使う。
+**Windows shorter than 24 hours** (such as 5-hour windows) do not carry over, so ideally they are used up exactly at reset. With a margin of `short_over_margin_minutes` (default: 10% of the window length, i.e. 30 minutes for a 5-hour window), an over-pace window is `go` when it is projected to run out less than the margin before reset, and `reserve` when it would run out earlier. Once a window becomes `reserve`, it stays `reserve` for the same reset until the gap drops below two thirds of the margin (recorded in `routing.holds` in `status.json` to avoid flapping). The low-remaining `stop` applies only while the reset is at least the margin away; after that the window is used down to 0%.
 
-データの鮮度は既定 20 分（`stale_minutes`）。対象プロバイダの窓に古い `fetched_at` や `stale_error` がある場合も `unknown` になる。リセット権の数は表示されるが判定は変えない。
+The default freshness limit is 20 minutes (`stale_minutes`). An old `fetched_at` or `stale_error` on a window of a relevant provider also makes the worker `unknown`. Reset credit counts are displayed but do not change verdicts.
 
-### コマンド
+### Commands
 
 ```bash
-.venv/bin/quota-canvas routing line                  # 判定を 1 行で表示
-.venv/bin/quota-canvas routing line --json           # JSON で表示
-.venv/bin/quota-canvas routing check gemini          # 1 ワーカーを判定
-.venv/bin/quota-canvas routing check gemini --json   # JSON で表示
-.venv/bin/quota-canvas routing burn                  # 有効な使い切りモードを一覧
-.venv/bin/quota-canvas routing burn --json           # 一覧を JSON で表示
-.venv/bin/quota-canvas routing burn gemini on        # 本日 23:59 まで有効
-.venv/bin/quota-canvas routing burn gemini on --until 18:00  # HH:MM または ISO 8601
-.venv/bin/quota-canvas routing burn gemini off       # 解除
-.venv/bin/quota-canvas routing hook                  # SessionStart 用の JSON
+.venv/bin/quota-canvas routing line                  # one-line verdict summary
+.venv/bin/quota-canvas routing line --json           # JSON output
+.venv/bin/quota-canvas routing check gemini          # check one worker
+.venv/bin/quota-canvas routing check gemini --json   # JSON output
+.venv/bin/quota-canvas routing burn                  # list active burn modes
+.venv/bin/quota-canvas routing burn --json           # list as JSON
+.venv/bin/quota-canvas routing burn gemini on        # enable until 23:59 today
+.venv/bin/quota-canvas routing burn gemini on --until 18:00  # HH:MM or ISO 8601
+.venv/bin/quota-canvas routing burn gemini off       # disable
+.venv/bin/quota-canvas routing hook                  # JSON for SessionStart
 ```
 
-`line` / `check` は `~/Library/Application Support/quota-canvas/status.json` を読み、サービスから取得しない。`run` が更新する `status.json` には有効時に `routing` とその `line` が書かれる。`line` は常に終了コード 0、無効時は無出力。`check` は `stop` で 3、それ以外は 0。通常は `stop` / `reserve` / `unknown` の注意を標準エラーに出し、`go` / `boost` は無出力。`--json` では判定を標準出力に出し、終了コードは同じ。無効時も無出力で 0。無効な名前は 2（有効な名前は既知のプロバイダ名または設定したワーカー名）。`QUOTA_GATE_FORCE=1` は `check` を無条件で通す。`--status PATH` / `QUOTA_STATUS_PATH` で主ファイル、`--fallback-status PATH` / `QUOTA_STATUS_FALLBACK` で主が使えないときの予備を指定できる。
+`line` and `check` read `~/Library/Application Support/quota-canvas/status.json`; they do not fetch usage from services. When enabled, `run` writes `routing`, including its `line`, to `status.json`. `line` always exits 0 and is silent when disabled. `check` exits 3 for `stop` and 0 otherwise. Normally, `stop` / `reserve` / `unknown` print a note to stderr, while `go` / `boost` are silent. With `--json`, the verdict is printed to stdout with the same exit codes. It is also silent and exits 0 when disabled. An invalid name exits 2; valid names are known provider names or configured worker names. `QUOTA_GATE_FORCE=1` bypasses `check`. Use `--status PATH` / `QUOTA_STATUS_PATH` for the primary file and `--fallback-status PATH` / `QUOTA_STATUS_FALLBACK` for a backup when the primary cannot be used.
 
-使い切りモードは期限内の `reserve` / `go` / `boost` を `boost` にするが、`stop` / `unknown` は変えない。状態は同ディレクトリの `routing-burn.json` に保存する。ワーカーを明示した場合、`on` で指定できるのはその名前のみ。設定から削除した名前でも、有効な使い切りモードが残っていれば `off` で解除できる。`--until` に HH:MM で過去の時刻を指定すると翌日のその時刻、ISO 8601 で過去を指定するとエラー（終了コード 2）。`burn --json` は一覧または変更後の有効な設定を JSON で返す。
+While active, burn mode turns `reserve` / `go` / `boost` into `boost`, but leaves `stop` and `unknown` unchanged. Its state is saved in `routing-burn.json` in the same directory. When workers are explicitly configured, `on` accepts only their names. An active entry can still be cleared with `off` after its name has been removed from the configuration. A past `--until` time in HH:MM form means that time tomorrow; a past ISO 8601 time is an error (exit code 2). `burn --json` returns the active entries as JSON for both listing and after a change.
 
-`hook` は `line` と同じデータを読み、判定と短い振り分けルールを `additionalContext` を含む 1 行の JSON で出す。データがない・古い・壊れている場合は判定できない旨だけを出す。無効時、ワーカーが 0 件のとき、設定や判定に問題があるときは無出力で、常に終了コード 0。`--event NAME` で JSON のイベント名を変更でき、既定は `SessionStart`。
+`hook` reads the same data as `line` and prints one JSON line containing `additionalContext` with the verdict and short routing rules. If the data is missing, stale, or broken, it reports only that the verdict is unavailable. It prints nothing when disabled, when there are no workers, or when configuration or evaluation fails, and always exits 0. `--event NAME` changes the event name in the JSON; the default is `SessionStart`.
 
-### エージェントでの利用例
+### Using routing with an agent
 
-同梱の [quota-canvas-routing プラグイン](plugins/quota-canvas-routing/README.md) は、Claude Code / Codex の SessionStart で判定と振り分けルールを文脈に渡す。macOS でエンジンをインストール・常駐させ、上記のように routing を有効にしてからインストールする。
+The bundled [quota-canvas-routing plugin](plugins/quota-canvas-routing/README.md) adds the verdict and routing rules to Claude Code / Codex context at SessionStart. On macOS, install and run the engine and enable routing as above, then install the plugin.
 
-Claude Code 内で:
+In Claude Code:
 
 ```text
 /plugin marketplace add digimaga/quota-canvas
 /plugin install quota-canvas-routing@quota-canvas
 ```
 
-Codex では:
+For Codex:
 
 ```bash
 codex plugin marketplace add digimaga/quota-canvas
 codex plugin add quota-canvas-routing@quota-canvas
 ```
 
-Codex はフックを信頼するまで実行しない。`codex exec` などでは確認も出ずに飛ばされるため、インストール後に対話の Codex で信頼する。更新でフックの中身が変わった場合も同様。フックは `QUOTA_CANVAS_BIN`、PATH、`~/dev/quota-canvas/.venv/bin/quota-canvas` の順に実行ファイルを探す。見つからない場合や routing が無効な場合は無出力で、セッション開始を止めない。
+Codex does not run the hook until it is trusted. Commands such as `codex exec` silently skip untrusted hooks, so trust it in an interactive Codex session after installation and again if a plugin update changes the hook. The hook looks for the executable in `QUOTA_CANVAS_BIN`, then PATH, then `~/dev/quota-canvas/.venv/bin/quota-canvas`. If it cannot find it or routing is disabled, it prints nothing and does not block session startup.
 
-補足として、Claude Code の `settings.json` に次を追加すれば、プラグインを使わず判定の 1 行だけを文脈に入れられる。`/path/to/quota-canvas` はこのリポジトリの実際の絶対パスに置き換え、既存の hooks があれば統合する。詳細は [Claude Code の hooks リファレンス](https://code.claude.com/docs/en/hooks)を参照。
+Alternatively, add the following to Claude Code's `settings.json` to include only the one-line verdict in the model's context without the plugin. Replace `/path/to/quota-canvas` with the actual absolute path to this repository and merge with existing hooks if necessary. See the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks).
 
 ```json
 {
@@ -207,7 +207,7 @@ Codex はフックを信頼するまで実行しない。`codex exec` などで�
 }
 ```
 
-ワーカー起動前には、利用するランチャー側で終了コードを確認する。次の例の `worker-command` は使用するワーカーの起動コマンドに置き換える。
+Before starting a worker, check the exit code in the launcher. Replace `worker-command` with your worker's launch command:
 
 ```bash
 if .venv/bin/quota-canvas routing check gemini; then
@@ -217,10 +217,10 @@ else
 fi
 ```
 
-この例は `stop` の 3 のほか、名前の誤りなどの非 0 でも起動しない。`unknown` は 0 なので続行する。SessionStart に `check` を置くだけで終了コード 3 が Claude Code の起動を阻止するわけではない。
+This example also prevents startup on other nonzero exits, such as an invalid name. `unknown` exits 0, so it continues. Putting `check` in SessionStart alone does not make exit code 3 block Claude Code startup.
 
-エージェントの指示ファイル（`CLAUDE.md` / `AGENTS.md` など）には、例えば「routing の `boost` ワーカーを優先し、`stop` は使わない。`reserve` は可能なら別のワーカーを選ぶ」と書ける。これはエージェントへの指示であり、`stop` の起動を止めるには起動側で `check` を使う。
+In an agent instruction file such as `CLAUDE.md` or `AGENTS.md`, you can write: “Prefer `boost` workers, do not use `stop` workers, and prefer another worker over `reserve` when possible.” This is an instruction to the agent; use `check` in the launcher to block a `stop` worker.
 
-## ライセンス
+## License
 
-MIT（[LICENSE](LICENSE)）。TURZX 通信には [phstudy/turing-smart-screen-cli](https://github.com/phstudy/turing-smart-screen-cli)（MIT）を固定コミットの依存として使用する。利用枠表示は [nuitsjp/token-dashboard](https://github.com/nuitsjp/token-dashboard)（Windows 版）を参考にした。
+MIT ([LICENSE](LICENSE)). TURZX communication uses [phstudy/turing-smart-screen-cli](https://github.com/phstudy/turing-smart-screen-cli) (MIT), pinned to a commit. The quota display was inspired by [nuitsjp/token-dashboard](https://github.com/nuitsjp/token-dashboard) for Windows.
