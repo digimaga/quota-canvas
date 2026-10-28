@@ -286,6 +286,10 @@ This example also prevents startup on other nonzero exits, such as an invalid na
 
 In an agent instruction file such as `CLAUDE.md` or `AGENTS.md`, you can write: “Prefer `boost` workers, do not use `stop` workers, and prefer another worker over `reserve` when possible.” This is an instruction to the agent; use `check` in the launcher to block a `stop` worker.
 
+## Development
+
+This project is developed with AI coding agents: Claude Code (Claude), Codex, and GLM. Commits they helped write carry `Co-Authored-By` trailers.
+
 ## License
 
 MIT ([LICENSE](LICENSE)). TURZX communication uses [phstudy/turing-smart-screen-cli](https://github.com/phstudy/turing-smart-screen-cli) (MIT), pinned to a commit. The quota display was inspired by [nuitsjp/token-dashboard](https://github.com/nuitsjp/token-dashboard) for Windows.

@@ -283,6 +283,10 @@ fi
 
 エージェントの指示ファイル（`CLAUDE.md` / `AGENTS.md` など）には、例えば「routing の `boost` ワーカーを優先し、`stop` は使わない。`reserve` は可能なら別のワーカーを選ぶ」と書ける。これはエージェントへの指示であり、`stop` の起動を止めるには起動側で `check` を使う。
 
+## 開発について
+
+このプロジェクトは AI コーディングエージェントの Claude Code（Claude）・Codex・GLM を使って開発している。これらが書いた commit には `Co-Authored-By` 行を付けている。
+
 ## ライセンス
 
 MIT（[LICENSE](LICENSE)）。TURZX 通信には [phstudy/turing-smart-screen-cli](https://github.com/phstudy/turing-smart-screen-cli)（MIT）を固定コミットの依存として使用する。利用枠表示は [nuitsjp/token-dashboard](https://github.com/nuitsjp/token-dashboard)（Windows 版）を参考にした。
