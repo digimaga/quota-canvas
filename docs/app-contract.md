@@ -104,10 +104,12 @@ The app finds the CLI at the path stored in its settings (default
   ("which service to use now", F1). `text` is the one-line advice shown in the header;
   `ranking` lists every non-error service, best first (`usable: false` entries are kept
   for context but are never recommended; their `reason` then says why — e.g. 「リセット待ち」
-  when a window is past its reset time, 「取得失敗中」 while the engine is showing the
+  when the representative window is past its reset time, 「取得失敗中」 while the engine is showing the
   provider's last good data). A service is not usable when any of its independent windows
-  is over/exhausted, below 5% remaining, past its reset time, or the provider is in
-  stale-error state. `score` = the share of the representative window (the one with the
+  is over/exhausted or below 5% remaining, when the representative window (the one with
+  the latest reset) is past its reset time, or when the provider is in stale-error state.
+  A shorter window that is only past its reset time (waiting for the next fetch) does not
+  make the service unusable: it has already reset. `score` = the share of the representative window (the one with the
   latest reset) predicted to expire unused, times the representative window's length in
   hours, divided by the hours until that reset (i.e. the speed at which "window-hours of
   value" would be lost — longer windows outrank short ones) — halved when a short window
