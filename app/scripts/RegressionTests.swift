@@ -81,6 +81,23 @@ struct RegressionTests {
         let result = try await client.getConfig()
         check(result.paused, "concurrent pause retained")
         check(result.brightness == 25, "concurrent brightness retained")
+        let menuCards = try JSONDecoder().decode([StatusCard].self, from: Data("""
+            [{"id":"claude:weekly","provider":"claude"},{"id":"claude:5h","provider":"claude"},
+             {"id":"codex:weekly","provider":"codex"},{"id":"gemini:weekly","provider":"gemini"},
+             {"id":"glm:5h","provider":"glm"},{"id":"other:x","provider":"other"}]
+            """.utf8))
+        let menuLayout = try JSONDecoder().decode([LayoutPanel].self, from: Data("""
+            [{"main":"codex:weekly","subs":[]},{"main":"claude:weekly","subs":["claude:5h"]},
+             {"main":"gemini","subs":[]},{"main":"","subs":[]},{"main":"glm:5h"}]
+            """.utf8))
+        let menuOrder = MenuPopoverView.orderedCards(menuCards, layout: menuLayout)
+        check(menuOrder.map { $0.card.id ?? "" } ==
+              ["codex:weekly", "claude:weekly", "claude:5h", "gemini:weekly", "glm:5h", "other:x"],
+              "menu cards follow panel order with subs after main")
+        check(menuOrder.map(\.isSub) == [false, false, true, false, false, false], "menu sub cards marked")
+        check(MenuPopoverView.orderedCards(menuCards, layout: nil).map { $0.card.id ?? "" } ==
+              menuCards.map { $0.id ?? "" }, "menu keeps card order without layout")
+
         print("Regression checks: \(checks) passed")
     }
 }
