@@ -46,6 +46,15 @@ struct RegressionTests {
         check(RoutingSettingsView.verdictIsStale(now.addingTimeInterval(-301), now: now), "stale threshold")
         check(RoutingSettingsView.verdictIsStale(nil, now: now), "missing timestamp")
 
+        let balanceJSON = #"{"balances":[{"provider":"kimi","name":"Kimi","currency":"USD","amount":49.58,"label":"今月の使用","stale_error":"HTTP 429","fetched_at":"2026-01-02T03:04:05Z"},{"provider":"deepseek","name":"DeepSeek","currency":"CNY","amount":110}]}"#
+        let balanceStatus = try JSONDecoder().decode(EngineStatus.self, from: Data(balanceJSON.utf8))
+        check(balanceStatus.balances?.first?.amount == 49.58, "balance decoding")
+        check(balanceStatus.balances?.first?.staleError == "HTTP 429", "balance stale state")
+        check(balanceStatus.balances?.first?.fetchedAt != nil, "balance fetched_at decoding")
+        check(balanceStatus.balances?.first?.displayText == "今月の使用 $49.58", "balance label precedes amount")
+        check(balanceStatus.balances?.last?.fetchedAt == nil, "optional balance fetched_at")
+        check(balanceStatus.balances?.last?.displayText.contains("¥110.00") == true, "default balance label")
+
         let input = Data(repeating: 65, count: 1_000_000)
         let code = "import sys; sys.stderr.buffer.write(b'e'*1000000); sys.stderr.flush(); sys.stdout.buffer.write(b'o'*1000000); sys.stdout.flush(); data=sys.stdin.buffer.read(); sys.stdout.buffer.write(str(len(data)).encode())"
         let output = try await EngineClient(enginePathOverride: "/usr/bin/python3").run(["-c", code], stdin: input)

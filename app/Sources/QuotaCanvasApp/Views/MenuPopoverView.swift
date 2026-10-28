@@ -92,8 +92,25 @@ struct MenuPopoverView: View {
                 Divider()
             }
             cardList
+            balancesSection
             resetCreditsSection
             errorList
+        }
+    }
+
+    @ViewBuilder
+    private var balancesSection: some View {
+        let balances = statusStore.status?.balances ?? []
+        if !balances.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("残高").font(.caption).bold()
+                ForEach(Array(balances.enumerated()), id: \.offset) { _, balance in
+                    HStack {
+                        Text("\(balance.name): \(balance.displayText)")
+                        if balance.staleError != nil { Text("取得失敗中").foregroundStyle(.orange) }
+                    }.font(.caption2)
+                }
+            }
         }
     }
 
@@ -147,7 +164,7 @@ struct MenuPopoverView: View {
     @ViewBuilder
     private var cardList: some View {
         let cards = statusStore.status?.cards ?? []
-        if cards.isEmpty {
+        if cards.isEmpty && (statusStore.status?.balances ?? []).isEmpty {
             Text("表示するカードがありません").font(.callout).foregroundStyle(.secondary)
         }
         let ordered = Self.orderedCards(cards, layout: statusStore.status?.layout)

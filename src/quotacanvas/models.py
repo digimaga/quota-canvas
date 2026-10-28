@@ -44,6 +44,13 @@ class ResetCredit:
 
 
 @dataclass
+class Balance:
+    currency: str
+    amount: float
+    label: Optional[str] = None
+
+
+@dataclass
 class ProviderUsage:
     provider: str          # "claude" | "codex" | "glm"
     name: str              # display name, e.g. "Claude Max"
@@ -53,6 +60,7 @@ class ProviderUsage:
     reset_credits: List[ResetCredit] = field(default_factory=list)
     retry_after: Optional[float] = None  # seconds to wait before retrying (HTTP 429 Retry-After)
     stale_error: Optional[str] = None    # current fetch failure while showing last good data
+    balances: List[Balance] = field(default_factory=list)
 
 
 @dataclass

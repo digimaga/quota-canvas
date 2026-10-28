@@ -114,6 +114,8 @@ The app finds the CLI at the path stored in its settings (default
   of the same service is below 20%, ×1.5 when a Codex reset credit expires within 24
   hours.
 
+- `balances` — top-level array of `{provider, name, currency, amount, label, fetched_at, stale_error}`. Amounts are display-only and do not affect routing or pacing. `label` is the optional display prefix (for example, usage or remaining limit); when absent, display the localized "Balance" prefix; `stale_error` marks last-good data after a fetch failure, and `fetched_at` is the original successful fetch time. Empty when no balances are available.
+
 - `reset_credits` — optional; present only when at least one service reports unused
   "rate-limit reset credits" (the right to instantly reset the weekly window, Codex).
   Map of provider → list of `{title, granted_at, expires_at}` (ISO 8601 with offset,
@@ -147,7 +149,7 @@ The app finds the CLI at the path stored in its settings (default
   - `unknown` — cannot judge (`reason: "missing"` no matching window / `"error"` provider
     fetch error / `"stale"` stale `fetched_at` or `stale_error`), decided by the worst
     window of the worker. `stale: true` marks stale workers.
-  With no `[routing.workers]` in the config, each fetched provider becomes a single worker
+  OpenRouter, DeepSeek and Kimi are excluded from routing verdicts even when their windows are specified explicitly. With no `[routing.workers]` in the config, each other fetched provider becomes a single worker
   judged by its worst independent window — Gemini's worker then also includes the Argon
   (`gemini:argon`) and Antigravity-Claude (`gemini:claude`, `gemini:claude_5h`) windows;
   split it with an explicit `[routing.workers]` (e.g.
@@ -166,7 +168,9 @@ The app finds the CLI at the path stored in its settings (default
   (max 4 columns). A small entry with `main: ""` is an empty slot: it stays empty and keeps
   its position, so it is always reported when a small column has an empty top row and a
   filled bottom row (a trailing empty bottom slot may be reported too). An unresolvable
-  `main` in a small slot renders empty the same way. With no `[[layout.panels]]` in the
+  `main` in a small slot renders empty the same way. A balance-only service can use its
+  provider id as `main`: it renders a balance panel, with each amount prefixed by its
+  `label` or the localized default "Balance" when `label` is null. With no `[[layout.panels]]` in the
   config this is the engine's auto layout (`auto_layout`),
   so the app can prefill its placement screen with what is on screen right now.
 - `colors` — the effective theme color per provider (`#RRGGBB`): the engine defaults
@@ -304,7 +308,7 @@ app may put into `providers.<p>.windows` (empty list = show every window).
 | `display.brightness` | 0–100 | 表示: slider |
 | `display.night` | `{start, end, brightness}` or absent | 表示: 夜間は暗くする toggle + times + slider |
 | `display.sleep_with_mac` | bool, default `true` | — (engine only; UI なし). Mac がスリープしたら黒 1 枚 + 明るさ 0 で画面を消灯し、復帰したら明るさと表示を戻す |
-| `layout.panels` | array of `{main, subs, size}`, `[]` = auto placement | 表示: 配置エディタ (placement). `main` = window id (`"claude:weekly"`) or provider id (`"gemini"`, engine picks the service's best window / shows an error slot) or `""` (small のみ可: その段は空き枠になり位置を保つ); `subs` = sub window ids (large panels only, ≤ 3). キー省略または `null` = 自動（主枠と同じサービスの残りの窓、最大 3、ほかのパネルで使った窓は除く。small パネルはサブなし）、`[]` = 明示的にサブなし。status.json の `layout[].subs` は解決後の配列; `size` = `"large"` \| `"small"`. Columns are assembled in panel order — 1 `large` or 2 consecutive `small`s per column, at most 4 columns (all-small = up to 8 panels); the engine rejects more with `config --set-json`. status.json の `layout[]` は同じ順序なので、同じ規則 (`render.group_columns`) で列構成を復元できる |
+| `layout.panels` | array of `{main, subs, size}`, `[]` = auto placement | 表示: 配置エディタ (placement). `main` = window id (`"claude:weekly"`) or provider id (`"gemini"`, engine picks the service's best window / shows a balance-only or error slot) or `""` (small のみ可: その段は空き枠になり位置を保つ); `subs` = sub window ids (large panels only, ≤ 3). キー省略または `null` = 自動（主枠と同じサービスの残りの窓、最大 3、ほかのパネルで使った窓は除く。small パネルはサブなし）、`[]` = 明示的にサブなし。status.json の `layout[].subs` は解決後の配列; `size` = `"large"` \| `"small"`. Columns are assembled in panel order — 1 `large` or 2 consecutive `small`s per column, at most 4 columns (all-small = up to 8 panels); the engine rejects more with `config --set-json`. status.json の `layout[]` は同じ順序なので、同じ規則 (`render.group_columns`) で列構成を復元できる |
 | `providers.<p>.enabled` | bool | サービス: toggle per detected service |
 | `providers.claude.token_refresh` | `"cli"` \| `"off"`, default `"cli"` | Claude の OAuth トークンの自動更新。`"cli"` = 期限切れ間近 / HTTP 401/403 で `claude -p` を軽く 1 回バックグラウンド実行し、Claude Code CLI 自身にキーチェーンへ書き戻させる（30 分に 1 回まで。成功したら反映要求を出して 1 秒以内に取り直す）。`"off"` = 自動更新しない（401/403 は「トークン期限切れ（claude を一度起動してください）」のエラー表示） |
 | `providers.<p>.windows` | list of window keys, `[]` = all | サービス: checkbox per window the service reports |

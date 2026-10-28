@@ -10,6 +10,7 @@ struct EngineStatus: Decodable {
     var gauge: String?
     var cards: [StatusCard]?
     var errors: [StatusError]?
+    var balances: [StatusBalance]?
     /// status.json の "layout": 実際に使われた配置（{main, subs, size} の配列）。
     /// 旧形式 {panels: [...]} も受ける。型が合わなければ nil（status 全体のデコードは壊さない）。
     var layout: [LayoutPanel]?
@@ -27,7 +28,7 @@ struct EngineStatus: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case updatedAtRaw = "updated_at"
-        case paused, gauge, cards, errors, layout, colors
+        case paused, gauge, cards, errors, balances, layout, colors
         case recommendation, resetCredits = "reset_credits"
         case routing, windows
     }
@@ -44,6 +45,7 @@ struct EngineStatus: Decodable {
         gauge = try c.decodeIfPresent(String.self, forKey: .gauge)
         cards = try c.decodeIfPresent([StatusCard].self, forKey: .cards)
         errors = try c.decodeIfPresent([StatusError].self, forKey: .errors)
+        balances = try? c.decodeIfPresent([StatusBalance].self, forKey: .balances)
         colors = try c.decodeIfPresent([String: String].self, forKey: .colors)
         // 現行は配列。旧形式 {panels: [...]}、それ以外の型は layout = nil。
         if let panels = try? c.decodeIfPresent([LayoutPanel].self, forKey: .layout) {
@@ -61,6 +63,30 @@ struct EngineStatus: Decodable {
     var updatedAt: Date? {
         guard let raw = updatedAtRaw else { return nil }
         return ISO8601Support.parse(raw)
+    }
+}
+
+struct StatusBalance: Decodable {
+    var provider: String
+    var name: String
+    var currency: String
+    var amount: Double
+    var label: String?
+    var staleError: String?
+    var fetchedAtRaw: String?
+
+    enum CodingKeys: String, CodingKey {
+        case provider, name, currency, amount, label
+        case staleError = "stale_error"
+        case fetchedAtRaw = "fetched_at"
+    }
+
+    var fetchedAt: Date? { fetchedAtRaw.flatMap(ISO8601Support.parse) }
+
+    var displayText: String {
+        let symbol = currency == "USD" ? "$" : (currency == "CNY" ? "¥" : currency + " ")
+        let amountText = String(format: "%.2f", amount)
+        return "\(label ?? String(localized: "残高")) \(symbol)\(amountText)"
     }
 }
 

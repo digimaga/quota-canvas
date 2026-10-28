@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .models import ProviderUsage, ResetCredit, Window
+from .models import Balance, ProviderUsage, ResetCredit, Window
 
 log = logging.getLogger("quotacanvas")
 
@@ -64,6 +65,8 @@ def _encode_usage(usage: ProviderUsage) -> Dict[str, Any]:
             }
             for w in usage.windows
         ],
+        "balances": [{"currency": b.currency, "amount": b.amount, "label": b.label}
+                     for b in usage.balances],
         "reset_credits": [
             {
                 "title": c.title,
@@ -104,6 +107,22 @@ def _decode_credit(entry: Any) -> Optional[ResetCredit]:
         return None
 
 
+def _decode_balance(entry: Any) -> Optional[Balance]:
+    """Skip malformed balance entries without discarding other last-good data."""
+    if not isinstance(entry, dict):
+        return None
+    try:
+        currency, amount, label = entry["currency"], entry["amount"], entry.get("label")
+        if not isinstance(currency, str) or not currency or isinstance(amount, bool):
+            return None
+        amount = float(amount)
+        if not math.isfinite(amount) or (label is not None and not isinstance(label, str)):
+            return None
+        return Balance(currency, amount, label)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
 def _decode_usage(provider: str, entry: Any) -> Optional[ProviderUsage]:
     if not isinstance(entry, dict):
         return None
@@ -119,6 +138,8 @@ def _decode_usage(provider: str, entry: Any) -> Optional[ProviderUsage]:
             reset_credits=[c for c in (_decode_credit(e) for e in entry.get("reset_credits") or [])
                            if c is not None],
             retry_after=float(retry_after) if retry_after is not None else None,
+            balances=[b for b in (_decode_balance(e) for e in entry.get("balances") or [])
+                      if b is not None],
         )
     except (KeyError, TypeError, ValueError):
         return None

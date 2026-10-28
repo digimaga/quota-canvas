@@ -47,3 +47,17 @@ def _japanese_ui():
     i18n.set_language("ja")
     yield
     i18n.set_language("ja")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_balance_credentials(monkeypatch):
+    """The suite must never read or use real credentials for new API providers."""
+    from quotacanvas import keychain
+    original = keychain.read
+    def read(provider):
+        if provider in {"openrouter", "deepseek", "kimi"}:
+            return None
+        return original(provider)
+    monkeypatch.setattr(keychain, "read", read)
+    for variable in ("OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "MOONSHOT_API_KEY"):
+        monkeypatch.delenv(variable, raising=False)

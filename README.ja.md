@@ -2,7 +2,7 @@
 
 [English](README.md) | 日本語
 
-Claude / Codex / GLM / Grok / Gemini の利用枠の残量とペースを TURZX 9.2" USB 画面に表示する macOS 用ツール。Python エンジンと `app/` のメニューバーアプリで構成する。
+Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi の利用枠の残量とペースを TURZX 9.2" USB 画面に表示する macOS 用ツール。Python エンジンと `app/` のメニューバーアプリで構成する。
 
 ![QuotaCanvas の表示例（Codex・Claude・Gemini・Grok・GLM の残量とペース）](docs/images/sample-ja.png)
 
@@ -75,6 +75,9 @@ Screen().show(pil_image)   # 1920×462 の横長画像
 .venv/bin/quota-canvas config --init            # 設定ファイルをひな形から作成
 .venv/bin/quota-canvas detect --json            # 使えるサービスとプラン/窓を表示
 .venv/bin/quota-canvas set-key glm              # GLM の API キーをキーチェーンに保存
+.venv/bin/quota-canvas set-key openrouter       # OpenRouter の API キー
+.venv/bin/quota-canvas set-key deepseek         # DeepSeek の API キー
+.venv/bin/quota-canvas set-key kimi             # Moonshot の API キー
 .venv/bin/quota-canvas pick                     # 今使う先を 1 行で表示（--json も可）
 ./scripts/install-agent.sh                      # ログイン時に自動起動（--uninstall で解除）
 ./scripts/install-auto-update.sh                # 10 分ごとに main の新しい commit を取り込み、常駐を再起動（--uninstall で解除）
@@ -102,6 +105,7 @@ Screen().show(pil_image)   # 1920×462 の横長画像
 
 - Claude はキーチェーン `Claude Code-credentials`、Codex は `~/.codex/auth.json`、Grok は `~/.grok/auth.json` を読む。GLM はキーチェーン `quota-canvas/glm`（`set-key glm` またはアプリの設定で保存）か環境変数 `ZAI_API_KEY` を読む。キーチェーンのキーが最優先。
 - トークンの更新は各 CLI に任せる。Claude は既定の `providers.claude.token_refresh = "cli"` で期限切れ間近または HTTP 401/403 のとき `claude -p` をバックグラウンドで 1 回実行し、CLI に更新させる（30 分に 1 回まで）。`"off"` なら自動更新せず、401/403 では Claude の起動を促す。Grok の `providers.grok.token_refresh` は期限切れまたは HTTP 401/403 のとき枠を使わない `grok models` を実行する。Codex の `providers.codex.token_refresh` は HTTP 401/403 のとき `codex exec … ok` を実行する（枠を少し使うため 30 分に 1 回まで）。
+- OpenRouter / DeepSeek / Kimi はそれぞれキーチェーン `quota-canvas/openrouter` / `quota-canvas/deepseek` / `quota-canvas/kimi` を優先し、次に環境変数 `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` / `MOONSHOT_API_KEY` を読む。公開仕様に基づく実装で、実アカウントでは未検証。Kimi はグローバル版 USD API を使う。
 - Gemini は Antigravity CLI の `agy -p "/usage" --output-format json` から取得する。モデルを呼ばず枠を消費せず、トークンも agy が更新する。`providers.gemini.token_refresh` は旧設定との互換用で現在は使われない。窓は `gemini:weekly`、Gemini 4 Argon の `gemini:argon`、`gemini:5h`、Antigravity 経由の Claude / GPT の `gemini:claude` と `gemini:claude_5h`。プラン名はキーチェーン service `gemini` / account `antigravity` のトークンで取得できれば表示し、取れなければ「Gemini」とする。
 
 ### 履歴・ペース・推薦

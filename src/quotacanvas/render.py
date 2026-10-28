@@ -26,7 +26,7 @@ from typing import List, Optional, Sequence, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
 from .i18n import t
-from .models import Pace, PaceStatus, ProviderUsage, Window
+from .models import Balance, Pace, PaceStatus, ProviderUsage, Window
 
 __all__ = ["render", "render_error", "advice_text", "auto_layout", "group_columns",
            "PanelSpec", "BRAND_COLORS", "CANVAS_W", "CANVAS_H",
@@ -73,6 +73,9 @@ BRAND_COLORS = {
     "glm": "#3B82F6",
     "grok": "#E5E7EB",
     "gemini": "#8E75F0",
+    "openrouter": "#8B5CF6",
+    "deepseek": "#4D6BFE",
+    "kimi": "#18A999",
 }
 _BRAND_DEFAULT = (154, 163, 175)  # #9CA3AF for unknown services
 
@@ -809,6 +812,11 @@ def auto_layout(cards):
     groups = _group_services(cards)[:MAX_SERVICES]
     n = len(groups)
     n_large = n if n <= 4 else MAX_SERVICES - n   # n=5..8 -> 3, 2, 1, 0
+    # Balance-only panels occupy small slots; retain the old layout otherwise.
+    if any(g["best"] is None and not g["error"] for g in groups):
+        groups.sort(key=lambda g: g["best"] is None and not g["error"])
+        normal = sum(g["best"] is not None or bool(g["error"]) for g in groups)
+        n_large = min(normal, MAX_SERVICES - n, 4)
     specs = []  # type: List[PanelSpec]
     for i, g in enumerate(groups):
         size = "large" if i < n_large else "small"
@@ -1276,9 +1284,15 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
                    span=reset_span) \
         if win.resets_at is not None else t("render.card.no_reset")
 
+    balances = getattr(main_item[0], "balances", None) or []
+    if balances:
+        reset_line += " · " + _balance_text(balances[0])
+
     if narrow:
         l1 = el + (t("render.card.narrow_el_reset", span=reset_span)
                    if reset_span else "")
+        if balances:
+            l1 += " · " + _balance_text(balances[0])
         ind_lines = [l1, proj]
         for k, txt in enumerate(ind_lines):
             f, shown = _fit_text(s, txt, "w4", 16, cw, min_size=11)
@@ -1531,6 +1545,10 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     rtxt = t("render.card.reset_compact", span=reset_span) \
         if reset_span is not None else t("render.card.no_reset")
 
+    balances = getattr(main_item[0], "balances", None) or []
+    if balances:
+        rtxt = _balance_text(balances[0]) + " · " + rtxt
+
     # リセット行は「目盛り下端 (ゲージ下端 +4px) 〜アドバイス行 bbox 上端」の
     # 帯に、実フォントの bbox で上下 2px 以上の余白を保てる行数だけ描く
     # (大パネルの _draw_reset_credits と同じ方針)。2 行 (残り時間 + リセット
@@ -1566,12 +1584,39 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
            anchor="ls")
 # ------------------------------------------------------------------ entry ---
 
+def _balance_text(balance: Balance) -> str:
+    """Format a display-only amount with its label or the default balance label."""
+    symbol = {"USD": "$", "CNY": "¥"}.get(balance.currency, balance.currency + " ")
+    return "%s %s%.2f" % (balance.label or t("providers.balance"), symbol, balance.amount)
+
+
+def _draw_balance_card(s, box, g, theme):
+    # type: (_S, Tuple[int, int, int, int], dict, tuple) -> None
+    """Draw a balance-only provider in the selected panel."""
+    x0, y0, x1, y1 = box
+    usage = g["items"][0][0]
+    s.rrect(box, radius=CARD_RADIUS, fill=CARD_BG)
+    s.rrect((x0, y0, x0 + 6, y1), radius=3, fill=theme,
+            corners=(True, False, False, True))
+    x = x0 + 24
+    s.text((x, y0 + 24), g["name"], font=F("w7", 20), fill=TEXT, anchor="lm")
+    for i, b in enumerate(usage.balances):
+        text = _balance_text(b)
+        font, text = _fit_text(s, text, "w5", 18, x1 - x - 16, min_size=10)
+        s.text((x, y0 + 58 + i * 27), text, font=font, fill=TEXT, anchor="lm")
+    if usage.stale_error:
+        _draw_stale_mark(s, x1 - 16, y1 - 25, g["stale"], x1 - x - 16)
+
+
 def _draw_large_column(s, box, p, colors, gauge, now):
     # type: (_S, Tuple[int, int, int, int], dict, Optional[dict], str, datetime) -> None
     """One large column: a service card, or the gray error card when the
     provider's fetch failed."""
     theme = _brand_color(colors, p["g"]["provider"])
     if p["main"] is None:
+        if not p["g"]["error"] and p["g"]["items"][0][0].balances:
+            _draw_balance_card(s, box, p["g"], theme)
+            return
         _draw_error_card(s, box, p["g"], theme)
         return
     mi = p["main"]
@@ -1643,7 +1688,9 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
             if p is None:
                 continue                # 空き段: 何も描かず位置だけ保つ
             theme = _brand_color(colors, p["g"]["provider"])
-            if p["main"] is None:
+            if p["main"] is None and not p["g"]["error"] and p["g"]["items"][0][0].balances:
+                _draw_balance_card(s, sbox, p["g"], theme)
+            elif p["main"] is None:
                 _draw_small_error(s, sbox, p["g"]["name"], p["g"]["error"],
                                   theme)
             else:

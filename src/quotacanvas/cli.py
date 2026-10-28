@@ -49,7 +49,7 @@ BACKOFF_BASE = timedelta(minutes=5)
 SHIFT_EVERY = timedelta(minutes=3)
 SHIFTS = [(0, 0), (4, 0), (4, 4), (0, 4), (-4, 4), (-4, 0), (-4, -4), (0, -4), (4, -4)]
 
-PROVIDER_ORDER = {"claude": 0, "codex": 1, "glm": 2, "grok": 3, "gemini": 4}
+PROVIDER_ORDER = {"claude": 0, "codex": 1, "glm": 2, "grok": 3, "gemini": 4, "openrouter": 5, "deepseek": 6, "kimi": 7}
 
 Card = Tuple[ProviderUsage, Optional[Pace]]
 
@@ -87,10 +87,14 @@ def build_cards(usages: List[ProviderUsage], history: History, now: datetime,
     cards: List[Tuple[tuple, Card]] = []
     for u in usages:
         if u.error and not u.windows:
-            if u.error in translations("providers.no_credentials"):
+            if (u.error in translations("providers.no_credentials") or
+                    (u.provider in gate.NON_ROUTING_PROVIDERS
+                     and u.error in translations("providers.api_key_not_set"))):
                 continue  # the service isn't set up on this Mac; nothing to warn about
             cards.append(((1, PROVIDER_ORDER.get(u.provider, 9), ""), (u, None)))
             continue
+        if u.balances and not u.windows and not u.error:
+            cards.append(((1, PROVIDER_ORDER.get(u.provider, 9), ""), (u, None)))
         allowed = provider_windows.get(u.provider) if provider_windows else None
         for w in u.windows:
             parent = None
