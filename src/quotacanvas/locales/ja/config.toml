@@ -33,3 +33,5 @@ models_workers = "{path}: '{name}' は有効なワーカー名の空でない配
 models_roles = "{path}: '{name}' は impl / review / consult の空でない配列で指定してください"
 models_text = "{path}: '{name}' は制御文字・改行を含まない {max} 文字以内の文字列で指定してください"
 models_order = "{path}: 'routing.model_order' は有効なモデル名の配列で指定してください"
+
+tolerance_order = "{path}: pacing.end_tolerance は pacing.early_tolerance 以下にしてください"

@@ -451,7 +451,7 @@ extension Notification.Name {
 }
 
 /// status 値 → 色（over/exhausted=赤, tight/on_track=紫, spare/fresh=緑, unknown=灰）。
-/// tight（リセット時予測 92-100%）は余った枠をほぼ使い切れる状態で警告ではないため、on_track と同じ紫。
+/// tight（リセット時の予測使い残しが許容幅の半分以下）は余った枠をほぼ使い切れる状態で警告ではないため、on_track と同じ紫。
 /// F5: fresh（リセット直後）は spare と同じ緑系。
 enum StatusColor {
     static func color(for status: String?) -> Color {

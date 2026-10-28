@@ -91,6 +91,9 @@ def _window_item(pu: ProviderUsage, pace: Pace) -> Dict[str, Any]:
         "resets_at": _iso(win.resets_at),
         "length": win.length.total_seconds(),
     }
+    if pace.projected_leftover is not None:
+        item["projected_leftover"] = pace.projected_leftover
+        item["leftover_tolerance"] = pace.leftover_tolerance
     if pace.exhausts_at is not None:
         item["exhausts_at"] = _iso(pace.exhausts_at)
     if pu.fetched_at is not None:

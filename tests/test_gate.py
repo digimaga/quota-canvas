@@ -692,7 +692,7 @@ def test_routing_config_load_and_roundtrip(tmp_path):
     d = config_to_dict(cfg_)
     assert config_to_dict(config_from_dict(d)) == d
     assert d["routing"] == {"enabled": True, "floor_percent": 8.5, "floor_hours": 12.5, "stale_minutes": 15,
-                            "short_over_margin_minutes": 12.5,
+                            "short_over_margin_minutes": 12.5, "long_over_margin_minutes": 120.0,
                             "workers": {"glm": ["glm:5h", "glm:weekly"],
                                         "argon": ["gemini:argon"], "grok": ["grok:*"]},
                             # config --json は表示順も worker_order で返す (アプリ用)
@@ -797,7 +797,9 @@ def test_build_status_writes_windows_unfiltered_and_always(tmp_path):
     assert ids == ["glm:5h", "grok:weekly", "grok:weekly_build"]  # 内訳も含む全窓
     item = payload["windows"][0]
     assert item["provider"] == "glm" and item["key"] == "5h" and item["part_of"] is None
-    assert item["remaining"] == 49.0 and item["status"] == "on_track"
+    assert item["remaining"] == 49.0 and item["status"] == "spare"
+    assert item["projected_leftover"] == pytest.approx(15)
+    assert item["leftover_tolerance"] == pytest.approx(5.2)
     assert item["length"] == 5 * 3600
     assert item["fetched_at"] == NOW.astimezone().isoformat(timespec="seconds")
     assert "T" in item["resets_at"]  # ISO 8601
@@ -816,7 +818,7 @@ def test_build_status_writes_routing_when_enabled(tmp_path):
     routing = payload["routing"]
     assert [w["name"] for w in routing["workers"]] == ["glm"]
     worker = routing["workers"][0]
-    assert worker["verdict"] == "boost" and worker["reason"] == "on_track"
+    assert worker["verdict"] == "boost" and worker["reason"] == "spare"
     assert worker["burn_until"] is not None
     assert routing["at"] == payload["updated_at"]
     assert routing["line"].startswith("quota: glm=boost(")  # routing line と同じ 1 行
@@ -1156,3 +1158,81 @@ def test_partial_window_match_is_missing_even_with_burn(patterns):
     data = status(win("codex:weekly", "codex", "spare", 80))
     result = evaluate(data, routing, {"codex": NOW + timedelta(hours=1)}, NOW)
     assert (result.workers[0].verdict, result.workers[0].reason) == ("unknown", "missing")
+
+
+def test_spare_hysteresis_and_reset():
+    entry = win("glm:weekly", "glm", "spare", 50)
+    entry.update(length=7 * 86400, projected_leftover=10.1, leftover_tolerance=10)
+    first = evaluate(status(entry), cfg(), {}, NOW)
+    assert first.workers[0].verdict == "boost"
+    assert first.spare_holds == {entry["id"]: entry["resets_at"]}
+    entry.update(status="on_track", projected_leftover=8)
+    held = evaluate(status(entry), cfg(), {}, NOW, previous=first.to_dict())
+    assert (held.workers[0].verdict, held.workers[0].reason) == ("boost", "spare")
+    entry["projected_leftover"] = 7.5
+    released = evaluate(status(entry), cfg(), {}, NOW, previous=held.to_dict())
+    assert released.workers[0].verdict == "go" and released.spare_holds == {}
+    entry["projected_leftover"] = 8
+    entry["resets_at"] = (NOW + timedelta(days=4)).isoformat()
+    reset = evaluate(status(entry), cfg(), {}, NOW, previous=held.to_dict())
+    assert reset.workers[0].verdict == "go" and reset.spare_holds == {}
+    entry["status"] = "over"
+    assert evaluate(status(entry), cfg(), {}, NOW, previous=held.to_dict()).workers[0].verdict == "reserve"
+    entry.update(status="tight", remaining=1)
+    entry["resets_at"] = (NOW + timedelta(days=3)).isoformat()
+    assert evaluate(status(entry), cfg(), {}, NOW, previous=held.to_dict()).workers[0].verdict == "stop"
+
+
+@pytest.mark.parametrize("minutes, verdict", [(119, "go"), (120, "go"), (121, "reserve")])
+def test_long_over_near_reset(minutes, verdict):
+    reset = NOW + timedelta(days=3)
+    entry = win("glm:weekly", "glm", "over", 50, resets=reset,
+                exhausts=reset - timedelta(minutes=minutes))
+    entry["length"] = 7 * 86400
+    result = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert result.verdict == verdict
+    assert result.reason == ("over_near_reset" if verdict == "go" else "over")
+
+
+def test_long_over_margin_config():
+    settings = config_from_dict({"routing": {"long_over_margin_minutes": 45}})
+    assert config_to_dict(settings)["routing"]["long_over_margin_minutes"] == 45
+    assert load_config_from_text(format_toml(settings)).routing.long_over_margin_minutes == 45
+    for value in (-1, True, float("inf"), "120"):
+        with pytest.raises(ConfigError):
+            config_from_dict({"routing": {"long_over_margin_minutes": value}})
+
+
+def test_status_roundtrip_preserves_spare_hysteresis(tmp_path):
+    from dataclasses import replace
+    from quotacanvas.models import PaceStatus
+    from quotacanvas.status import build_status
+
+    cards, usages = _engine_cards()
+    usage, pace = cards[1]
+    cfg_ = _engine_cfg(tmp_path, '[routing]\nenabled = true\n[routing.workers]\ngrok = ["grok:weekly"]\n')
+    spare = replace(pace, status=PaceStatus.SPARE, projected_leftover=11, leftover_tolerance=10)
+    first = build_status(cfg_, [(usage, spare)], [usage], NOW)
+    assert first["routing"]["spare_holds"][pace.window.id] == first["windows"][0]["resets_at"]
+    track = replace(spare, status=PaceStatus.ON_TRACK, projected_leftover=8)
+    second = build_status(cfg_, [(usage, track)], [usage], NOW, previous=first["routing"])
+    assert second["routing"]["workers"][0]["reason"] == "spare"
+    assert second["routing"]["spare_holds"] == first["routing"]["spare_holds"]
+
+
+def test_spare_hold_survives_unjudged_data_and_floor_precedes_long_margin():
+    reset = NOW + timedelta(days=3)
+    entry = win("glm:weekly", "glm", "spare", 50, resets=reset)
+    entry.update(length=7 * 86400, projected_leftover=11, leftover_tolerance=10)
+    first = evaluate(status(entry), cfg(), {}, NOW)
+    entry["stale_error"] = "temporary failure"
+    interrupted = evaluate(status(entry), cfg(), {}, NOW, previous=first.to_dict())
+    assert interrupted.workers[0].verdict == "unknown"
+    assert interrupted.spare_holds == first.spare_holds
+    entry.pop("stale_error")
+    entry.update(status="on_track", projected_leftover=8)
+    recovered = evaluate(status(entry), cfg(), {}, NOW, previous=interrupted.to_dict())
+    assert recovered.workers[0].verdict == "boost"
+    entry.update(status="over", remaining=1,
+                 exhausts_at=(reset - timedelta(minutes=119)).isoformat())
+    assert evaluate(status(entry), cfg(), {}, NOW, previous=recovered.to_dict()).workers[0].reason == "below_floor"

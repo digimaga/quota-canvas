@@ -133,6 +133,7 @@ bedtime_on_track_last_unit = "順調 · 寝るまで{span}、残り{pct}%は使�
 on_track_plan = "順調 · {allowance}ペースで最後まで使える"
 spare_last_unit = "余裕あり · リセットまで{span}、残り{pct}%は自由に使える"
 bedtime_spare_last_unit = "余裕あり · 寝るまで{span}、残り{pct}%は自由に使える"
+spare_forecast = "このままだと約{pct}%余る"
 spare_plan = "余裕あり · {unit} 約{pct}%まで使える"
 unit_day = "1日"
 allowance = "{unit}{pct}%"

@@ -384,6 +384,7 @@ class RoutingResult:
     at: Optional[str] = None  # status.json の updated_at (ISO8601)
     reset_credits: Dict[str, int] = field(default_factory=dict)  # provider → 期限内の権数
     holds: Dict[str, str] = field(default_factory=dict)  # reserve(over) の窓 id → resets_at
+    spare_holds: Dict[str, str] = field(default_factory=dict)  # spare boost の窓 id → resets_at
 
     def worker(self, name: str) -> Optional[WorkerResult]:
         for w in self.workers:
@@ -396,6 +397,7 @@ class RoutingResult:
             "at": self.at,
             "reset_credits": dict(self.reset_credits),
             "holds": dict(self.holds),
+            "spare_holds": dict(self.spare_holds),
             "workers": [w.to_dict() for w in self.workers],
         }
 
@@ -418,8 +420,9 @@ def _status_reset_credits(status: Optional[dict], now: datetime) -> Dict[str, in
 
 
 def _judge(entry: dict, floor_percent: float, floor_hours: float, now: datetime, holds: dict,
-           margin_minutes: Optional[float]) -> Tuple[str, str]:
-    """窓 1 枚の判定。短い窓の over は予測時刻と前回状態を使う。"""
+           margin_minutes: Optional[float], long_margin_minutes: float,
+           spare_holds: dict) -> Tuple[str, str]:
+    """窓 1 枚の判定。前回の reserve / spare は同じリセットの間だけ保持する。"""
     st = norm_status(entry.get("status"))
     if st == "exhausted":
         return "stop", "exhausted"
@@ -433,8 +436,15 @@ def _judge(entry: dict, floor_percent: float, floor_hours: float, now: datetime,
         floor_seconds = margin if short else floor_hours * 3600
         if floor_hours == 0 or reset is None or (reset - now).total_seconds() >= floor_seconds:
             return "stop", "below_floor"
-    if not short:
-        return PACE_VERDICT.get(st, ("go", "unknown"))
+    if st == "over" and not short:
+        reset = parse_dt(entry.get("resets_at"))
+        exhaust = parse_dt(entry.get("exhausts_at"))
+        long_window = (not isinstance(length, bool) and isinstance(length, (int, float))
+                       and math.isfinite(length) and length >= 24 * 3600)
+        if (long_window and reset is not None and exhaust is not None
+                and 0 <= (reset - exhaust).total_seconds() <= long_margin_minutes * 60):
+            return "go", "over_near_reset"
+        return "reserve", "over"
     if st == "over":
         reset = parse_dt(entry.get("resets_at"))
         exhaust = parse_dt(entry.get("exhausts_at"))
@@ -445,7 +455,15 @@ def _judge(entry: dict, floor_percent: float, floor_hours: float, now: datetime,
         if (reset - exhaust).total_seconds() < threshold:
             return "go", "over_near_reset"
         return "reserve", "over"
-    return SHORT_PACE_VERDICT.get(st, ("go", "unknown"))
+    reset = parse_dt(entry.get("resets_at"))
+    leftover, tolerance = entry.get("projected_leftover"), entry.get("leftover_tolerance")
+    if (st in ("tight", "on_track") and reset is not None
+            and parse_dt(spare_holds.get(entry.get("id"))) == reset
+            and all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
+                    for v in (leftover, tolerance))
+            and leftover > 0.75 * tolerance):
+        return "boost", "spare"
+    return (SHORT_PACE_VERDICT if short else PACE_VERDICT).get(st, ("go", "unknown"))
 
 
 def _match_windows(patterns: List[str], windows: List[dict]) -> List[dict]:
@@ -515,17 +533,23 @@ def default_workers(status: Optional[dict]) -> Dict[str, List[str]]:
 
 
 def _worst(entries: List[dict], floor_percent: float, floor_hours: float, now: datetime, previous_holds: dict,
-           margin_minutes: Optional[float], holds: Dict[str, str]) -> Optional[Tuple[dict, str, str]]:
+           margin_minutes: Optional[float], holds: Dict[str, str],
+           long_margin_minutes: float, previous_spare_holds: dict,
+           spare_holds: Dict[str, str]) -> Optional[Tuple[dict, str, str]]:
     """代表窓 = 一番悪い判定の窓 (stop < reserve < go < boost、同順なら残量が少ない方)。"""
     best: Optional[Tuple[Tuple[int, float], dict, str, str]] = None
     for entry in entries:
-        verdict, reason = _judge(entry, floor_percent, floor_hours, now, previous_holds, margin_minutes)
+        verdict, reason = _judge(entry, floor_percent, floor_hours, now, previous_holds, margin_minutes,
+                                 long_margin_minutes, previous_spare_holds)
         wid, reset = entry.get("id"), entry.get("resets_at")
         if isinstance(wid, str):
             holds.pop(wid, None)
+            spare_holds.pop(wid, None)
             reset_dt = parse_dt(reset)
             if verdict == "reserve" and reason == "over" and reset_dt is not None and reset_dt > now:
                 holds[wid] = reset
+            if verdict == "boost" and reason == "spare" and reset_dt is not None and reset_dt > now:
+                spare_holds[wid] = reset
         rem = norm_remaining(entry.get("remaining"))
         rank = (VERDICT_RANK[verdict], rem if rem is not None else float("inf"))
         if best is None or rank < best[0]:
@@ -569,6 +593,14 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             holds[wid] = reset
     previous_holds = dict(holds)
     margin_minutes = getattr(routing_cfg, "short_over_margin_minutes", None)
+    long_margin_minutes = getattr(routing_cfg, "long_over_margin_minutes", 120.0)
+    previous_spare_holds = previous.get("spare_holds") if isinstance(previous, dict) else None
+    if not isinstance(previous_spare_holds, dict):
+        previous_spare_holds = {}
+    spare_holds = {wid: reset for wid, reset in previous_spare_holds.items()
+                   if isinstance(wid, str) and wid.split(":", 1)[0] not in NON_ROUTING_PROVIDERS
+                   and parse_dt(reset) is not None and parse_dt(reset) > now}
+    previous_spare_holds = dict(spare_holds)
 
     workers: List[WorkerResult] = []
     for name, patterns in specs.items():
@@ -589,7 +621,8 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             display_holds = (dict(holds) if not matched or providers & errors
                              or any(_is_stale_window(w, stale_min, now) for w in mine) else holds)
             picked = _worst(display_windows, floor, floor_hours, now, previous_holds,
-                            margin_minutes, display_holds)
+                            margin_minutes, display_holds, long_margin_minutes, previous_spare_holds,
+                            dict(spare_holds) if display_holds is not holds else spare_holds)
             entry = picked[0] if picked else {}
             workers.append(WorkerResult(
                 name=name, verdict="stop", reason="disabled",
@@ -614,7 +647,8 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             workers.append(WorkerResult(name=name, verdict="unknown", reason="missing",
                                         provider=_one_provider(providers)))
             continue
-        picked = _worst(matched, floor, floor_hours, now, previous_holds, margin_minutes, holds)
+        picked = _worst(matched, floor, floor_hours, now, previous_holds, margin_minutes, holds,
+                        long_margin_minutes, previous_spare_holds, spare_holds)
         assert picked is not None
         entry, verdict, reason = picked
         until = burn.get(name)
@@ -637,7 +671,7 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
         workers=workers,
         at=status.get("updated_at") if isinstance(status, dict) and isinstance(status.get("updated_at"), str) else None,
         reset_credits=_status_reset_credits(status, now),
-        holds=holds,
+        holds=holds, spare_holds=spare_holds,
     )
 
 

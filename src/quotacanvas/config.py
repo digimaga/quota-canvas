@@ -139,8 +139,10 @@ class Poll:
 
 @dataclass
 class Pacing:
-    tight: float = 92.0     # リセット時予測がこれ以上なら使い切り
-    on_track: float = 70.0  # これ以上なら順調、未満は余裕あり
+    tight: float = 92.0     # 旧設定 (互換用、判定には使わない)
+    on_track: float = 70.0  # 旧設定 (互換用、判定には使わない)
+    early_tolerance: float = 10.0
+    end_tolerance: float = 2.0
     sleep: Optional[Sleep] = None  # 睡眠帯。省略 = ペース判定は壁時計のまま（従来どおり）
 
 
@@ -174,6 +176,7 @@ class Routing:
     models: Dict[str, RoutingModel] = field(default_factory=dict)
     short_over_margin_minutes: Optional[float] = None
     floor_hours: float = 24.0   # 長い窓でリセットまでこれ以上なら floor を適用
+    long_over_margin_minutes: float = 120.0
 
 
 @dataclass
@@ -316,11 +319,16 @@ def _build(data: Dict[str, Any], path: Path) -> Config:
                 cfg.pacing.tight = _float_in(value, "pacing.tight", path, 0, 100)
             elif key == "on_track":
                 cfg.pacing.on_track = _float_in(value, "pacing.on_track", path, 0, 100)
+            elif key in ("early_tolerance", "end_tolerance"):
+                setattr(cfg.pacing, key, _float_in(value, "pacing." + key, path, 0, 100))
             elif key == "sleep":
                 _need_table(value, "pacing.sleep", path)
                 cfg.pacing.sleep = _build_sleep(value, path)
             else:
                 _unknown(path, "pacing." + key)
+
+    if cfg.pacing.end_tolerance > cfg.pacing.early_tolerance:
+        raise ConfigError(t("config.tolerance_order", path=path))
 
     providers = data.get("providers")
     if providers is not None:
@@ -369,6 +377,9 @@ def _build(data: Dict[str, Any], path: Path) -> Config:
                 cfg.routing.floor_hours = hours
             elif key == "stale_minutes":
                 cfg.routing.stale_minutes = _int_in(value, "routing.stale_minutes", path, 1)
+            elif key == "long_over_margin_minutes":
+                cfg.routing.long_over_margin_minutes = _float_in(
+                    value, "routing.long_over_margin_minutes", path, 0)
             elif key == "short_over_margin_minutes":
                 if value is None:  # config --json の既定値
                     cfg.routing.short_over_margin_minutes = None
@@ -827,8 +838,8 @@ def format_toml(cfg: Config) -> str:
         "redraw = %d" % cfg.poll.redraw,
         "",
         "[pacing]",
-        "tight = %.1f" % cfg.pacing.tight,
-        "on_track = %.1f" % cfg.pacing.on_track,
+        "early_tolerance = %r" % cfg.pacing.early_tolerance,
+        "end_tolerance = %r" % cfg.pacing.end_tolerance,
     ]
     if cfg.pacing.sleep is not None:
         s = cfg.pacing.sleep
@@ -868,6 +879,8 @@ def format_toml(cfg: Config) -> str:
         "floor_hours = %r" % cfg.routing.floor_hours,
         "# fetched_at がこの分数より古い窓を含むワーカーは stale (判定できない扱い)",
         "stale_minutes = %d" % cfg.routing.stale_minutes,
+        "# 24 時間以上の窓で over を go とするリセット直前の猶予 (分)",
+        "long_over_margin_minutes = %r" % cfg.routing.long_over_margin_minutes,
         "# 24 時間未満の窓の over 猶予と floor を外す終盤の長さ (分)。未指定なら窓長の 10%",
         ("short_over_margin_minutes = %r" % cfg.routing.short_over_margin_minutes
          if cfg.routing.short_over_margin_minutes is not None else "# short_over_margin_minutes = 30"),
@@ -978,7 +991,8 @@ def config_to_dict(cfg: Config) -> Dict[str, Any]:
             "end": _format_time(cfg.display.night.end),
             "brightness": cfg.display.night.brightness,
         }
-    pacing: Dict[str, Any] = {"tight": cfg.pacing.tight, "on_track": cfg.pacing.on_track}
+    pacing: Dict[str, Any] = {"early_tolerance": cfg.pacing.early_tolerance,
+                              "end_tolerance": cfg.pacing.end_tolerance}
     if cfg.pacing.sleep is not None:
         pacing["sleep"] = {  # 未設定なら absent (night と同じ流儀)
             "start": _format_time(cfg.pacing.sleep.start),
@@ -1007,6 +1021,7 @@ def config_to_dict(cfg: Config) -> Dict[str, Any]:
             "floor_hours": cfg.routing.floor_hours,
             "stale_minutes": cfg.routing.stale_minutes,
             "short_over_margin_minutes": cfg.routing.short_over_margin_minutes,
+            "long_over_margin_minutes": cfg.routing.long_over_margin_minutes,
             # JSON のオブジェクトはキー順を保てない (アプリの JSONSerialization が
             # 並べ替える) ため、line の表示順は worker_order でも運ぶ
             "workers": {name: list(ids) for name, ids in cfg.routing.workers.items()},

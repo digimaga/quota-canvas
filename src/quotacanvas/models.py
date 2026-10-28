@@ -107,3 +107,5 @@ class Pace:
     # 日数。sustainable_per_day は起きている時間基準 (pacing.sleep 設定時は暦の
     # 1 日より短い) で rate との比較 (adjust) に使う。表示は暦の 1 日あたりが正しい。
     allowance_per_day: Optional[float] = None
+    projected_leftover: Optional[float] = None  # predicted unused percentage points
+    leftover_tolerance: Optional[float] = None  # tolerance at this point in the window

@@ -93,7 +93,7 @@ def test_small_panel_reset_rows_clear_of_gauge_ticks_and_advice(text_calls):
     assert any(x.startswith("リセット あと") for *_, x in reset_rows)
     assert any(x.startswith("リセット権") for *_, x in reset_rows)
     adv_top = rows[-1][0]                 # 一番下の ls 行 = アドバイス
-    assert rows[-1][2].endswith("まで")   # アドバイス行であることの目印
+    assert "まで" in rows[-1][2]   # アドバイス行であることの目印
     assert y1 - 8 - 17 <= rows[-1][1]     # baseline y1-8 前後から動いていない
     _assert_clear(reset_rows, ticks_bot, adv_top, "リセット行")
 

@@ -142,7 +142,7 @@ The Routing settings tab enables routing, sets the remaining quota floor and dat
 #### History, pace and recommendations
 
 - Eight days of history are stored in `~/Library/Application Support/quota-canvas/history.jsonl`, for daily bar charts and the last 24 hours' rate. Days before history began show “?”.
-- Pace prediction blends the whole-window average and recent rate equally. Reaching 100% before reset means over pace; projected use of at least 92% at reset is tight, at least 70% is on track, and less is spare. Less than 3% elapsed and less than 5% used is fresh. If usage rose by at least 1% in the last two hours, the rate is at least 1.5 times the blended rate, and it would exhaust the quota before reset, yellow advice shows the projected exhaustion time. Advice also mentions another window of the same service, such as a five-hour window, if it runs out first. Wording is determined by `advice_text()` in `src/quotacanvas/render.py`.
+- Pace prediction blends the whole-window average and recent rate equally. Reaching 100% before reset means over pace. Otherwise let E = 100 minus projected use and q be the remaining fraction of the window (using waking time when sleep is configured, clamped to 0–1). The tolerance is `end_tolerance + (early_tolerance - end_tolerance) * q` (defaults 2 and 10 percentage points). E above the tolerance is spare, E at or below half the tolerance is tight, and the rest is on track. The legacy `pacing.tight` and `pacing.on_track` keys are accepted but ignored. Less than 3% elapsed and less than 5% used is fresh. If usage rose by at least 1% in the last two hours, the rate is at least 1.5 times the blended rate, and it would exhaust the quota before reset, yellow advice shows the projected exhaustion time. Advice also mentions another window of the same service, such as a five-hour window, if it runs out first. Wording is determined by `advice_text()` in `src/quotacanvas/render.py`.
 - The English display labels the spare state `Spare` and the tight state `Maxing out`.
 - On each reset, the final usage is saved in `periods.jsonl` (the latest 20 per window) and the next period's card shows the previous remaining amount.
 - The header and `pick` recommend a service to use now. The score is the amount projected to expire unused × window length ÷ time until reset. Services that are over pace, below 5% remaining, failing to fetch, or waiting for reset are excluded; the score is halved when a window shorter than a day has less than 20% remaining and multiplied by 1.5 for a Codex reset credit expiring within 24 hours. If `status.json` is absent or more than 20 minutes old, `pick` fetches usage once without sending anything to the screen.
@@ -162,6 +162,7 @@ floor_percent = 5
 floor_hours = 24
 stale_minutes = 20
 # short_over_margin_minutes = 30   # defaults to 10% of the window length
+# long_over_margin_minutes = 120  # long-window over grace before reset
 
 [routing.workers]
 claude = ["claude:*"]
@@ -205,12 +206,14 @@ Each model uses its worst worker verdict; an unavailable worker is `?` and count
 | Verdict | Meaning and conditions |
 | --- | --- |
 | `stop` | Exhausted, or remaining quota is below `floor_percent` (default 5%). The low-remaining `stop` applies only to windows whose reset is at least `floor_hours` (default 24 hours) away, or whose reset time is unknown (`floor_hours = 0` applies it always). |
-| `reserve` | Over pace and projected to run out before reset; prefer another worker if possible. Short windows have an exception (below). |
+| `reserve` | Over pace and projected to run out before reset; prefer another worker if possible. Windows near reset have exceptions (below). |
 | `go` | On track (windows of 24 hours or longer) or nearly fully used by reset. Also used when the window's pace status itself is unknown. |
 | `boost` | Quota is projected to remain unused, the window has just reset, a window shorter than 24 hours is on track, or burn mode is active; a candidate for active use. |
 | `unknown` | No matching window, provider fetch error, stale data, or another reason prevents a judgment. Fail-open: do not block startup. |
 
 **Windows shorter than 24 hours** (such as 5-hour windows) do not carry over, so ideally they are used up exactly at reset. With a margin of `short_over_margin_minutes` (default: 10% of the window length, i.e. 30 minutes for a 5-hour window), an over-pace window is `go` when it is projected to run out less than the margin before reset, and `reserve` when it would run out earlier. Once a window becomes `reserve`, it stays `reserve` for the same reset until the gap drops below two thirds of the margin (recorded in `routing.holds` in `status.json` to avoid flapping). The low-remaining `stop` applies only while the reset is at least the margin away; after that the window is used down to 0%.
+
+For windows of 24 hours or longer, over pace is `go` when exhaustion is within `long_over_margin_minutes` (default 120 minutes) before reset; floor rules still take priority. A spare window remains `boost` for the same window ID and reset until E falls to 75% of its tolerance or below; stop and reserve take priority. This state is recorded in `routing.spare_holds`.
 
 The default freshness limit is 20 minutes (`stale_minutes`). An old `fetched_at` or `stale_error` on a window of a relevant provider also makes the worker `unknown`. Reset credit counts are displayed but do not change verdicts.
 

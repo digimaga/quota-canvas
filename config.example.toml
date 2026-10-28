@@ -64,10 +64,10 @@ interval = 900
 redraw = 60
 
 [pacing]
-# リセット時の予測消費 (%) がこの値以上なら「使い切り」（100% 未満なので尽きはしない）
-tight = 92
-# 予測消費 (%) がこの値以上なら「順調」、未満なら「余裕あり」
-on_track = 70
+# 予測使い残しの許容幅 (percentage points)。残りの起きている時間の割合に応じて補間。
+# end_tolerance は early_tolerance 以下。旧 tight / on_track は読み込むが判定には使わない。
+early_tolerance = 10
+end_tolerance = 2
 
 # 睡眠帯: ペース判定（over / tight / on_track / spare）を「起きている時間」で行う。
 # 寝ている間はカウントしないので、「寝る前（start）までに枠を使い切れるか」の
@@ -96,6 +96,8 @@ on_track = 70
 # stale_minutes = 20
 # 24 時間未満の窓の over 猶予と floor を外す終盤の長さ（分）。省略時は窓長の 10%
 # short_over_margin_minutes = 30
+# 24 時間以上の窓でリセット直前の over を go とする猶予（分）
+# long_over_margin_minutes = 120
 # ワーカー名 → 窓 ID のリスト。並び順 = line 表示順。"claude:*" のように末尾に
 # "*" を付けると接頭一致。内訳窓（part_of）は判定しない。
 # 省略時の既定は「取得できた provider ごとに独立窓すべてを 1 ワーカーにまとめ、

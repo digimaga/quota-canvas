@@ -221,13 +221,13 @@ def _burst_fields(
 
 
 def compute_pace(window: Window, samples: List[Sample], now: datetime, tz=None,
-                 tight: float = 92.0, on_track: float = 70.0,
+                 early_tolerance: float = 10.0, end_tolerance: float = 2.0,
                  sleep: Optional[Sleep] = None,
                  bedtime: bool = False) -> Pace:
     """Pacing prediction for one window. Day splits are window-start based; tz is
     the local zone (default: system local), kept for display-side use.
-    `tight` / `on_track` are projected-end-percent thresholds for the TIGHT /
-    ON_TRACK statuses (defaults: 92 / 70, same as before).
+    Tolerance for predicted leftover interpolates from early_tolerance to
+    end_tolerance according to the remaining active fraction of the window.
     `sleep` は (start, end) のローカル時刻の睡眠帯。あるときは経過時間・残り
     時間などの「長さ」を起きている時間に置き換えて判定する (None なら従来
     どおりの壁時計)。`advance` 系の時刻は睡眠帯を飛ばして進める。
@@ -339,21 +339,26 @@ def compute_pace(window: Window, samples: List[Sample], now: datetime, tz=None,
     wall_days = _as_days(max(resets - now, timedelta(0)))
     allowance = (100.0 - used) / wall_days if wall_days > 0 else None
 
+    leftover = 100.0 - projected
+    remaining_fraction = min(1.0, max(0.0, t_days / length_days)) if length_days > 0 else 0.0
+    tolerance = end_tolerance + (early_tolerance - end_tolerance) * remaining_fraction
+
     if used >= 100:
         status = PaceStatus.EXHAUSTED
     elif exhausts_at is not None:
         status = PaceStatus.OVER
-    elif projected >= tight:
-        status = PaceStatus.TIGHT
-    elif projected >= on_track:
-        status = PaceStatus.ON_TRACK
-    else:
+    elif leftover > tolerance:
         status = PaceStatus.SPARE
+    elif leftover <= tolerance / 2:
+        status = PaceStatus.TIGHT
+    else:
+        status = PaceStatus.ON_TRACK
 
     return Pace(
         window=window, status=status, elapsed_fraction=fraction,
         ideal_used_percent=ideal, rate_per_day=rate,
         projected_end_percent=projected, exhausts_at=exhausts_at,
+        projected_leftover=leftover, leftover_tolerance=tolerance,
         sustainable_per_day=sustainable, adjust_percent=adjust,
         daily_used=_daily_used(window, same_period, start, now, used),
         burst_rate_per_day=burst_rate, burst_exhausts_at=burst_exhausts_at,

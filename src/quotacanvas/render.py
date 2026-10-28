@@ -120,7 +120,7 @@ def _weekday(dt):
 _STATUS_COLOR = {
     PaceStatus.OVER: RED,
     PaceStatus.EXHAUSTED: RED,
-    PaceStatus.TIGHT: PURPLE,  # 予測 92-100%: 余った枠をほぼ使い切れる。警告ではないので on_track と同じ紫
+    PaceStatus.TIGHT: PURPLE,  # 予測使い残しが許容幅の半分以下
     PaceStatus.ON_TRACK: PURPLE,
     PaceStatus.SPARE: GREEN,
     PaceStatus.FRESH: GREEN,   # リセット直後で枠が開いている: spare と同じ緑系
@@ -623,13 +623,20 @@ def advice_text(pace, compact=False, now=None):
     last_unit = left_in is not None and left_in < unit_len
     left = max(0, _round(100.0 - win.used_percent))
 
+    def with_spare_forecast(text):
+        if st is PaceStatus.SPARE and pace.projected_leftover is not None:
+            head, separator, tail = text.partition(" · ")
+            forecast = t("render.advice.spare_forecast", pct=_round(pace.projected_leftover))
+            return head + " · " + forecast + (separator + tail if separator else "")
+        return text
+
     if compact:  # narrow card: status word + tail
         if hourly and not last_unit:
             # 1日未満の窓 (5時間枠など) は許容量ではなく残量と締切までの時間を
             # そのまま出す。リセット時刻不明 (実データでは UNKNOWN で先に返る)
             # は状態語だけ。
             if left_in is not None:
-                return _short_left_advice(_badge(st), left, left_in, bedtime_in)
+                return with_spare_forecast(_short_left_advice(_badge(st), left, left_in, bedtime_in))
             return _badge(st)
         sust = _daily_allowance(pace)
         if last_unit:
@@ -641,7 +648,7 @@ def advice_text(pace, compact=False, now=None):
         else:
             tail = None
         label = _badge(st)
-        return "%s · %s" % (label, tail) if tail else label
+        return with_spare_forecast("%s · %s" % (label, tail) if tail else label)
 
     if reset_in is None:
         return t("render.advice.no_reset", label=_badge(st))
@@ -656,7 +663,7 @@ def advice_text(pace, compact=False, now=None):
         if st is PaceStatus.ON_TRACK:
             return t("render.advice.%son_track_last_unit" % pre, span=span, pct=left)
         if st is PaceStatus.SPARE:
-            return t("render.advice.%sspare_last_unit" % pre, span=span, pct=left)
+            return with_spare_forecast(t("render.advice.%sspare_last_unit" % pre, span=span, pct=left))
         return _badge(st)
     if hourly:
         # 1日未満の窓 (5時間枠など) も compact と同じ形で残量と締切までの時間を
@@ -670,7 +677,7 @@ def advice_text(pace, compact=False, now=None):
             head = t("render.advice.tight")
         else:
             head = _badge(st)
-        return _short_left_advice(head, left, left_in, bedtime_in)
+        return with_spare_forecast(_short_left_advice(head, left, left_in, bedtime_in))
     # Windows of a day or longer (weekly etc.) talk in the per-day allowance.
     # 表示は暦の 1 日あたり (pacing.sleep 設定時は sustainable_per_day より
     # 小さくなる)。
@@ -695,8 +702,8 @@ def advice_text(pace, compact=False, now=None):
         return t("render.advice.on_track_plan", allowance=unit_txt) if unit_txt \
             else _badge(st)
     if st is PaceStatus.SPARE:
-        return t("render.advice.spare_plan", unit=unit, pct=per_unit) \
-            if per_unit is not None else _badge(st)
+        return with_spare_forecast(t("render.advice.spare_plan", unit=unit, pct=per_unit) \
+            if per_unit is not None else _badge(st))
     return _badge(st)
 
 

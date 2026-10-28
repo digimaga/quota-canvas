@@ -43,12 +43,14 @@ The app finds the CLI at the path stored in its settings (default
       "used": 80.0, "remaining": 20.0, "status": "over", "length": 604800.0,
       "resets_at": "2026-10-31T02:40:44+09:00",
       "exhausts_at": "2026-10-25T15:40:44+09:00",
+      "projected_leftover": -15.0, "leftover_tolerance": 8.5,
       "fetched_at": "2026-10-24T21:29:12+09:00" }
   ],
   "routing": {
     "at": "2026-10-24T21:30:00+09:00",
     "reset_credits": { "codex": 1 },
     "holds": { "codex:weekly": "2026-10-31T02:40:44+09:00" },
+    "spare_holds": {},
     "workers": [
       { "name": "codex", "verdict": "boost", "reason": "burn", "windows": ["codex:weekly"],
         "remaining": 20.0, "status": "over",
@@ -127,7 +129,7 @@ The app finds the CLI at the path stored in its settings (default
   (`display.windows` / `providers.<p>.windows` do not affect it; breakdown windows have a
   non-null `part_of`, the parent window's `key`, not its `id`). Written on every redraw so the
   routing CLI can judge all windows. Fields mirror the cards (`id`, `provider`, `key`,
-  `part_of`, `used`, `remaining`, `status`, `resets_at`, `length` in seconds, plus the optional `exhausts_at`,
+  `part_of`, `used`, `remaining`, `status`, `resets_at`, `length` in seconds, plus the optional `projected_leftover`, `leftover_tolerance` (absent for fresh/unknown), `exhausts_at`,
   `fetched_at`, `stale_error`). Written always, also while `routing.enabled = false` and
   while paused.
 
@@ -136,7 +138,7 @@ The app finds the CLI at the path stored in its settings (default
   computed by the same pure logic as `quota-canvas routing line`. `at` is the `updated_at`
   the judgment is based on, `reset_credits` maps provider → number of valid reset credits
   (display only, it never changes a verdict), `holds` maps window IDs to reset times for
-  reserve/over windows and preserves the short-window hysteresis across redraws, and
+  reserve/over windows and preserves the short-window hysteresis across redraws. `spare_holds` maps window IDs to reset times for spare boosts, retaining boost until projected leftover is at most 75% of its tolerance for the same reset; stop and reserve take priority. `projected_leftover` is 100 minus projected use, and `leftover_tolerance` interpolates between end and early tolerances by the remaining active fraction of the window. A leftover above tolerance is spare, at or below half tolerance is tight, and otherwise on_track.
   `line` is the same one-line summary
   `routing line` prints (for Macs without quota-canvas that only read a copied
   status.json). When `[routing.models.*]` is configured, `model_lines` (array of strings)
@@ -146,7 +148,7 @@ The app finds the CLI at the path stored in its settings (default
     (`routing.floor_percent`, `reason: "below_floor"`), or monitor-only mode (`reason: "disabled"`), even when data is missing, stale or in error;
   - `reserve` — usable but pace is over (`reason: "over"`); prefer another worker;
   - `go` — normal use (`reason: "tight"` / `"on_track"` / `"over_near_reset"`);
-    `over_near_reset` means a short window is projected to exhaust within its reset margin;
+    `over_near_reset` means a window is projected to exhaust within its configured reset margin;
   - `boost` — plenty of headroom (`reason: "spare"` / `"fresh"`, or `"on_track"` for
     windows shorter than 24 hours), or lifted there by an
     active burn window (`reason: "burn"`);
@@ -221,7 +223,7 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
 
 - `quota-canvas config --json` — effective config (defaults filled in), same shape as the
   TOML: `{"display": {...}, "layout": {"panels": [...]}, "poll": {...}, "pacing": {...}, "providers": {"claude": {"enabled": true, "windows": []}, ...}}`.
-  `pacing` is always `{"tight", "on_track"}` plus an optional `sleep` object
+  `pacing` is always `{"early_tolerance", "end_tolerance"}` plus an optional `sleep` object
   (`{"start", "end", "skip", "advice"}`, absent when unset) — like `display.night`, unset
   sections are absent, so the app's copy-and-send-back round trip preserves keys it does
   not edit. `routing` additionally carries `worker_order` (array of worker names): JSON
@@ -360,6 +362,8 @@ app may put into `providers.<p>.windows` (empty list = show every window).
 | `routing.enabled` | bool（既定 `false`） | 振り分け: 「AI ワーカーの振り分け判定を使う」トグル。true で `routing line|check|hook` が判定を出し、status.json に `"routing"` が現れる |
 | `routing.floor_percent` | 0–100（既定 5） | 振り分け: 「止める下限（残り %）」Stepper。floor 適用中に残りがこれ未満のワーカーは stop |
 | `routing.floor_hours` | number ≥ 0（既定 24） | 長い窓の floor を適用する残り時間の下限（時間）。0 なら常に適用 |
+| `pacing.early_tolerance` / `pacing.end_tolerance` | 0–100（既定 10 / 2、end ≤ early） | 予測使い残しの許容幅。旧 `tight` / `on_track` は読み込むが判定には使わない |
+| `routing.long_over_margin_minutes` | number ≥ 0（既定 120） | 24 時間以上の窓でリセット前に尽きる予測を go とする猶予（分）。floor は優先 |
 | `routing.short_over_margin_minutes` | number > 0 or `null`（既定 `null`） | 短い窓の終盤の猶予（分）。`null` は窓の長さの 10% |
 | `routing.stale_minutes` | 1 以上（既定 20） | 振り分け: 「古いとみなす（分）」Stepper。fetched_at がこれより古い窓を含むワーカーは stale |
 | `routing.workers` | ワーカー名 → 窓 id 配列（`config --set-json` は `[{"name", "windows"}]` の配列も可、`worker_order` でも順指定可）、空 = サービスごとの既定 | 振り分け: ワーカーエディタ（名前 + 窓 id のカンマ区切り、上下ボタンで並べ替え、「既定に戻す（サービスごと）」で空にする）。名前は `^[A-Za-z0-9._-]{1,40}$` |

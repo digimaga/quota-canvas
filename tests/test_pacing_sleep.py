@@ -63,11 +63,11 @@ def samp(at: datetime, used: float, resets: datetime = RESET) -> Sample:
 # --- 例のケース: tight -------------------------------------------------------
 
 
-def test_example_case_tight_when_rate_fits_waking_hours():
+def test_example_case_spare_when_rate_fits_waking_hours():
     # used 91%: 起きている経過 109h で rate = 91*24/109 = 20.04/日。
-    # 残りの起きている 3h で +2.5% -> 予測 93.5% -> 使い切り (tight)。
+    # 残りの起きている 3h で +2.5% -> 予測 93.5% -> 余裕あり (spare)。
     pace = compute_pace(grok_weekly(91.0), [], NOW, tz=UTC, sleep=SLEEP)
-    assert pace.status is PaceStatus.TIGHT
+    assert pace.status is PaceStatus.SPARE
     assert pace.elapsed_fraction == pytest.approx(109 / 112)
     assert pace.rate_per_day == pytest.approx(91 * 24 / 109)
     assert pace.projected_end_percent == pytest.approx(91 * 112 / 109)
@@ -93,15 +93,15 @@ def test_sleep_changes_projection_from_wall_clock():
 def test_wall_on_track_turns_tight():
     # リセットが 0 時 (= 実質の締め切りどおり) の週間、now 21:00 の前夜。
     # 残り 27h のうち睡眠は 8h (30%) で、経過 141h の睡眠 48h (34%) より少ない。
-    # used 77%: 壁時計の予測 91.7% -> on_track。起きている時間の予測 92.7% -> tight。
+    # used 81.7%: 壁時計では on_track、起きている時間では tight。
     reset = datetime(2026, 10, 27, 0, 0, 0, tzinfo=UTC)
-    win = Window("claude", "weekly", "週間", 77.0, reset, timedelta(days=7))
+    win = Window("claude", "weekly", "週間", 81.7, reset, timedelta(days=7))
     wall = compute_pace(win, [], NOW, tz=UTC)
     assert wall.status is PaceStatus.ON_TRACK
-    assert wall.projected_end_percent == pytest.approx(77 * 168 / 141)
+    assert wall.projected_end_percent == pytest.approx(81.7 * 168 / 141)
     slept = compute_pace(win, [], NOW, tz=UTC, sleep=SLEEP)
     assert slept.status is PaceStatus.TIGHT
-    assert slept.projected_end_percent == pytest.approx(77 * 112 / 93)
+    assert slept.projected_end_percent == pytest.approx(81.7 * 112 / 93)
 
 
 # --- over: 0 時より前に尽きる -------------------------------------------------
@@ -215,7 +215,7 @@ def test_sleep_defaults_to_off(tmp_path):
     assert cfg.pacing.sleep is None
     assert sleep_for(None, "claude") is None
     assert sleep_for(cfg.pacing.sleep, "grok") is None
-    assert config_to_dict(cfg)["pacing"] == {"tight": 92.0, "on_track": 70.0}
+    assert config_to_dict(cfg)["pacing"] == {"early_tolerance": 10.0, "end_tolerance": 2.0}
 
 
 def test_load_sleep_same_day_band(tmp_path):
@@ -394,8 +394,8 @@ def test_build_cards_applies_sleep_except_skipped_provider(tmp_path, utc_local_t
     from quotacanvas import cli
 
     midnight = datetime(2026, 10, 27, 0, 0, 0, tzinfo=UTC)
-    claude = Window("claude", "weekly", "週間", 77.0, midnight, timedelta(days=7))
-    glm = Window("glm", "weekly", "週間", 77.0, midnight, timedelta(days=7))
+    claude = Window("claude", "weekly", "週間", 81.7, midnight, timedelta(days=7))
+    glm = Window("glm", "weekly", "週間", 81.7, midnight, timedelta(days=7))
     usages = [
         ProviderUsage("claude", "Claude Max", [claude], None, NOW),
         ProviderUsage("glm", "GLM", [glm], None, NOW),
@@ -490,18 +490,18 @@ def _bedtime_pace(bedtime: bool, used: float = 77.0):
 def test_advice_text_bedtime_display():
     from quotacanvas.render import advice_text
     pace = _bedtime_pace(True)
-    assert pace.status is PaceStatus.ON_TRACK
+    assert pace.status is PaceStatus.SPARE
     # 大きいカード: 「リセットまで7時間」が「寝るまで3時間」に変わる
-    assert advice_text(pace, now=NOW) == "順調 · 寝るまで3時間、残り23%は使い切ってよい"
+    assert advice_text(pace, now=NOW) == "余裕あり · このままだと約21%余る · 寝るまで3時間、残り23%は自由に使える"
     # 小さいカードも同じく
-    assert advice_text(pace, compact=True, now=NOW) == "順調 · 寝るまで3時間"
+    assert advice_text(pace, compact=True, now=NOW) == "余裕あり · このままだと約21%余る · 寝るまで3時間"
 
 
 def test_advice_text_reset_display_without_bedtime():
     from quotacanvas.render import advice_text
     pace = _bedtime_pace(False)  # advice = "reset" (既定)
-    assert advice_text(pace, now=NOW) == "順調 · リセットまで7時間、残り23%は使い切ってよい"
-    assert advice_text(pace, compact=True, now=NOW) == "順調 · リセットまで7時間"
+    assert advice_text(pace, now=NOW) == "余裕あり · このままだと約21%余る · リセットまで7時間、残り23%は自由に使える"
+    assert advice_text(pace, compact=True, now=NOW) == "余裕あり · このままだと約21%余る · リセットまで7時間"
 
 
 def test_advice_text_exhausted_keeps_reset_wording():
@@ -537,12 +537,12 @@ def test_daily_allowance_display_uses_calendar_days_with_sleep():
     ので、1日の許容量としては 57% / 3.33日 = 17.1%/日 が正しい。"""
     from quotacanvas.render import advice_text
     pace = _allowance_pace(SLEEP)
-    assert pace.status is PaceStatus.ON_TRACK
+    assert pace.status is PaceStatus.SPARE
     # sustainable は起きている時間基準のまま (adjust の比較に使う。変わらない)
     assert pace.sustainable_per_day == pytest.approx(57.0 / ((55 + 56 / 60) / 24))
     assert pace.allowance_per_day == pytest.approx(57.0 / (3 + (7 + 56 / 60) / 24))
-    assert advice_text(pace, compact=True, now=_ALLOW_NOW) == "順調 · 1日 約17%まで"
-    assert advice_text(pace, now=_ALLOW_NOW) == "順調 · 1日17%ペースで最後まで使える"
+    assert "1日 約17%まで" in advice_text(pace, compact=True, now=_ALLOW_NOW)
+    assert "1日 約17%まで使える" in advice_text(pace, now=_ALLOW_NOW)
 
 
 def test_daily_allowance_display_without_sleep_keeps_sustainable():
@@ -550,11 +550,11 @@ def test_daily_allowance_display_without_sleep_keeps_sustainable():
     sustainable_per_day と同じ値 (上と同じ窓で 17%/日)。"""
     from quotacanvas.render import advice_text
     pace = _allowance_pace(None)
-    assert pace.status is PaceStatus.ON_TRACK
+    assert pace.status is PaceStatus.SPARE
     assert pace.allowance_per_day == pytest.approx(pace.sustainable_per_day)
     assert pace.allowance_per_day == pytest.approx(57.0 / (3 + (7 + 56 / 60) / 24))
-    assert advice_text(pace, compact=True, now=_ALLOW_NOW) == "順調 · 1日 約17%まで"
-    assert advice_text(pace, now=_ALLOW_NOW) == "順調 · 1日17%ペースで最後まで使える"
+    assert "1日 約17%まで" in advice_text(pace, compact=True, now=_ALLOW_NOW)
+    assert "1日 約17%まで使える" in advice_text(pace, now=_ALLOW_NOW)
 
 
 # --- advice の設定読み込み -------------------------------------------------------

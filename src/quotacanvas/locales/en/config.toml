@@ -33,3 +33,5 @@ models_workers = "{path}: '{name}' must be a nonempty array of valid worker name
 models_roles = "{path}: '{name}' must be a nonempty array of impl / review / consult"
 models_text = "{path}: '{name}' must be a string of at most {max} characters without control characters or line breaks"
 models_order = "{path}: 'routing.model_order' must be an array of valid model names"
+
+tolerance_order = "{path}: pacing.end_tolerance must not exceed pacing.early_tolerance"

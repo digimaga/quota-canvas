@@ -56,9 +56,9 @@ Card = Tuple[ProviderUsage, Optional[Pace]]
 
 
 def _window_pace(window, usage: ProviderUsage, history: History, now: datetime,
-                 tight: float, on_track: float, sleep: Optional[Sleep]) -> Pace:
+                 early_tolerance: float, end_tolerance: float, sleep: Optional[Sleep]) -> Pace:
     """窓 1 枚ぶんのペース判定 (build_cards と status.json の windows で共有)。"""
-    pace = compute_pace(window, history.samples(window.id), now, tight=tight, on_track=on_track,
+    pace = compute_pace(window, history.samples(window.id), now, early_tolerance=early_tolerance, end_tolerance=end_tolerance,
                         sleep=sleep_for(sleep, usage.provider),
                         bedtime=wants_bedtime(sleep, usage.provider))
     periods = getattr(history, "periods", None)
@@ -72,7 +72,7 @@ def _window_pace(window, usage: ProviderUsage, history: History, now: datetime,
 
 def build_cards(usages: List[ProviderUsage], history: History, now: datetime,
                 order: Optional[List[str]] = None,
-                tight: float = 92.0, on_track: float = 70.0,
+                early_tolerance: float = 10.0, end_tolerance: float = 2.0,
                 provider_windows: Optional[Dict[str, Set[str]]] = None,
                 sleep: Optional[Sleep] = None) -> List[Card]:
     """`order` (config display.windows / --only) があれば、その窓 ID の順番どおりに
@@ -110,7 +110,7 @@ def build_cards(usages: List[ProviderUsage], history: History, now: datetime,
                 continue  # providers.<p>.windows のフィルタ (表示時に適用)
             if pos is not None and sort_w.id not in pos:
                 continue
-            pace = _window_pace(w, u, history, now, tight, on_track, sleep)
+            pace = _window_pace(w, u, history, now, early_tolerance, end_tolerance, sleep)
             after = 0 if parent is None else 1  # 内訳は親の直後
             if pos is not None:
                 key = (0, pos[sort_w.id], after)
@@ -123,12 +123,12 @@ def build_cards(usages: List[ProviderUsage], history: History, now: datetime,
 
 
 def all_window_paces(usages: List[ProviderUsage], history: History, now: datetime,
-                     tight: float = 92.0, on_track: float = 70.0,
+                     early_tolerance: float = 10.0, end_tolerance: float = 2.0,
                      sleep: Optional[Sleep] = None) -> List[Card]:
     """表示フィルタ (display.windows / --only / providers.<p>.windows) をかけずに、
     取得できた全 provider の全窓 (内訳窓 part_of 付きを含む) のペース判定を返す。
     status.json のトップレベル "windows" の材料 (gate の判定はこれを読む)。"""
-    return [(u, _window_pace(w, u, history, now, tight, on_track, sleep))
+    return [(u, _window_pace(w, u, history, now, early_tolerance, end_tolerance, sleep))
             for u in usages for w in u.windows]
 
 
@@ -683,8 +683,8 @@ def _cmd_pick(args, cfg: Config) -> int:
         history = History(args.history) if args.history else History()
         poller = Poller(history, enabled=cfg.providers.enabled(), record=False)
         usages = poller.fetch(now)
-        found = recommend(usages, history, now, tight=cfg.pacing.tight,
-                          on_track=cfg.pacing.on_track, sleep=cfg.pacing.sleep)
+        found = recommend(usages, history, now, early_tolerance=cfg.pacing.early_tolerance,
+                          end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep)
         rec = found.payload() if found is not None else None
     if args.json:
         _print_json(rec if rec is not None else {"recommendation": None})
@@ -1228,12 +1228,12 @@ def main(argv=None) -> int:
         now = datetime.now(timezone.utc)
         usages = poller.fetch(now)
         cards = build_cards(usages, history, now, order=_window_order(args, cfg),
-                            tight=cfg.pacing.tight, on_track=cfg.pacing.on_track,
+                            early_tolerance=cfg.pacing.early_tolerance, end_tolerance=cfg.pacing.end_tolerance,
                             provider_windows={name: cfg.providers.windows_for(name)
                                               for name in PROVIDERS},
                             sleep=cfg.pacing.sleep)
-        rec = recommend(usages, history, now, tight=cfg.pacing.tight,
-                        on_track=cfg.pacing.on_track, sleep=cfg.pacing.sleep)
+        rec = recommend(usages, history, now, early_tolerance=cfg.pacing.early_tolerance,
+                        end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep)
         img = _render_frame(cards, now, cfg, _render_layout(cfg, cards),
                             recommendation=rec.text if rec else None)
         _output(img, screen, args.out)
@@ -1347,16 +1347,16 @@ def main(argv=None) -> int:
             deferred_fetch = None
         visible_usages = [u for u in usages if u.provider in cfg.providers.enabled()]
         cards = build_cards(visible_usages, history, now, order=_window_order(args, cfg),
-                            tight=cfg.pacing.tight, on_track=cfg.pacing.on_track,
+                            early_tolerance=cfg.pacing.early_tolerance, end_tolerance=cfg.pacing.end_tolerance,
                             provider_windows={name: cfg.providers.windows_for(name)
                                               for name in PROVIDERS},
                             sleep=cfg.pacing.sleep)
         # status.json の "windows" (表示フィルタ前の全窓) 用。判定材料なので
         # [routing].enabled に関係なく毎周回作る (compute_pace は純粋計算だけ)。
-        windows_all = all_window_paces(visible_usages, history, now, tight=cfg.pacing.tight,
-                                       on_track=cfg.pacing.on_track, sleep=cfg.pacing.sleep)
-        rec = recommend(visible_usages, history, now, tight=cfg.pacing.tight,
-                        on_track=cfg.pacing.on_track, sleep=cfg.pacing.sleep)
+        windows_all = all_window_paces(visible_usages, history, now, early_tolerance=cfg.pacing.early_tolerance,
+                                       end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep)
+        rec = recommend(visible_usages, history, now, early_tolerance=cfg.pacing.early_tolerance,
+                        end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep)
         layout = _render_layout(cfg, cards)
         if cfg.display.paused:
             # 一時停止中: 画面には何も送らず status.json だけ更新する (frame.png はそのまま)

@@ -48,16 +48,16 @@ def test_spare():
 
 
 def test_on_track():
-    pace = compute_pace(weekly(25.0), [], NOW)
+    pace = compute_pace(weekly(27.0), [], NOW)
     assert pace.status is PaceStatus.ON_TRACK
-    assert pace.projected_end_percent == pytest.approx(87.5)
+    assert pace.projected_end_percent == pytest.approx(94.5)
     assert pace.exhausts_at is None
 
 
 def test_tight():
-    pace = compute_pace(weekly(27.0), [], NOW)
+    pace = compute_pace(weekly(28.0), [], NOW)
     assert pace.status is PaceStatus.TIGHT
-    assert pace.projected_end_percent == pytest.approx(94.5)
+    assert pace.projected_end_percent == pytest.approx(98.0)
     assert pace.exhausts_at is None
 
 
@@ -265,3 +265,46 @@ def test_daily_used_clamps_negative():
     pace = compute_pace(weekly(1.0), samples, START + timedelta(hours=26))
     assert pace.daily_used[0] == pytest.approx(5.5)
     assert pace.daily_used[1] == pytest.approx(0.0)  # negative diff clamped
+
+
+def test_weekly_high_usage_with_waking_hours_left_is_spare():
+    from datetime import time
+    reset = datetime(2026, 10, 26, 0, tzinfo=UTC)
+    now = reset - timedelta(hours=15)
+    win = Window("claude", "weekly", "weekly", 70, reset, timedelta(days=7))
+    recent_rate = 48 - 70 * 24 / 97
+    samples = [Sample(win.id, now - timedelta(days=1), 70 - recent_rate * 16 / 24, reset)]
+    pace = compute_pace(win, samples, now, tz=UTC, sleep=(time(0), time(8)))
+    assert pace.projected_end_percent == pytest.approx(85)
+    assert pace.projected_leftover == pytest.approx(15)
+    assert pace.leftover_tolerance == pytest.approx(2 + 8 * 15 / 112)
+    assert pace.status is PaceStatus.SPARE
+
+
+def test_weekly_20_percent_projected_90_is_spare():
+    # Whole-window rate 10/day and recent rate 18/day average to 14/day.
+    pace = compute_pace(weekly(20), [samp(NOW - timedelta(days=1), 2)], NOW)
+    assert pace.projected_end_percent == pytest.approx(90)
+    assert pace.leftover_tolerance == pytest.approx(2 + 8 * 5 / 7)
+    assert pace.status is PaceStatus.SPARE
+
+
+@pytest.mark.parametrize("leftover,expected", [(10, PaceStatus.ON_TRACK),
+                                               (5, PaceStatus.TIGHT),
+                                               (10.01, PaceStatus.SPARE)])
+def test_leftover_boundaries(leftover, expected):
+    # Constant tolerances make the boundary exact and independent of rounding.
+    pace = compute_pace(weekly((100 - leftover) * 2 / 7), [], NOW,
+                        early_tolerance=10, end_tolerance=10)
+    assert pace.projected_leftover == pytest.approx(leftover)
+    assert pace.status is expected
+
+
+def test_missing_rate_uses_used_as_projection():
+    win = Window("claude", "weekly", "weekly", 20, RESET, timedelta(days=7))
+    pace = compute_pace(win, [], START)
+    assert pace.rate_per_day is None
+    assert pace.projected_end_percent == 20
+    assert pace.projected_leftover == 80
+    assert pace.leftover_tolerance == 10
+    assert pace.status is PaceStatus.SPARE

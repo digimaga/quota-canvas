@@ -339,8 +339,9 @@ def test_format_toml_roundtrip(tmp_path):
     assert parsed["display"]["night"]["start"] == "22:30"
     assert parsed["display"]["night"]["brightness"] == 15
     assert parsed["poll"] == {"interval": 300, "redraw": 30}
-    assert parsed["pacing"]["tight"] == pytest.approx(85.5)
-    assert parsed["pacing"]["on_track"] == pytest.approx(60.0)
+    assert parsed["pacing"]["early_tolerance"] == 10
+    assert parsed["pacing"]["end_tolerance"] == 2
+    assert "tight" not in parsed["pacing"] and "on_track" not in parsed["pacing"]
     assert parsed["providers"]["claude"]["enabled"] is False
     assert parsed["providers"]["codex"]["enabled"] is True
     assert parsed["providers"]["glm"]["windows"] == ["5h"]
@@ -355,7 +356,8 @@ def test_format_toml_defaults_are_valid_toml(tmp_path):
     assert "night" not in parsed["display"]  # 未設定なら夜間減光は無効のまま
     assert "layout" not in parsed  # 未設定なら配置セクションはコメントだけ
     assert parsed["poll"] == {"interval": 900, "redraw": 60}
-    assert parsed["pacing"]["tight"] == pytest.approx(92.0)
+    assert parsed["pacing"]["early_tolerance"] == 10
+    assert parsed["pacing"]["end_tolerance"] == 2
     assert parsed["providers"]["glm"]["windows"] == []
 
 
@@ -391,19 +393,29 @@ def _weekly(used):
                   NOW + timedelta(days=5), timedelta(days=7))  # 2 days elapsed
 
 
-def test_compute_pace_default_thresholds_unchanged():
-    # projected: 25% / 2d * 7d = 87.5 -> ON_TRACK (>=70, <92)
-    assert compute_pace(_weekly(25.0), [], NOW).status is PaceStatus.ON_TRACK
+def test_compute_pace_tolerance_arguments():
+    assert compute_pace(_weekly(25), [], NOW).status is PaceStatus.SPARE
+    assert compute_pace(_weekly(25), [], NOW, early_tolerance=20, end_tolerance=20).status is PaceStatus.ON_TRACK
+    assert compute_pace(_weekly(25), [], NOW, early_tolerance=30, end_tolerance=30).status is PaceStatus.TIGHT
 
 
-def test_compute_pace_threshold_args():
-    # 87.5 becomes TIGHT when the bar is lowered to 87
-    assert compute_pace(_weekly(25.0), [], NOW, tight=87.0).status is PaceStatus.TIGHT
-    # SPARE when on_track is raised above the projection
-    assert compute_pace(_weekly(25.0), [], NOW, tight=100.0, on_track=88.0).status is PaceStatus.SPARE
-    # ON_TRACK boundary uses on_track
-    assert compute_pace(_weekly(25.0), [], NOW, on_track=87.5).status is PaceStatus.ON_TRACK
-    assert compute_pace(_weekly(25.0), [], NOW, on_track=87.6, tight=100.0).status is PaceStatus.SPARE
+def test_pacing_tolerances_and_legacy_compatibility():
+    cfg = config_from_dict({"pacing": {"tight": 1, "on_track": 99,
+                                       "early_tolerance": 18, "end_tolerance": 4}})
+    assert cfg.pacing.tight == 1 and cfg.pacing.on_track == 99
+    assert config_to_dict(cfg)["pacing"] == {"early_tolerance": 18, "end_tolerance": 4}
+    parsed = config_from_dict(tomllib.loads(format_toml(cfg)))
+    assert config_to_dict(parsed)["pacing"] == config_to_dict(cfg)["pacing"]
+    assert compute_pace(_weekly(25), [], NOW, early_tolerance=cfg.pacing.early_tolerance,
+                        end_tolerance=cfg.pacing.end_tolerance).status is PaceStatus.ON_TRACK
+
+
+@pytest.mark.parametrize("values", [{"early_tolerance": -1}, {"end_tolerance": 101},
+                                   {"early_tolerance": float("nan")}, {"end_tolerance": True},
+                                   {"early_tolerance": 2, "end_tolerance": 3}])
+def test_invalid_pacing_tolerances(values):
+    with pytest.raises(ConfigError):
+        config_from_dict({"pacing": values})
 
 
 # --- app contract keys: display.paused / display.gauge / providers.<p>.windows ----
@@ -635,7 +647,7 @@ def test_config_to_dict_defaults(tmp_path):
     assert "night" not in d["display"]
     assert d["layout"] == {"panels": []}  # 空 = 自動配置
     assert d["poll"] == {"interval": 900, "redraw": 60}
-    assert d["pacing"] == {"tight": 92.0, "on_track": 70.0}
+    assert d["pacing"] == {"early_tolerance": 10.0, "end_tolerance": 2.0}
     assert d["providers"]["claude"] == {"enabled": True, "windows": [],
                                         "token_refresh": "cli"}  # color は未指定なら absent
 

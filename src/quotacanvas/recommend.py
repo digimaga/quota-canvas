@@ -1,6 +1,6 @@
 """今使う先 (F1): サービスをまたいで「今どれを使うのが得か」を 1 行で出す。
 
-純関数 recommend(usages, history, now, tight, on_track) が、取得エラーのない
+純関数 recommend(usages, history, now, early_tolerance, end_tolerance) が、取得エラーのない
 サービスの独立窓 (part_of が None) それぞれについて「使えるか」と「急ぐ度合い
 (score)」を出し、一番 score の高い使えるサービスを推奨する。
 
@@ -118,7 +118,7 @@ def _reason(window: Window, now: datetime,
 
 
 def recommend(usages: Sequence[ProviderUsage], history, now: datetime,
-              tight: float = 92.0, on_track: float = 70.0,
+              early_tolerance: float = 10.0, end_tolerance: float = 2.0,
               sleep=None) -> Optional[Recommendation]:
     """一番「使わないと消える」量の多い使えるサービスを 1 つ返す (無ければ None)。
 
@@ -136,7 +136,7 @@ def recommend(usages: Sequence[ProviderUsage], history, now: datetime,
         if not windows:
             continue
         paces = {w.id: compute_pace(w, history.samples(w.id), now,
-                                    tight=tight, on_track=on_track,
+                                    early_tolerance=early_tolerance, end_tolerance=end_tolerance,
                                     sleep=sleep_for(sleep, usage.provider),
                                     bedtime=wants_bedtime(sleep, usage.provider))
                  for w in windows}
