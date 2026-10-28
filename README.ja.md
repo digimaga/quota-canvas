@@ -142,6 +142,33 @@ argon = ["gemini:argon"]
 
 ワーカー名は 1〜40 文字の英数字、`.`、`_`、`-` を使う。`config --json` は表示順を `routing.worker_order` にも出力する。`config --set-json` では `routing.workers` に `{"name": ..., "windows": [...]}` の配列も使え、配列の順序が優先される。オブジェクト形式では `worker_order` で順序を指定できる。
 
+任意で、モデル台帳を設定の順に書くと、モデルごとに使う枠・編集の可否・役割・呼び方をセッション開始時に出せる。
+
+```toml
+[routing.models.terra]
+workers = ["codex"]          # 消費するワーカー（複数なら全部見る）
+roles = ["impl"]             # impl（実装）/ review（レビュー）/ consult（相談）
+edit = true                  # 編集できるか（既定 false）
+invoke = "codex-run --model example"   # 呼び方（任意、160 文字まで）
+note = "差分は commit 前にレビューする"   # 特徴（任意、120 文字まで）
+
+[routing.models.reviewer]
+workers = ["codex"]
+roles = ["review"]
+```
+
+`routing line` は 1 行目を今までどおりに出し、続けて台帳を出す。
+
+```text
+quota: codex=boost(70%) (12:00時点)
+models: (役割 impl=実装 review=レビュー consult=相談。判定は使う枠の悪い方)
+- terra: boost[codex=boost] 編集可 impl | codex-run --model example | 差分は commit 前にレビューする
+- reviewer: boost[codex=boost] 読み取り review
+review: 使える 1（reviewer）。このモデルが実装した差分はレビュー役がいない
+```
+
+モデルの判定は使うワーカーの悪い方。判定できないワーカーは `?` で、レビュー役の数には入れる。review の役割を持つモデルが全員 stop になると、`review:` の行が警告になる。`routing check` はモデル名も受け付ける（ワーカー名と重なったらワーカーを優先）。常駐は台帳の行を status.json の `routing.model_lines` に書き、`routing.line` は 1 行のまま変えない。
+
 ### 判定
 
 | 判定 | 意味と条件 |

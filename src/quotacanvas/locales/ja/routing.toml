@@ -17,6 +17,14 @@ stale_old = "quota: stale（{time}時点・{reason}）"
 stale_reason_old = "古いので残量は判断に使わない"
 stale_reason_broken = "読めないので残量は判断に使わない"
 
+[models]
+header = "models: (役割 impl=実装 review=レビュー consult=相談。判定は使う枠の悪い方)"
+editable = "編集可"
+readonly = "読み取り"
+review_none = "review: 警告 レビューに使えるモデルがいない（全員 stop）。レビューが要る差分は commit せず、ユーザーに伝える"
+review_one = "review: 使える {n}（{names}）。このモデルが実装した差分はレビュー役がいない"
+review_many = "review: 使える {n}（{names}）"
+
 [check]
 disabled = "quota-canvas: {name}=stop（監視のみ・振り分けで使わない）。QUOTA_GATE_FORCE=1 で無視"
 stop = "quota-canvas: {name}=stop（{detail}）。QUOTA_GATE_FORCE=1 で無視"

@@ -761,13 +761,20 @@ def _cmd_routing_line(args, cfg: Config) -> int:
                 _print_json(result.to_dict())
             return 0
         if state != "ok":
-            print(_stale_line_with_disabled(detail, path, data, cfg, now, lang))
+            line = _stale_line_with_disabled(detail, path, data, cfg, now, lang)
+            if line:
+                print(line)
+                model_result = gate.RoutingResult(workers=_disabled_for_stale(data, cfg, now))
+                for model_line in gate.format_model_lines(cfg.routing.models, model_result, lang):
+                    print(model_line)
             return 0
         result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
                                previous=data.get("routing"), off=gate.load_off(gate.OFF_PATH))
         line = gate.format_line(result, now, lang)
         if line:  # ワーカー 0 件のときは何も出さない (空白の崩れた行を出さない)
             print(line)
+            for model_line in gate.format_model_lines(cfg.routing.models, result, lang):
+                print(model_line)
     except Exception as exc:  # 判定できないときも起動は止めない (fail-open)
         print("routing: %s" % exc, file=sys.stderr)
     return 0
@@ -794,10 +801,25 @@ def _routing_check_impl(args, cfg: Config) -> int:
     name = args.name
     lang = current_language()
     known = set(cfg.routing.workers) | set(gate.KNOWN_PROVIDERS)
-    if name not in known:  # 引数の妥当性は status.json の中身に依存させない
+    if name not in known and name not in cfg.routing.models:
         return 2
     state, data, detail, _path = _load_gate_status(args, cfg)
     off = gate.load_off(gate.OFF_PATH)
+    if name not in known:
+        now = gate.now_local()
+        if state == "ok":
+            result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
+                                   previous=data.get("routing"), off=off)
+        else:
+            result = gate.RoutingResult(workers=_disabled_for_stale(data, cfg, now))
+        worker = gate.model_verdict(name, cfg.routing.models[name], result)
+        if args.json:
+            _print_json(worker.to_dict())
+        else:
+            message = gate.check_message(worker, now, lang)
+            if message:
+                print(message, file=sys.stderr)
+        return 3 if worker.verdict == "stop" else 0
     if name in off and state != "ok":
         now = gate.now_local()
         result = gate.evaluate(data, cfg.routing, {}, now, off=off)
@@ -859,14 +881,18 @@ def _cmd_routing_hook(args, cfg: Config) -> int:
         state, data, detail, path = _load_gate_status(args, cfg)
         now = gate.now_local()
         if state != "ok":
-            _print_hook_context(args.event,
-                                _stale_line_with_disabled(detail, path, data, cfg, now, lang))
+            line = _stale_line_with_disabled(detail, path, data, cfg, now, lang)
+            if line:
+                result = gate.RoutingResult(workers=_disabled_for_stale(data, cfg, now))
+                lines = [line] + gate.format_model_lines(cfg.routing.models, result, lang)
+                _print_hook_context(args.event, "\n".join(lines))
             return 0
         result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
                                previous=data.get("routing"), off=gate.load_off(gate.OFF_PATH))
         line = gate.format_line(result, now, lang)
-        if line:  # ワーカー 0 件のときは何も出さない (line と同じ)
-            _print_hook_context(args.event, line + "\n\n" + t("routing.hook.rules"))
+        if line:
+            lines = [line] + gate.format_model_lines(cfg.routing.models, result, lang)
+            _print_hook_context(args.event, "\n".join(lines) + "\n\n" + t("routing.hook.rules"))
     except Exception:
         pass  # 判定できないときもセッション開始は止めない (fail-open、無出力)
     return 0

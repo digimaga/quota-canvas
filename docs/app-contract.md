@@ -139,7 +139,9 @@ The app finds the CLI at the path stored in its settings (default
   reserve/over windows and preserves the short-window hysteresis across redraws, and
   `line` is the same one-line summary
   `routing line` prints (for Macs without quota-canvas that only read a copied
-  status.json). Per worker: `verdict` is one of
+  status.json). When `[routing.models.*]` is configured, `model_lines` (array of strings)
+  holds the model-ledger lines `routing line` prints after its first line; `line` itself
+  stays one line. Per worker: `verdict` is one of
   - `stop` — do not use: exhausted (`reason: "exhausted"`) or below the floor
     (`routing.floor_percent`, `reason: "below_floor"`), or monitor-only mode (`reason: "disabled"`), even when data is missing, stale or in error;
   - `reserve` — usable but pace is over (`reason: "over"`); prefer another worker;
@@ -275,12 +277,17 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `{"at": ..., "reset_credits": {...}, "holds": {...}, "workers": [...]}` (no `line`);
   stale status returns `{"state": "stale", "detail": "missing|old|broken|unreadable"}`;
   if monitor-only workers exist, `workers` also contains their `stop` / `disabled` results.
+  With `[routing.models.*]`, the text output adds the model ledger after the first line
+  (`models:` header, one `- name: verdict[worker=verdict…] …` line per model, and a
+  `review:` line that warns when no model with the `review` role is usable); nothing is
+  added when the first line would be empty. `--json` is unchanged.
   Silent and exits 0 when `routing.enabled = false`.
 - `quota-canvas routing check <name> [--json]` — for a SessionStart hook (10 s budget):
   `stop` → one stderr line, exit 3; `reserve` → one stderr note, exit 0; `unknown` → one
   stderr line (「判定できないためそのまま続行」), exit 0; `go`/`boost` → silent, exit 0.
   A name is valid when it is one of `KNOWN_PROVIDERS` (claude / codex / glm / grok /
-  gemini) or a `[routing.workers]` key — anything else exits 2, regardless of what
+  gemini), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
+  the worst of its workers; a worker name wins on collision) — anything else exits 2, regardless of what
   status.json contains. A valid name whose windows are absent from status.json (or when
   status.json is missing / too old / unreadable) is `unknown` with exit 0; with `--json`
   the reason distinguishes `missing` (no windows) from `missing_status` / `stale` /

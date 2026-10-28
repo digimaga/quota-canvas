@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 from .atomic import atomic_write as _atomic_write
 from .platform_support.paths import data_dir
 from .config import Config
-from .gate import evaluate, format_line
+from .gate import evaluate, format_line, format_model_lines
 from .i18n import t
 from .models import Pace, PaceStatus, ProviderUsage
 from .render import _STATUS_BADGE, advice_text  # カードの advice / badge 文言は画面表示 (render) と共通
@@ -232,6 +232,8 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
         try:
             result = evaluate(payload, cfg.routing, burn or {}, now, previous=previous, off=off)
             payload["routing"] = dict(result.to_dict(), line=format_line(result, now))
+            if cfg.routing.models:
+                payload["routing"]["model_lines"] = format_model_lines(cfg.routing.models, result)
         except Exception as exc:  # routing の失敗で常駐 run は落とさない (キーを省くだけ)
             logging.getLogger(__name__).warning("routing: %s", exc)
     return payload

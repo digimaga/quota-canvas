@@ -21,7 +21,7 @@ import math
 import os
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
@@ -45,7 +45,7 @@ WORKER_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
 
 
 def safe_worker_name(name: Any) -> bool:
-    return isinstance(name, str) and WORKER_NAME_RE.match(name) is not None
+    return isinstance(name, str) and WORKER_NAME_RE.fullmatch(name) is not None
 
 # quota-gate と同じ: 判定は残り % ではなくペース判定 (status) で決める。
 # 残り何 % より「このペースでリセットまで持つか」が大事なため。
@@ -642,6 +642,46 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
 
 
 # ------------------------------------------------------------------ 表示 (line / check)
+
+def model_verdict(name: str, model: Any, result: RoutingResult) -> WorkerResult:
+    """合成判定。確定した stop を優先し、それ以外に未知があれば unknown。"""
+    workers = [result.worker(n) or WorkerResult(n, "unknown", "missing") for n in model.workers]
+    stopped = next((w for w in workers if w.verdict == "stop"), None)
+    unknown = next((w for w in workers if w.verdict == "unknown" or w.stale), None)
+    picked = stopped or unknown or min(workers, key=lambda w: VERDICT_RANK[w.verdict])
+    if not stopped and unknown:
+        return replace(unknown, name=name, verdict="unknown")
+    return replace(picked, name=name)
+
+
+def format_model_lines(models: Dict[str, Any], result: RoutingResult,
+                       lang: Optional[str] = None) -> List[str]:
+    if not models:
+        return []
+    _set_lang(lang)
+    lines = [t("routing.models.header")]
+    available = []
+    for name, model in models.items():
+        verdict = model_verdict(name, model, result).verdict
+        if "review" in model.roles and verdict != "stop":
+            available.append(name)
+        workers = []
+        for worker_name in model.workers:
+            worker = result.worker(worker_name)
+            label = worker.verdict if worker and not (worker.stale and worker.verdict != "stop") else "unknown"
+            workers.append("%s=%s" % (worker_name, "?" if label == "unknown" else label))
+        fields = ["- %s: %s[%s] %s %s" % (
+            name, "?" if verdict == "unknown" else verdict, ", ".join(workers),
+            t("routing.models.editable" if model.edit else "routing.models.readonly"),
+            ", ".join(model.roles))]
+        fields.extend(s for s in (model.invoke, model.note) if s)
+        lines.append(" | ".join(fields))
+    if not available:
+        lines.append(t("routing.models.review_none"))
+    else:
+        key = "routing.models.review_one" if len(available) == 1 else "routing.models.review_many"
+        lines.append(t(key, n=len(available), names=", ".join(available)))
+    return lines
 
 def _set_lang(lang: Optional[str]) -> None:
     from .i18n import set_language

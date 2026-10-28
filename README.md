@@ -142,6 +142,33 @@ Each worker is a list of window IDs; a trailing `*` matches a prefix. Configurat
 
 Worker names use 1–40 ASCII letters, digits, `.`, `_`, or `-`. `config --json` also returns the display order in `routing.worker_order`. `config --set-json` accepts `routing.workers` as an array of `{"name": ..., "windows": [...]}` objects, whose order takes priority; for an object, `worker_order` can specify the order.
 
+Optionally list models in configuration order to show their shared quota, capabilities and invocation at session start:
+
+```toml
+[routing.models.terra]
+workers = ["codex"]
+roles = ["impl"]
+edit = true
+invoke = "codex-run --model example"
+note = "Review changes before committing"
+
+[routing.models.reviewer]
+workers = ["codex"]
+roles = ["review"]
+```
+
+`routing line` keeps its existing first line, followed by the model ledger, for example:
+
+```text
+quota: codex=boost(70%) (as of 12:00)
+models: (roles impl=implementation review=review consult=consultation; verdict is the worst used quota)
+- terra: boost[codex=boost] editable impl | codex-run --model example | Review changes before committing
+- reviewer: boost[codex=boost] read-only review
+review: 1 available (reviewer). No reviewer is available for changes implemented by this model
+```
+
+Each model uses its worst worker verdict; an unavailable worker is `?` and counts as available for review. A known `stop` takes precedence over unknown workers. `routing check` accepts model names as well as worker names, with workers taking precedence on a name collision. The daemon stores the extra lines in `routing.model_lines`, leaving `routing.line` unchanged.
+
 ### Verdicts
 
 | Verdict | Meaning and conditions |

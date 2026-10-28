@@ -16,6 +16,7 @@ import os
 import re
 import tempfile
 import tomllib
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, time
 from pathlib import Path
@@ -147,6 +148,15 @@ ROUTING_WORKER_PREFIX = "*"  # routing.workers の値の末尾に付けると前
 
 
 @dataclass
+class RoutingModel:
+    workers: List[str]
+    roles: List[str]
+    invoke: str = ""
+    edit: bool = False
+    note: str = ""
+
+
+@dataclass
 class Routing:
     """[routing]: 残量に応じた AI ワーカー振り分け判定 (既定オフ)。
 
@@ -161,6 +171,7 @@ class Routing:
     floor_percent: float = 5.0   # floor の適用中に残りがこれ未満なら stop
     stale_minutes: int = 20      # fetched_at がこれより古い窓を含むワーカーは stale
     workers: Dict[str, List[str]] = field(default_factory=dict)
+    models: Dict[str, RoutingModel] = field(default_factory=dict)
     short_over_margin_minutes: Optional[float] = None
     floor_hours: float = 24.0   # 長い窓でリセットまでこれ以上なら floor を適用
 
@@ -343,6 +354,8 @@ def _build(data: Dict[str, Any], path: Path) -> Config:
         _need_table(routing, "routing", path)
         workers_value: Any = None
         order_value: Any = None
+        models_value: Any = None
+        model_order_value: Any = None
         for key, value in routing.items():
             if key == "enabled":
                 cfg.routing.enabled = _bool(value, "routing.enabled", path)
@@ -372,11 +385,17 @@ def _build(data: Dict[str, Any], path: Path) -> Config:
                 # config --json が併せて返す表示順 (JSON のオブジェクトはキー順を
                 # 保てないため、アプリ向けに順番だけ別キーで運ぶ)
                 order_value = value
+            elif key == "models":
+                models_value = value
+            elif key == "model_order":
+                model_order_value = value
             else:
                 _unknown(path, "routing." + key)
         if workers_value is not None:
             cfg.routing.workers = _worker_map(workers_value, path,
                                               order=_worker_order_list(order_value, path))
+        if "models" in routing:
+            cfg.routing.models = _model_map(models_value, path, model_order_value)
     return cfg
 
 
@@ -517,14 +536,14 @@ def _worker_map(value: Any, path: Path,
     from .gate import WORKER_NAME_RE  # 遅 import: gate は TYPE_CHECKING で config を参照
 
     def _entry(name: Any, ids: Any) -> Tuple[str, List[str]]:
-        if not isinstance(name, str) or not WORKER_NAME_RE.match(name.strip()):
+        if not isinstance(name, str) or not WORKER_NAME_RE.fullmatch(name.strip(" ")):
             raise ConfigError(t("config.workers_bad_name", path=path,
                                 name=name if isinstance(name, str) else name))
-        items = _windows_list(ids, "routing.workers.%s" % name.strip(), path,
+        items = _windows_list(ids, "routing.workers.%s" % name.strip(" "), path,
                               example='["glm:5h", "glm:weekly"] または ["grok:*"]')
         if not items:
-            raise ConfigError(t("config.workers_empty", path=path, name=name.strip()))
-        return name.strip(), items
+            raise ConfigError(t("config.workers_empty", path=path, name=name.strip(" ")))
+        return name.strip(" "), items
 
     out: Dict[str, List[str]] = {}
     if isinstance(value, list):
@@ -554,6 +573,43 @@ def _worker_map(value: Any, path: Path,
 
 
 # -------------------------------------------------------- value validators
+
+def _model_map(value: Any, path: Path, order: Any = None) -> Dict[str, RoutingModel]:
+    from .gate import safe_worker_name
+    if not isinstance(value, dict):
+        raise ConfigError(t("config.models_table", path=path, name="routing.models"))
+    out: Dict[str, RoutingModel] = {}
+    for name, entry in value.items():
+        if not safe_worker_name(name):
+            raise ConfigError(t("config.models_name", path=path, name=name))
+        key = "routing.models." + name
+        if not isinstance(entry, dict):
+            raise ConfigError(t("config.models_table", path=path, name=key))
+        for sub in entry:
+            if sub not in ("workers", "roles", "invoke", "edit", "note"):
+                raise ConfigError(t("config.models_unknown", path=path, name=key + "." + str(sub)))
+        workers = entry.get("workers")
+        if not isinstance(workers, list) or not workers or any(not safe_worker_name(w) for w in workers):
+            raise ConfigError(t("config.models_workers", path=path, name=key + ".workers"))
+        roles = entry.get("roles")
+        if not isinstance(roles, list) or not roles or any(r not in ("impl", "review", "consult") for r in roles):
+            raise ConfigError(t("config.models_roles", path=path, name=key + ".roles"))
+        strings = {}
+        for sub, limit in (("invoke", 160), ("note", 120)):
+            v = entry.get(sub, "")
+            if (not isinstance(v, str) or len(v) > limit or
+                    any(unicodedata.category(c).startswith("C") or
+                        unicodedata.category(c) in ("Zl", "Zp") for c in v)):
+                raise ConfigError(t("config.models_text", path=path, name=key + "." + sub, max=limit))
+            strings[sub] = v
+        edit = _bool(entry.get("edit", False), key + ".edit", path)
+        out[name] = RoutingModel(list(workers), list(roles), strings["invoke"], edit, strings["note"])
+    if order is not None:
+        if not isinstance(order, list) or any(not safe_worker_name(n) for n in order):
+            raise ConfigError(t("config.models_order", path=path))
+        ranked = {n: i for i, n in enumerate(order)}
+        out = dict(sorted(out.items(), key=lambda kv: (ranked.get(kv[0], len(ranked)), kv[0])))
+    return out
 
 def _unknown(path: Path, key: str) -> None:
     log.warning("config: %s: 未知のキー '%s' を無視します", path, key)
@@ -835,6 +891,15 @@ def format_toml(cfg: Config) -> str:
             '# glm = ["glm:5h", "glm:weekly"]',
             '# argon = ["gemini:argon"]',
         ]
+    for name, model in cfg.routing.models.items():
+        lines += ["", "[routing.models.%s]" % json.dumps(name),
+                  "workers = %s" % json.dumps(model.workers, ensure_ascii=False),
+                  "roles = %s" % json.dumps(model.roles, ensure_ascii=False),
+                  "edit = %s" % ("true" if model.edit else "false")]
+        if model.invoke:
+            lines.append("invoke = %s" % json.dumps(model.invoke, ensure_ascii=False))
+        if model.note:
+            lines.append("note = %s" % json.dumps(model.note, ensure_ascii=False))
     for name in PROVIDERS:
         color = cfg.providers.colors.get(name)
         lines += [
@@ -946,6 +1011,10 @@ def config_to_dict(cfg: Config) -> Dict[str, Any]:
             # 並べ替える) ため、line の表示順は worker_order でも運ぶ
             "workers": {name: list(ids) for name, ids in cfg.routing.workers.items()},
             "worker_order": list(cfg.routing.workers),
+            **({"models": {name: {"workers": list(model.workers), "roles": list(model.roles),
+                              "invoke": model.invoke, "edit": model.edit, "note": model.note}
+                       for name, model in cfg.routing.models.items()},
+                "model_order": list(cfg.routing.models)} if cfg.routing.models else {}),
         },
     }
 

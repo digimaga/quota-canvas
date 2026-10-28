@@ -16,6 +16,14 @@ stale_old = "quota: stale (as of {time}, {reason})"
 stale_reason_old = "too old to judge quota"
 stale_reason_broken = "unreadable, not judging quota"
 
+[models]
+header = "models: (roles impl=implementation review=review consult=consultation; verdict is the worst used quota)"
+editable = "editable"
+readonly = "read-only"
+review_none = "review: WARNING no models available for review (all stop). Do not commit changes that require review; tell the user"
+review_one = "review: {n} available ({names}). No reviewer is available for changes implemented by this model"
+review_many = "review: {n} available ({names})"
+
 [check]
 disabled = "quota-canvas: {name}=stop (monitor only; excluded from routing). Set QUOTA_GATE_FORCE=1 to ignore"
 stop = "quota-canvas: {name}=stop ({detail}). Set QUOTA_GATE_FORCE=1 to ignore"
