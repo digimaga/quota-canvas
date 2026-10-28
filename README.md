@@ -2,19 +2,32 @@
 
 English | [日本語](README.ja.md)
 
-A macOS tool that displays remaining quota and usage pace for Claude, Codex, GLM, Grok, Gemini, OpenRouter, DeepSeek, and Kimi on a TURZX 9.2" USB screen, or as a panel embedded in the Mac desktop when you have no screen. It consists of a Python engine and a menu bar app in `app/`.
+A macOS menu bar app that shows remaining quota and usage pace for Claude, Codex, GLM, Grok, Gemini, OpenRouter, DeepSeek, and Kimi on your desktop, in the menu bar, or on an optional TURZX 9.2" USB screen.
 
-![QuotaCanvas example (remaining quota and pace for Codex, Claude, Gemini, Grok, and GLM)](docs/images/sample-en.png)
+![QuotaCanvas panel (example on the TURZX screen)](docs/images/sample-en.png)
 
-## Supported display / Where to buy
+## Features
 
-TURZX 9.2-inch USB secondary screen, 1920×462 IPS. A single USB Type-C cable supplies power and data. macOS sees it as a USB device named `TURZX1.0` (VID `0x1cbe` / PID `0x0092`), not as a display. No dedicated driver is required; communication uses `libusb`.
+- Embed the panel on the desktop: choose a display, one of eight positions, width, opacity, and whether it appears in front of or behind desktop icons.
+- View recommendations, quota cards, and Codex reset credits in the menu bar.
+- Receive notifications about quota status.
+- See usage pace, projected exhaustion, and history.
+- Route AI workers using quota and pace information with Claude Code / Codex plugins (advanced).
 
-[Buy on AliExpress](https://s.click.aliexpress.com/e/_c3EptWGn) (tested by the author)
+## Supported services
 
-**Affiliate link (advertisement):** the author receives a commission based on purchases, at no extra cost to you.
+| Service | Display | Authentication |
+| --- | --- | --- |
+| Claude | 5-hour, weekly, and model-specific weekly quota windows | Logged-in Claude Code credentials in Keychain |
+| Codex | Quota windows and reset credits | Logged-in Codex CLI credentials |
+| GLM | Token quota windows | API key in Keychain or `ZAI_API_KEY` |
+| Grok | Quota window and product breakdown | Logged-in Grok CLI credentials |
+| Gemini | Antigravity weekly and 5-hour windows, including Argon and Claude / GPT | Antigravity CLI (`agy`) login |
+| OpenRouter | API key quota window or usage / remaining limit, and account credits when available | API key in Keychain or `OPENROUTER_API_KEY` |
+| DeepSeek | Account balance | API key in Keychain or `DEEPSEEK_API_KEY` |
+| Kimi | Global USD account balance | Moonshot API key in Keychain or `MOONSHOT_API_KEY` |
 
-Screens that look identical can have different internal specifications, including the PID. Other listings are not guaranteed to work.
+OpenRouter, DeepSeek, and Kimi follow public API specifications and have not been verified with real accounts. See [Credentials](#credentials) for details.
 
 ## Install from DMG
 
@@ -26,7 +39,7 @@ Requires Apple Silicon and macOS 14 or later. No Homebrew or Python installation
    - macOS 15 or later: open System Settings > Privacy & Security, scroll down, and click "Open Anyway" for QuotaCanvas.
    - macOS 14: right-click QuotaCanvas in Finder and choose Open.
 4. A gauge icon appears in the menu bar. In Settings… > Services, choose the services to show and enter an API key for services that need one.
-5. Connect the TURZX screen over USB; quotas appear within about a minute. Without the screen, turn off "Use the TURZX screen" in Settings > Display, and turn on "Show on desktop" in Settings > Desktop to show the same panel on the Mac desktop.
+5. In Settings > Desktop, turn on "Show on desktop". If you do not use a TURZX screen, turn off "Use the TURZX screen" in Settings > Display. To use the optional screen, see [TURZX screen](#turzx-screen-optional).
 
 To update, drag the QuotaCanvas.app from the new DMG to Applications and replace the old one.
 
@@ -36,7 +49,21 @@ To build the DMG, install Swift Command Line Tools, then run `cd app && ./script
 
 To uninstall, turn off “Run the engine in the background” in settings before deleting the app. If the app was deleted first, use `launchctl bootout` on each label in `~/Library/LaunchAgents/com.digimaga.quota-canvas.app*.plist`, then delete those plists.
 
-## Manual setup
+## TURZX screen (optional)
+
+TURZX 9.2-inch USB secondary screen, 1920×462 IPS. A single USB Type-C cable supplies power and data. macOS sees it as a USB device named `TURZX1.0` (VID `0x1cbe` / PID `0x0092`), not as a display. No dedicated driver is required; communication uses `libusb`.
+
+[Buy on AliExpress](https://s.click.aliexpress.com/e/_c3EptWGn) (tested by the author)
+
+**Affiliate link (advertisement):** the author receives a commission based on purchases, at no extra cost to you.
+
+Screens that look identical can have different internal specifications, including the PID. Other listings are not guaranteed to work.
+
+To use the screen, connect it by USB and turn on "Use the TURZX screen" in Settings > Display. Quotas appear within about a minute.
+
+## Advanced
+
+### Manual setup
 
 ```bash
 ./scripts/setup.sh
@@ -44,7 +71,7 @@ To uninstall, turn off “Run the engine in the background” in settings before
 
 This installs Homebrew's `libusb` and the package in `.venv`. No sudo is required.
 
-## turzx: Displaying images
+### turzx: Displaying images
 
 ```bash
 .venv/bin/turzx test                 # test pattern for checking orientation
@@ -62,7 +89,7 @@ Screen().show(pil_image)   # 1920×462 landscape image
 
 Images are sent as PNG. The device expects a **portrait 462×1920** frame; `show` rotates a landscape 1920×462 image by `--rotation` (90 degrees by default). Sending 1920×462 or 480×1920 directly distorts the display. Use `show-raw` to send a portrait image without rotation.
 
-## QuotaCanvas: Displaying quotas
+### QuotaCanvas: Displaying quotas
 
 QuotaCanvas fetches usage and shows whether the current pace will exhaust a quota before its reset.
 
@@ -83,7 +110,7 @@ QuotaCanvas fetches usage and shows whether the current pace will exhaust a quot
 ./scripts/install-auto-update.sh                # pull new main commits every 10 minutes and restart; --uninstall removes it
 ```
 
-### Configuration and app integration
+#### Configuration and app integration
 
 The config file is `~/.config/quota-canvas/config.toml`; see [config.example.toml](config.example.toml) for the template. Defaults apply if the file is absent, and `run` reloads changes automatically. Key settings:
 
@@ -95,20 +122,20 @@ See [docs/app-contract.md](docs/app-contract.md) for menu bar app integration. O
 
 `quota-canvas refresh` creates `refresh-request` in that directory. `run` detects it within one second and redraws; it also fetches usage again if at least 30 seconds have elapsed since the last fetch. Saving the config also updates the screen within 1–2 seconds.
 
-### Menu bar app
+#### Menu bar app
 
 [app/](app/) contains QuotaCanvas.app, which displays engine status, recommendations and a screen preview, and provides settings, pause and notifications. With Swift 6.2 or later and macOS 14 or later, run `cd app && ./scripts/build.sh` to build `app/build/QuotaCanvas.app`. See [app/README.md](app/README.md).
 
 The Routing settings tab enables routing, sets the remaining quota floor and data freshness, shows current verdicts, toggles burn mode, and edits and reorders workers and their windows. It also provides copy buttons for the Claude Code / Codex plugin installation commands.
 
-### Credentials
+#### Credentials
 
 - Claude reads Keychain `Claude Code-credentials`, Codex reads `~/.codex/auth.json`, and Grok reads `~/.grok/auth.json`. GLM reads Keychain `quota-canvas/glm` (saved with `set-key glm` or in the app's settings) or the `ZAI_API_KEY` environment variable; the Keychain key takes priority.
 - Token refresh is delegated to each CLI. With the default `providers.claude.token_refresh = "cli"`, Claude runs `claude -p` once in the background when the token is near expiry or on HTTP 401/403, at most once per 30 minutes. `"off"` disables this and prompts the user to launch Claude on 401/403. `providers.grok.token_refresh` runs `grok models` on expiry or HTTP 401/403 without consuming quota. `providers.codex.token_refresh` runs `codex exec … ok` on HTTP 401/403, at most once per 30 minutes; it consumes a little quota.
 - OpenRouter, DeepSeek, and Kimi read Keychain `quota-canvas/openrouter`, `quota-canvas/deepseek`, and `quota-canvas/kimi` first, then `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, and `MOONSHOT_API_KEY` respectively. These integrations follow public API specifications and have not been verified with real accounts. Kimi uses the global USD API.
 - Gemini uses Antigravity CLI's `agy -p "/usage" --output-format json`. This does not invoke a model or consume quota, and agy refreshes its own token. `providers.gemini.token_refresh` is accepted for compatibility but is no longer used. The windows are `gemini:weekly`, Gemini 4 Argon's `gemini:argon`, `gemini:5h`, and `gemini:claude` / `gemini:claude_5h` for Claude / GPT through Antigravity. The plan name is shown if it can be obtained with the Keychain token for service `gemini` / account `antigravity`; otherwise it is shown as “Gemini”.
 
-### History, pace and recommendations
+#### History, pace and recommendations
 
 - Eight days of history are stored in `~/Library/Application Support/quota-canvas/history.jsonl`, for daily bar charts and the last 24 hours' rate. Days before history began show “?”.
 - Pace prediction blends the whole-window average and recent rate equally. Reaching 100% before reset means over pace; projected use of at least 92% at reset is tight, at least 70% is on track, and less is spare. Less than 3% elapsed and less than 5% used is fresh. If usage rose by at least 1% in the last two hours, the rate is at least 1.5 times the blended rate, and it would exhaust the quota before reset, yellow advice shows the projected exhaustion time. Advice also mentions another window of the same service, such as a five-hour window, if it runs out first. Wording is determined by `advice_text()` in `src/quotacanvas/render.py`.
@@ -116,11 +143,11 @@ The Routing settings tab enables routing, sets the remaining quota floor and dat
 - On each reset, the final usage is saved in `periods.jsonl` (the latest 20 per window) and the next period's card shows the previous remaining amount.
 - The header and `pick` recommend a service to use now. The score is the amount projected to expire unused × window length ÷ time until reset. Services that are over pace, below 5% remaining, failing to fetch, or waiting for reset are excluded; the score is halved when a window shorter than a day has less than 20% remaining and multiplied by 1.5 for a Codex reset credit expiring within 24 hours. If `status.json` is absent or more than 20 minutes old, `pick` fetches usage once without sending anything to the screen.
 
-## AI worker routing
+### AI worker routing
 
 To make better use of multiple AI subscriptions, routing gives coding agents quota and pace information for choosing which worker or model to use. The verdict is informational: the engine does not start or stop workers itself. Routing is OFF by default.
 
-### Enabling and defining workers
+#### Enabling and defining workers
 
 Add settings like these to `config.toml`. Use `config` to find window IDs.
 
@@ -169,7 +196,7 @@ review: 1 available (reviewer). No reviewer is available for changes implemented
 
 Each model uses its worst worker verdict; an unavailable worker is `?` and counts as available for review. A known `stop` takes precedence over unknown workers. `routing check` accepts model names as well as worker names, with workers taking precedence on a name collision. The daemon stores the extra lines in `routing.model_lines`, leaving `routing.line` unchanged.
 
-### Verdicts
+#### Verdicts
 
 | Verdict | Meaning and conditions |
 | --- | --- |
@@ -183,7 +210,7 @@ Each model uses its worst worker verdict; an unavailable worker is `?` and count
 
 The default freshness limit is 20 minutes (`stale_minutes`). An old `fetched_at` or `stale_error` on a window of a relevant provider also makes the worker `unknown`. Reset credit counts are displayed but do not change verdicts.
 
-### Commands
+#### Commands
 
 ```bash
 .venv/bin/quota-canvas routing line                  # one-line verdict summary
@@ -204,7 +231,7 @@ While active, burn mode turns `reserve` / `go` / `boost` into `boost`, but leave
 
 `hook` reads the same data as `line` and prints one JSON line containing `additionalContext` with the verdict and short routing rules. If the data is missing, stale, or broken, it reports only that the verdict is unavailable. It prints nothing when disabled, when there are no workers, or when configuration or evaluation fails, and always exits 0. `--event NAME` changes the event name in the JSON; the default is `SessionStart`.
 
-### Using routing with an agent
+#### Using routing with an agent
 
 The bundled [quota-canvas-routing plugin](plugins/quota-canvas-routing/README.md) adds the verdict and routing rules to Claude Code / Codex context at SessionStart. On macOS, install and run the engine and enable routing as above, then install the plugin.
 
