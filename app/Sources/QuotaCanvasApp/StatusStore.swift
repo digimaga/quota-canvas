@@ -15,6 +15,7 @@ final class StatusStore: ObservableObject {
     static let staleInterval: TimeInterval = 5 * 60
     private var timer: Timer?
     private var started = false
+    private var previousStatusData: Data?
     private var reloadObserver: AnyCancellable?
 
     /// メニューバーの点の色。最も悪いカードの状態。カードが無く errors があれば赤。
@@ -54,18 +55,19 @@ final class StatusStore: ObservableObject {
         if let data = result.data {
             do {
                 let decoded = try JSONDecoder().decode(EngineStatus.self, from: data)
-                let previous = status
+                let previous = previousStatusData
+                previousStatusData = data
                 status = decoded
                 fileError = nil
                 isStale = Self.engineIsStale(updatedAt: decoded.updatedAt, now: Date())
-                // F4: 前回との差分から通知を組み立てる（純粋な判定は NotificationPlanner）
-                NotificationCoordinator.shared.process(previous: previous, current: decoded)
+                NotificationCoordinator.shared.enqueue(previous: previous, current: data, now: Date())
             } catch {
                 fileError = String(localized: "status.json を解釈できません: \(error.localizedDescription)")
                 isStale = true
             }
         } else {
             status = nil
+            previousStatusData = nil
             isStale = true
             if let message = result.message {
                 fileError = message

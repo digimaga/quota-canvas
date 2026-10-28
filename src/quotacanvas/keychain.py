@@ -11,6 +11,7 @@ import subprocess
 from typing import List, Optional
 
 from .i18n import t
+from .platform_support import security
 
 SERVICE = "quota-canvas"
 TIMEOUT = 15.0
@@ -25,10 +26,7 @@ class KeychainError(Exception):
 
 def _run(args: List[str], input: Optional[str] = None) -> "subprocess.CompletedProcess[str]":
     try:
-        return subprocess.run(
-            ["security", *args],
-            input=input, capture_output=True, text=True, timeout=TIMEOUT,
-        )
+        return security.run(args, input=input, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         raise KeychainError(t("cli.keychain.timeout")) from None
     except OSError:

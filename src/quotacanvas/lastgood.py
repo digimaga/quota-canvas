@@ -17,13 +17,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .atomic import atomic_write
+from .platform_support.paths import data_dir
 from .models import Balance, ProviderUsage, ResetCredit, Window
 
 log = logging.getLogger("quotacanvas")
 
 # history.py の DEFAULT_PATH と同じディレクトリ (history.jsonl の隣)。
-DEFAULT_PATH = (Path.home() / "Library" / "Application Support" / "quota-canvas"
-                / "last-good.json")
+DEFAULT_PATH = data_dir() / "last-good.json"
 
 
 def _as_utc(value: datetime) -> datetime:

@@ -19,10 +19,11 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, List, Optional
 
 from .atomic import atomic_write
+from .platform_support.paths import data_dir
 from .models import Sample, Window
 from .periods import Periods
 
-DEFAULT_PATH = Path.home() / "Library" / "Application Support" / "quota-canvas" / "history.jsonl"
+DEFAULT_PATH = data_dir() / "history.jsonl"
 
 PRUNE_AFTER = timedelta(days=8)       # drop samples older than this
 MIN_GAP = timedelta(minutes=10)       # always sample at least this often

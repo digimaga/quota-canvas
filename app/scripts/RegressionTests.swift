@@ -1,5 +1,23 @@
 import Foundation
 
+@MainActor
+final class DeliveryGate {
+    private var started = false
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var deliveryWaiter: CheckedContinuation<Void, Never>?
+    func waitForStart() async {
+        if started { return }
+        await withCheckedContinuation { startWaiter = $0 }
+    }
+    func deliver() async {
+        started = true
+        startWaiter?.resume()
+        startWaiter = nil
+        await withCheckedContinuation { deliveryWaiter = $0 }
+    }
+    func accept() { deliveryWaiter?.resume(); deliveryWaiter = nil }
+}
+
 @main
 struct RegressionTests {
     static var checks = 0
@@ -9,42 +27,15 @@ struct RegressionTests {
     }
 
     @MainActor static func main() async throws {
-        let original = ConfigDocument(object: ["display": ["paused": false, "brightness": 100],
-            "providers": ["example": ["color": "#123456", "enabled": true]],
-            "routing": ["enabled": false, "floor_percent": 5, "stale_minutes": 20]])
-        var edited = original
-        edited.brightness = 40
-        edited.removeProviderColor("example")
-        edited.routingFloorPercent = 10
-        var latest = original
-        latest.paused = true
-        latest.routingEnabled = true
-        latest.routingStaleMinutes = 30
-        let saved = ConfigDocument.applyingChanges(from: original, to: edited, onto: latest)
-        check(saved.paused, "pause preserved")
-        check(saved.brightness == 40, "brightness changed")
-        check(saved.providerColor("example") == nil, "color removed")
-        check(saved.providerEnabled("example"), "provider enabled preserved")
-        check(saved.routingEnabled, "routing enabled preserved")
-        check(saved.routingFloorPercent == 10, "routing floor changed")
-        check(saved.routingStaleMinutes == 30, "routing stale preserved")
-        let absent = ConfigDocument(object: [:])
-        var added = absent
-        added.brightness = 25
-        let concurrentlyAdded = ConfigDocument(object: ["display": ["paused": true]])
-        let merged = ConfigDocument.applyingChanges(from: absent, to: added, onto: concurrentlyAdded)
-        check(merged.paused && merged.brightness == 25, "new section merges with concurrent section")
-        let removed = ConfigDocument.applyingChanges(from: original, to: original, onto: absent)
-        check(removed.object.isEmpty, "unchanged sections are not recreated")
         check(RoutingSettingsView.isValidWorkerName("worker-1.a_b"), "valid worker name")
         check(RoutingSettingsView.isValidWorkerName(String(repeating: "a", count: 40)), "40 characters")
         check(!RoutingSettingsView.isValidWorkerName(""), "empty worker name")
         check(!RoutingSettingsView.isValidWorkerName("bad name"), "invalid worker name")
         check(!RoutingSettingsView.isValidWorkerName(String(repeating: "a", count: 41)), "41 characters")
-        let now = Date(timeIntervalSince1970: 1000)
-        check(!RoutingSettingsView.verdictIsStale(now.addingTimeInterval(-300), now: now), "fresh threshold")
-        check(RoutingSettingsView.verdictIsStale(now.addingTimeInterval(-301), now: now), "stale threshold")
-        check(RoutingSettingsView.verdictIsStale(nil, now: now), "missing timestamp")
+        let freshnessNow = Date(timeIntervalSince1970: 1000)
+        check(!RoutingSettingsView.verdictIsStale(freshnessNow.addingTimeInterval(-300), now: freshnessNow), "fresh threshold")
+        check(RoutingSettingsView.verdictIsStale(freshnessNow.addingTimeInterval(-301), now: freshnessNow), "stale threshold")
+        check(RoutingSettingsView.verdictIsStale(nil, now: freshnessNow), "missing timestamp")
 
         let configPanels = [
             ConfigDocument.PanelConfig(main: "alpha:week", subs: ["alpha:day"], size: "large"),
@@ -77,14 +68,14 @@ struct RegressionTests {
         let statusJSON = #"{"updated_at":"2026-10-28T12:00:00Z","cards":[{"id":"one","fetched_at":"2026-10-28T10:00:00Z"},{"id":"two","fetched_at":42},{"id":"three"}]}"#
         let decoded = try JSONDecoder().decode(EngineStatus.self, from: Data(statusJSON.utf8))
         let reference = ISO8601Support.parse("2026-10-28T12:00:30Z")!
-        let first = decoded.cards![0]
-        check(first.fetchedAt == ISO8601Support.parse("2026-10-28T10:00:00Z"), "card fetch time decoded")
+        let firstCard = decoded.cards![0]
+        check(firstCard.fetchedAt == ISO8601Support.parse("2026-10-28T10:00:00Z"), "card fetch time decoded")
         check(decoded.cards![1].fetchedAt == nil && decoded.cards![2].fetchedAt == nil, "malformed and missing fetch time are unknown")
         check(!StatusStore.engineIsStale(updatedAt: decoded.updatedAt, now: reference), "engine freshness uses update time")
         check(StatusStore.engineIsStale(updatedAt: decoded.updatedAt, now: reference.addingTimeInterval(300)), "engine stale after update threshold")
         check(StatusStore.engineIsStale(updatedAt: nil, now: reference), "missing engine timestamp is unknown")
-        let fetchText = CardRow(card: first, gauge: nil).fetchText(now: reference)
-        let expectedAge = RelativeDateTimeFormatter().localizedString(for: first.fetchedAt!, relativeTo: reference)
+        let fetchText = CardRow(card: firstCard, gauge: nil).fetchText(now: reference)
+        let expectedAge = RelativeDateTimeFormatter().localizedString(for: firstCard.fetchedAt!, relativeTo: reference)
         check(fetchText.contains(expectedAge), "card shows fetch age independent of redraw")
         check(CardRow(card: decoded.cards![1], gauge: nil).fetchText(now: reference) == String(localized: "取得時刻: 不明"), "unknown fetch time shown")
         let balanceJSON = #"{"balances":[{"provider":"kimi","name":"Kimi","currency":"USD","amount":49.58,"label":"今月の使用","stale_error":"HTTP 429","fetched_at":"2026-01-02T03:04:05Z"},{"provider":"deepseek","name":"DeepSeek","currency":"CNY","amount":110}]}"#
@@ -105,22 +96,16 @@ struct RegressionTests {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
+        // Keep CLI language detection inside the isolated test directory.
+        try Data("[display]\nlanguage = \"en\"\n".utf8).write(to: dir.appendingPathComponent("config.toml"))
         let script = dir.appendingPathComponent("engine")
-        let state = dir.appendingPathComponent("config.json")
-        try Data("{\"display\":{\"paused\":false,\"brightness\":100}}".utf8).write(to: state)
         let python = #"""
         #!/usr/bin/python3
-        import json, os, sys, time
-        path = os.path.join(os.path.dirname(__file__), "config.json")
-        if sys.argv[1:] == ["config", "--json"]:
-            with open(path) as f: data = json.load(f)
-            time.sleep(0.1)
-        elif sys.argv[1:] == ["config", "--set-json"]:
-            data = json.load(sys.stdin)
-            with open(path, "w") as f: json.dump(data, f)
-        else:
-            sys.exit(1)
-        print(json.dumps(data))
+        import os, sys
+        repo = os.environ["QUOTA_CANVAS_TEST_REPO"]
+        executable = os.path.join(repo, ".venv", "bin", "python")
+        config = os.path.join(os.path.dirname(__file__), "config.toml")
+        os.execv(executable, [executable, "-m", "quotacanvas.cli", "--config", config] + sys.argv[1:])
         """#
         try Data(python.utf8).write(to: script)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
@@ -131,6 +116,176 @@ struct RegressionTests {
         let result = try await client.getConfig()
         check(result.paused, "concurrent pause retained")
         check(result.brightness == 25, "concurrent brightness retained")
+        let original = try await client.getConfig()
+        var edited = original
+        edited.brightness = 40
+        _ = try await client.updateConfig { $0.paused = false }
+        let saved = try await client.saveChanges(from: original, to: edited)
+        check(!saved.paused && saved.brightness == 40, "draft merges with latest through Python CLI")
+
+        let now = ISO8601Support.parse("2026-01-01T00:00:00Z")!
+        let current = Data(#"{"cards":[{"id":"glm:5h","provider":"glm","name":"GLM","status":"over","resets_at":"2026-01-02T00:00:00Z"}],"reset_credits":{"glm":[{"title":"reset","expires_at":"2026-01-02T00:00:00Z"}]}}"#.utf8)
+        let previous = Data(#"{"cards":[{"id":"glm:5h","status":"go","resets_at":"2026-01-02T00:00:00Z"}]}"#.utf8)
+        let first = try await client.notificationCandidates(previous: nil, current: current, now: now, notified: [])
+        check(first.count == 1 && first[0].kind == "credit", "first snapshot only credit")
+        let boundary = Data(#"{"reset_credits":{"glm":[{"expires_at":"2026-01-01T00:00:00Z"}]}}"#.utf8)
+        let fractional = try await client.notificationCandidates(previous: nil, current: boundary,
+            now: now.addingTimeInterval(-0.0001), notified: [])
+        check(fractional.count == 1, "submillisecond time is preserved through CLI")
+        let changes = try await client.notificationCandidates(previous: previous, current: current, now: now, notified: [])
+        check(changes.map(\.kind) == ["status", "credit"], "transition candidates through Python CLI")
+
+        var keys = Set<String>()
+        var isEnabled = false
+        var isAuthorized = true
+        var shouldFail = false
+        var posts: [String] = []
+        let coordinator = NotificationCoordinator(client: client, enabled: { isEnabled }, available: { true },
+            readKeys: { keys }, recordKeys: { keys.formUnion($0) }, authorized: { isAuthorized },
+            post: { item in
+                posts.append(item.key)
+                if shouldFail { throw EngineError(message: "delivery failed") }
+            })
+        coordinator.enqueue(previous: nil, current: current, now: now)
+        await coordinator.waitUntilIdle()
+        check(keys.count == 1 && posts.isEmpty, "disabled records without posting")
+        keys.removeAll()
+        isEnabled = true
+        isAuthorized = false
+        coordinator.enqueue(previous: nil, current: current, now: now)
+        await coordinator.waitUntilIdle()
+        check(keys.isEmpty && posts.isEmpty, "unauthorized does not record")
+        isAuthorized = true
+        shouldFail = true
+        coordinator.enqueue(previous: nil, current: current, now: now)
+        await coordinator.waitUntilIdle()
+        check(keys.isEmpty && coordinator.error != nil, "failed delivery does not record")
+        shouldFail = false
+        posts.removeAll()
+        coordinator.enqueue(previous: nil, current: current, now: now)
+        coordinator.enqueue(previous: nil, current: current, now: now)
+        await coordinator.waitUntilIdle()
+        check(keys.count == 1 && posts.count == 1, "serialized delivery suppresses duplicate")
+        keys.removeAll()
+        posts.removeAll()
+        let gate = DeliveryGate()
+        let pendingCoordinator = NotificationCoordinator(client: client, enabled: { true }, available: { true },
+            readKeys: { keys }, recordKeys: { keys.formUnion($0) }, authorized: { true },
+            post: { item in posts.append(item.key); await gate.deliver() })
+        pendingCoordinator.enqueue(previous: nil, current: current, now: now)
+        await gate.waitForStart()
+        pendingCoordinator.enqueue(previous: nil, current: current, now: now)
+        check(keys.isEmpty && posts.count == 1, "pending delivery has not recorded a key")
+        gate.accept()
+        await pendingCoordinator.waitUntilIdle()
+        check(keys.count == 1 && posts.count == 1, "overlap waits for delivery before replanning")
+        keys.removeAll()
+        let broken = NotificationCoordinator(client: EngineClient(enginePathOverride: dir.appendingPathComponent("missing").path),
+            enabled: { true }, available: { true }, readKeys: { keys }, recordKeys: { keys.formUnion($0) },
+            authorized: { true }, post: { _ in })
+        broken.enqueue(previous: nil, current: current, now: now)
+        await broken.waitUntilIdle()
+        check(keys.isEmpty && broken.error != nil, "planning failure is visible and records no key")
+        // A real CLI wrapper fails once, then forwards to the actual Python engine.
+        let flakyPython = #"""
+        #!/usr/bin/python3
+        import os, sys, time
+        from pathlib import Path
+        count_path = Path(__file__ + ".count")
+        count = int(count_path.read_text()) + 1 if count_path.exists() else 1
+        count_path.write_text(str(count))
+        if count == 1:
+            print('{"error":"temporary planner failure"}')
+            sys.exit(1)
+        repo = os.environ["QUOTA_CANVAS_TEST_REPO"]
+        executable = os.path.join(repo, ".venv", "bin", "python")
+        config = os.path.join(os.path.dirname(__file__), "config.toml")
+        os.execv(executable, [executable, "-m", "quotacanvas.cli", "--config", config] + sys.argv[1:])
+        """#
+        func flakyClient(_ name: String, failOn: Int = 1, holdFailure: Bool = false) throws -> (EngineClient, URL) {
+            let executable = dir.appendingPathComponent(name)
+            let waitForRelease = holdFailure
+                ? "\n    while not Path(__file__ + '.release').exists(): time.sleep(0.01)"
+                : ""
+            let source = flakyPython.replacingOccurrences(of: "if count == 1:",
+                with: "if count == \(failOn):\(waitForRelease)")
+            try Data(source.utf8).write(to: executable)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+            return (EngineClient(enginePathOverride: executable.path), URL(fileURLWithPath: executable.path + ".count"))
+        }
+        let (flaky, flakyCount) = try flakyClient("flaky-transition", holdFailure: true)
+        let spare = Data(#"{"cards":[{"id":"demo:weekly","provider":"demo","status":"spare","resets_at":"2026-01-02T00:00:00Z"}]}"#.utf8)
+        let over = Data(#"{"cards":[{"id":"demo:weekly","provider":"demo","status":"over","resets_at":"2026-01-03T00:00:00Z","burst_exhausts_at":"2026-01-01T12:00:00Z"}]}"#.utf8)
+        let exhausted = Data(#"{"cards":[{"id":"demo:weekly","provider":"demo","status":"exhausted","resets_at":"2026-01-03T00:00:00Z","burst_exhausts_at":"2026-01-01T12:00:00Z"}]}"#.utf8)
+        var retryKeys = Set<String>()
+        var retryPosts: [String] = []
+        let retryGate = DeliveryGate()
+        let retry = NotificationCoordinator(client: flaky, enabled: { true }, available: { true },
+            readKeys: { retryKeys }, recordKeys: { retryKeys.formUnion($0) }, authorized: { true },
+            post: { item in
+                retryPosts.append(item.key)
+                if retryPosts.count == 1 { await retryGate.deliver() }
+            })
+        retry.enqueue(previous: spare, current: over, now: now)
+        // Append while the planner subprocess is suspended, before it fails.
+        while !FileManager.default.fileExists(atPath: flakyCount.path) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        retry.enqueue(previous: over, current: exhausted, now: now)
+        let releasePath = dir.appendingPathComponent("flaky-transition.release")
+        try Data().write(to: releasePath)
+        await retry.waitUntilIdle()
+        check(retry.error != nil && retryPosts.isEmpty && retryKeys.isEmpty, "failed snapshot retained without posting")
+        let attempts = try String(contentsOf: flakyCount, encoding: .utf8)
+        check(attempts == "1", "no immediate retry despite queued snapshot")
+        retry.enqueue(previous: exhausted, current: exhausted, now: now)
+        await retryGate.waitForStart()
+        check(retry.error == nil && retryKeys.isEmpty && retryPosts.count == 1, "recovered first post awaits acceptance")
+        retry.enqueue(previous: exhausted, current: exhausted, now: now)
+        retryGate.accept()
+        await retry.waitUntilIdle()
+        check(retryPosts.count == 4 && retryKeys.count == 4, "recovered transitions delivered once")
+        check(retryPosts[0].hasPrefix("status|") && retryPosts[0].hasSuffix("|over") &&
+              retryPosts[1].hasPrefix("reset|") && retryPosts[2].hasPrefix("burst|") &&
+              retryPosts[3].hasPrefix("status|") && retryPosts[3].hasSuffix("|exhausted"),
+              "status reset burst and later snapshot keep order")
+        check(Set(retryPosts).count == retryPosts.count, "retry and in-flight enqueue do not duplicate")
+
+        let (emptyFlaky, _) = try flakyClient("flaky-empty")
+        let empty = Data(#"{"cards":[]}"#.utf8)
+        let emptyRetry = NotificationCoordinator(client: emptyFlaky, enabled: { true }, available: { true },
+            readKeys: { [] }, recordKeys: { _ in }, authorized: { true }, post: { _ in })
+        emptyRetry.enqueue(previous: nil, current: empty, now: now)
+        await emptyRetry.waitUntilIdle()
+        check(emptyRetry.error != nil, "empty planning failure visible")
+        emptyRetry.enqueue(previous: empty, current: empty, now: now)
+        await emptyRetry.waitUntilIdle()
+        check(emptyRetry.error == nil, "empty planning success clears planning error")
+
+        var failureKeys = Set<String>()
+        var failDelivery = true
+        let (deliveryAndPlanningClient, _) = try flakyClient("delivery-and-planning", failOn: 2)
+        let failureCoordinator = NotificationCoordinator(client: deliveryAndPlanningClient, enabled: { true }, available: { true },
+            readKeys: { failureKeys }, recordKeys: { failureKeys.formUnion($0) }, authorized: { true },
+            post: { _ in if failDelivery { throw EngineError(message: "delivery remains unresolved") } })
+        failureCoordinator.enqueue(previous: nil, current: current, now: now)
+        await failureCoordinator.waitUntilIdle()
+        check(failureCoordinator.error != nil && failureKeys.isEmpty, "delivery failure remains unacknowledged")
+        failureCoordinator.enqueue(previous: nil, current: empty, now: now)
+        await failureCoordinator.waitUntilIdle()
+        check(failureCoordinator.error == "temporary planner failure", "planning failure shown over delivery error")
+        failureCoordinator.enqueue(previous: empty, current: empty, now: now)
+        await failureCoordinator.waitUntilIdle()
+        check(failureCoordinator.error == "delivery remains unresolved" && failureKeys.isEmpty,
+              "empty planning recovery restores unresolved delivery error")
+        failDelivery = false
+        let otherCredit = Data(#"{"reset_credits":{"glm":[{"title":"other","expires_at":"2026-01-02T00:00:00Z"}]}}"#.utf8)
+        failureCoordinator.enqueue(previous: nil, current: otherCredit, now: now)
+        await failureCoordinator.waitUntilIdle()
+        check(failureCoordinator.error != nil && failureKeys.count == 1, "different key success preserves delivery error")
+        failureCoordinator.enqueue(previous: nil, current: current, now: now)
+        await failureCoordinator.waitUntilIdle()
+        check(failureCoordinator.error == nil && failureKeys.count == 2, "same key acceptance resolves delivery error")
         let menuCards = try JSONDecoder().decode([StatusCard].self, from: Data("""
             [{"id":"claude:weekly","provider":"claude"},{"id":"claude:5h","provider":"claude"},
              {"id":"codex:weekly","provider":"codex"},{"id":"gemini:weekly","provider":"gemini"},

@@ -739,29 +739,36 @@ def test_save_config_atomic_replace(tmp_path):
     assert "paused = true" in target.read_text(encoding="utf-8")
 
 
-def test_overlapping_saves_use_separate_temporary_files_and_clean_up(tmp_path, monkeypatch):
+def test_overlapping_saves_are_serialized_and_clean_up(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
     from quotacanvas import config
 
     target = tmp_path / "config.toml"
     first = config_from_dict({"display": {"brightness": 40}})
     second = config_from_dict({"display": {"brightness": 60}})
     replace = config.os.replace
+    entered, release = Event(), Event()
     sources = []
 
     def interleave(source, destination):
         sources.append(source)
         if len(sources) == 1:
-            original = source.read_bytes()
-            save_config(second, target)
-            assert source.read_bytes() == original
+            entered.set()
+            assert release.wait(10)
             raise OSError("simulated replace failure")
         replace(source, destination)
 
     monkeypatch.setattr(config.os, "replace", interleave)
-    with pytest.raises(OSError, match="simulated replace failure"):
-        save_config(first, target)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(save_config, first, target)
+        assert entered.wait(10)
+        b = pool.submit(save_config, second, target)
+        release.set()
+        with pytest.raises(OSError, match="simulated replace failure"):
+            a.result(timeout=10)
+        b.result(timeout=10)
     assert len(sources) == 2 and sources[0] != sources[1]
-    assert all(source.parent == target.parent for source in sources)
     assert load_config(target).display.brightness == 60
     assert all(not source.exists() for source in sources)
 

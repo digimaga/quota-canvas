@@ -8,9 +8,11 @@ import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
+from quotacanvas.platform_support.appearance import TURZX_TEST_FONT
+
 from .screen import DEFAULT_ROTATION, HEIGHT, WIDTH, Screen
 
-_FONT = "/System/Library/Fonts/Helvetica.ttc"
+_FONT = TURZX_TEST_FONT
 
 
 def test_pattern() -> Image.Image:

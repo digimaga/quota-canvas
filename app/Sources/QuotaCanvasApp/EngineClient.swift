@@ -169,9 +169,10 @@ final class EngineClient: @unchecked Sendable {
     func updateConfig(_ mutate: @escaping (inout ConfigDocument) -> Void) async throws -> ConfigDocument {
         await Self.configLock.acquire()
         do {
-            var latest = try await getConfig()
-            mutate(&latest)
-            let saved = try await setConfig(latest)
+            let original = try await getConfig()
+            var edited = original
+            mutate(&edited)
+            let saved = try await applyChanges(from: original, to: edited)
             await Self.configLock.release()
             return saved
         } catch {
@@ -181,9 +182,29 @@ final class EngineClient: @unchecked Sendable {
     }
 
     func saveChanges(from original: ConfigDocument, to edited: ConfigDocument) async throws -> ConfigDocument {
-        try await updateConfig { latest in
-            latest = ConfigDocument.applyingChanges(from: original, to: edited, onto: latest)
+        await Self.configLock.acquire()
+        do {
+            let saved = try await applyChanges(from: original, to: edited)
+            await Self.configLock.release()
+            return saved
+        } catch {
+            await Self.configLock.release()
+            throw error
         }
+    }
+
+    private func applyChanges(from original: ConfigDocument, to edited: ConfigDocument) async throws -> ConfigDocument {
+        let input = try JSONSerialization.data(withJSONObject: ["original": original.object, "edited": edited.object])
+        return try ConfigDocument(data: await run(["config", "--apply-json"], stdin: input))
+    }
+
+    func notificationCandidates(previous: Data?, current: Data, now: Date, notified: Set<String>) async throws -> [NotificationCandidate] {
+        let currentObject = try JSONSerialization.jsonObject(with: current)
+        let previousObject: Any = try previous.map { try JSONSerialization.jsonObject(with: $0) } ?? NSNull()
+        let input = try JSONSerialization.data(withJSONObject: ["previous": previousObject, "current": currentObject,
+            "now": now.timeIntervalSince1970, "notified": Array(notified)])
+        struct Reply: Decodable { let candidates: [NotificationCandidate] }
+        return try decode(Reply.self, from: await run(["notifications-plan"], stdin: input)).candidates
     }
 
     // MARK: - typed commands
@@ -196,13 +217,6 @@ final class EngineClient: @unchecked Sendable {
     /// `quota-canvas config --json`
     func getConfig() async throws -> ConfigDocument {
         try ConfigDocument(data: try await run(["config", "--json"]))
-    }
-
-    /// `quota-canvas config --set-json`（stdin で全体を送り、反映後の設定を受け取る）
-    func setConfig(_ doc: ConfigDocument) async throws -> ConfigDocument {
-        let data = try doc.jsonData()
-        let out = try await run(["config", "--set-json"], stdin: data)
-        return try ConfigDocument(data: out)
     }
 
     /// `quota-canvas set-key <provider>`（キーは stdin で渡す。引数に載せない）

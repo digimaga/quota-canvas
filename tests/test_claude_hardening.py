@@ -75,7 +75,7 @@ def test_mkdtemp_failure_is_a_launch_failure(monkeypatch):
     def unexpected_popen(*args, **kwargs):
         pytest.fail("Popen must not run when mkdtemp fails")
 
-    monkeypatch.setattr(claude.tempfile, "mkdtemp", fail_mkdtemp)
+    monkeypatch.setattr(claude.process.tempfile, "mkdtemp", fail_mkdtemp)
     monkeypatch.setattr(claude.subprocess, "Popen", unexpected_popen)
 
     assert claude._refresh_via_cli() is False

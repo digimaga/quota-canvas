@@ -25,6 +25,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .platform_support import appearance
 from .i18n import t
 from .models import Balance, Pace, PaceStatus, ProviderUsage, Window
 
@@ -173,16 +174,6 @@ def _sub_status(st):
 
 # ----------------------------------------------------------------- fonts ----
 
-_FONT_ROOT = "/System/Library/Fonts/"
-_FONT_FILES = {
-    "w8": ("ヒラギノ角ゴシック W8.ttc", "ヒラギノ角ゴシック W7.ttc"),
-    "w7": ("ヒラギノ角ゴシック W7.ttc", "ヒラギノ角ゴシック W6.ttc"),
-    "w6": ("ヒラギノ角ゴシック W6.ttc", "ヒラギノ角ゴシック W3.ttc"),
-    "w5": ("ヒラギノ角ゴシック W5.ttc", "ヒラギノ角ゴシック W3.ttc"),
-    "w4": ("ヒラギノ角ゴシック W4.ttc", "ヒラギノ角ゴシック W3.ttc"),
-    "w3": ("ヒラギノ角ゴシック W3.ttc", "ヒラギノ角ゴシック W5.ttc"),
-}
-_FONT_FALLBACK = "ヒラギノ角ゴシック W3.ttc"
 _font_cache = {}  # type: dict
 
 
@@ -194,9 +185,9 @@ def F(weight, size):
     if font is not None:
         return font
     font = None
-    for name in _FONT_FILES.get(weight, _FONT_FILES["w6"]) + (_FONT_FALLBACK,):
+    for path in appearance.font_paths(weight):
         try:
-            font = ImageFont.truetype(_FONT_ROOT + name, size)
+            font = ImageFont.truetype(path, size)
             break
         except OSError:
             continue

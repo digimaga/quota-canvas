@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from .atomic import atomic_write
+from .platform_support.paths import data_dir
 from .i18n import t
 
 if TYPE_CHECKING:  # 循環 import を避ける (実行時は duck typing)
@@ -66,8 +67,8 @@ DEFAULT_FLOOR_HOURS = 24.0
 DEFAULT_STALE_MINUTES = 20
 
 # 使い切りモード (burn) の状態ファイル。status.json と同じディレクトリ。
-BURN_PATH = Path.home() / "Library" / "Application Support" / "quota-canvas" / "routing-burn.json"
-OFF_PATH = Path.home() / "Library" / "Application Support" / "quota-canvas" / "routing-off.json"
+BURN_PATH = data_dir() / "routing-burn.json"
+OFF_PATH = data_dir() / "routing-off.json"
 
 
 # ---------------------------------------------------------------- parsing helpers

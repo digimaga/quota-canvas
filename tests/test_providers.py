@@ -559,6 +559,8 @@ def test_credential_errors_english(monkeypatch, tmp_path):
     from quotacanvas import i18n
 
     monkeypatch.setenv("HOME", str(tmp_path))  # どこにも認証情報がない状態
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    monkeypatch.setattr(providers.glm.keychain, "read", lambda account: None)
     i18n.set_language("en")
     try:
         with pytest.raises(CredentialError) as codex_exc:

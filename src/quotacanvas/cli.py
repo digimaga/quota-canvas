@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 import threading
@@ -20,7 +21,7 @@ from PIL import Image
 from . import desktop_frame, gate, keychain, macpower, providers
 from .i18n import LANGUAGE_CHOICES, current_language, set_language, t, translations
 from .config import (
-    DEFAULT_PATH, PROVIDERS, Sleep, Config, ConfigError, brightness_for, config_from_dict,
+    DEFAULT_PATH, PROVIDERS, Sleep, Config, ConfigError, apply_config_changes, brightness_for, config_from_dict,
     config_to_dict, format_toml, load_config, save_config, sleep_for, wants_bedtime,
 )
 from .history import History, _parse_iso
@@ -503,15 +504,16 @@ def _find_example_file() -> Optional[Path]:
 def _init_config(target: Optional[Path]) -> int:
     """config.example.toml の内容で設定ファイルを作る。既にあれば上書きしない。"""
     path = Path(target).expanduser() if target else DEFAULT_PATH
-    if path.exists():
-        print(t("cli.init.exists", path=path))
-        return 0
-    example = _find_example_file()
-    if example is None:
-        print(t("cli.init.no_example"), file=sys.stderr)
-        return 1
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+    from .platform_support.config_lock import config_lock
+    with config_lock(path):
+        if path.exists():
+            print(t("cli.init.exists", path=path))
+            return 0
+        example = _find_example_file()
+        if example is None:
+            print(t("cli.init.no_example"), file=sys.stderr)
+            return 1
+        path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
     print(t("cli.init.created", path=path, example=example))
     return 0
 
@@ -592,6 +594,41 @@ def _cmd_config_set_json(args) -> int:
     _print_json(config_to_dict(cfg))
     return 0
 
+
+
+def _cmd_config_apply_json(args) -> int:
+    try:
+        data = json.loads(sys.stdin.read())
+        if not isinstance(data, dict) or not isinstance(data.get("original"), dict) or not isinstance(data.get("edited"), dict):
+            raise ConfigError("original and edited must be JSON objects")
+        cfg = apply_config_changes(data["original"], data["edited"], args.config)
+    except (ValueError, ConfigError) as exc:
+        return _fail(str(exc))
+    except OSError as exc:
+        return _fail(t("cli.set_json.save_failed", path=args.config or DEFAULT_PATH,
+                       detail=exc.strerror or exc))
+    _print_json(config_to_dict(cfg))
+    return 0
+
+
+def _cmd_notifications_plan() -> int:
+    from .notifications import plan, _date
+    try:
+        data = json.loads(sys.stdin.read())
+        if not isinstance(data, dict) or not isinstance(data.get("current"), dict):
+            raise ValueError("current must be a JSON object")
+        previous = data.get("previous")
+        if previous is not None and not isinstance(previous, dict):
+            raise ValueError("previous must be an object or null")
+        raw_now = data.get("now")
+        now = raw_now if isinstance(raw_now, (int, float)) and not isinstance(raw_now, bool) else _date(raw_now)
+        keys = data.get("notified")
+        if now is None or (isinstance(now, (int, float)) and not math.isfinite(now)) or not isinstance(keys, list) or any(not isinstance(k, str) for k in keys):
+            raise ValueError("now must be a finite Unix timestamp or ISO 8601 timestamp; notified must be an array of strings")
+        _print_json({"candidates": plan(previous, data["current"], now, set(keys))})
+        return 0
+    except (ValueError, TypeError) as exc:
+        return _fail(str(exc))
 
 def _read_secret(prompt: str) -> str:
     """stdin から 1 行読む。端末のときはエコーしない。argv には絶対に載せない。"""
@@ -1064,7 +1101,10 @@ def main(argv=None) -> int:
                               help=t("cli.help.json_config"))
     config_flags.add_argument("--set-json", action="store_true", dest="set_json",
                               help="read a full config object as JSON from stdin and save it")
+    config_flags.add_argument("--apply-json", action="store_true", dest="apply_json",
+                              help="merge original/edited JSON into the latest config")
     _add_config_arg(p_config)
+    sub.add_parser("notifications-plan", help="read notification snapshot JSON from stdin")
     p_detect = sub.add_parser("detect", help=t("cli.help.detect"))
     p_detect.add_argument("--json", action="store_true", help="print the result as JSON")
     p_key = sub.add_parser("set-key", help=t("cli.help.set_key"))
@@ -1117,6 +1157,8 @@ def main(argv=None) -> int:
                         format="%(asctime)s %(levelname)s %(message)s")
 
     # 設定ファイル不要のコマンドを先に処理する
+    if args.command == "notifications-plan":
+        return _cmd_notifications_plan()
     if args.command == "detect":
         return _cmd_detect(args)
     if args.command == "set-key":
@@ -1128,6 +1170,8 @@ def main(argv=None) -> int:
             return _init_config(args.config)
         if args.set_json:
             return _cmd_config_set_json(args)
+        if args.apply_json:
+            return _cmd_config_apply_json(args)
 
     try:
         cfg = load_config(args.config)

@@ -289,6 +289,7 @@ def test_off_never_calls_cli(monkeypatch, mod, clock, sync_refresh, cli):
             mod.fetch(NOW)
         assert str(excinfo.value) == "ログインの期限切れ（grok を一度起動してください）"
     else:
+        monkeypatch.setattr(codex, "read_codex_credentials", lambda: ("dummy", None))
         FakeHttp(monkeypatch, mod, [http_error(401)])
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             mod.fetch(NOW)
@@ -306,6 +307,7 @@ def test_unset_mode_waits_for_run(monkeypatch, mod, clock, sync_refresh, cli):
             mod.fetch(NOW)
         assert str(excinfo.value) == "ログインの期限切れ（grok を一度起動してください）"
     else:
+        monkeypatch.setattr(codex, "read_codex_credentials", lambda: ("dummy", None))
         FakeHttp(monkeypatch, mod, [http_error(401)])
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             mod.fetch(NOW)
@@ -482,9 +484,9 @@ def test_codex_unadvanced_keeps_full_cooldown(monkeypatch, clock, cli):
 
 def test_grok_child_env_keeps_grok_home(monkeypatch):
     monkeypatch.setenv("GROK_HOME", "/tmp/grok-home-test")
-    assert grok._prefixed_env()["GROK_HOME"] == "/tmp/grok-home-test"
+    assert grok.process.limited_env(grok_home=True)["GROK_HOME"] == "/tmp/grok-home-test"
     monkeypatch.delenv("GROK_HOME")
-    assert "GROK_HOME" not in grok._prefixed_env()
+    assert "GROK_HOME" not in grok.process.limited_env(grok_home=True)
 
 
 def test_refresh_nonzero_exit_fails(monkeypatch, mod, clock, cli):

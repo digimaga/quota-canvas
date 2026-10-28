@@ -23,9 +23,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
 import shutil
-import signal
 import subprocess
 import tempfile
 import time
@@ -34,6 +32,8 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import keychain
+from ..platform_support import process
+from ..platform_support.process import kill_group as _kill_process_group
 from ..i18n import t
 from ..models import ProviderUsage, Window
 from ._base import TIMEOUT, CredentialError, Detection, Provider, _open, _parse_iso
@@ -57,13 +57,7 @@ _PLAN_TTL = 6 * 3600.0               # プラン名のキャッシュを取り�
 TOKEN_REFRESH_MODES = ("cli", "off")
 
 # agy の場所は設定で変えられない (定数)。見つからないときだけ which("agy") を見る。
-AGY_PATH = "/Applications/Gemini.app/Contents/Helpers/agy"
-
-# 子プロセスに渡す環境変数はこれだけ (os.environ 全部は渡さない)。
-# GEMINI_API_KEY / GOOGLE_API_KEY も渡らない (agy はキーでなくログイン済み
-# アカウントの枠を見る)。
-_ENV_KEYS = ("HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "PATH", "SHELL")
-_PATH_PREFIX = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+AGY_PATH = process.AGY_PATH
 
 # (bucket id, 窓 key, ラベルの文言キー, 固定ラベル, 窓の長さ秒)。
 # 文言キー (t() で解決) か固定ラベルのどちらかを使う。この並びがカードの
@@ -138,31 +132,8 @@ def _api_headers(token: str) -> Dict[str, str]:
 
 def _find_agy(search_path: Optional[str] = None) -> Optional[str]:
     """agy 実行ファイルのパス。定数の場所になければ which("agy") で探す。"""
-    path = AGY_PATH
-    if os.path.isfile(path) and os.access(path, os.X_OK):
-        return path
-    return shutil.which("agy", path=search_path)
-
-
-def _usage_env() -> Dict[str, str]:
-    """agy 子プロセス用の限定 env。API キーの変数 (GEMINI_API_KEY /
-    GOOGLE_API_KEY) は whitelist に入っていないので渡らない。"""
-    env = {key: os.environ[key] for key in _ENV_KEYS if key in os.environ}
-    extra = os.pathsep + os.environ["PATH"] if os.environ.get("PATH") else ""
-    env["PATH"] = _PATH_PREFIX + extra
-    return env
-
-
-def _kill_process_group(proc: subprocess.Popen) -> None:
-    """proc のプロセスグループを SIGKILL して終わるのを待つ。"""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (OSError, ProcessLookupError):
-        pass  # 既に終わっている
-    try:
-        proc.wait()
-    except OSError:
-        pass
+    return process.find_cli("agy", search_path, (AGY_PATH,),
+                            candidates_first=True, which=shutil.which)
 
 
 def _agy_usage(timeout: float = USAGE_TIMEOUT) -> Dict[str, Any]:
@@ -175,17 +146,17 @@ def _agy_usage(timeout: float = USAGE_TIMEOUT) -> Dict[str, Any]:
     agy 無し・status が SUCCESS 以外・形が違う応答は CredentialError
     (メッセージは秘密を含まない)。
     """
-    env = _usage_env()
+    env = process.limited_env()
     agy = _find_agy(env["PATH"])
     if not agy:
         raise CredentialError(t("providers.gemini.agy_missing"))
     try:
-        proc = subprocess.Popen(
+        proc = process.start(subprocess.Popen,
             [agy, "-p", "/usage", "--output-format", "json"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             cwd=tempfile.gettempdir(),  # agy にカレントディレクトリを触らせない
-            env=env, start_new_session=True,
+            env=env,
         )
     except OSError:
         raise CredentialError(t("providers.gemini.agy_failed")) from None

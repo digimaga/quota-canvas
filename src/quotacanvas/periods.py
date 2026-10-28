@@ -21,12 +21,12 @@ from pathlib import Path
 from typing import Any, Iterator, List, Optional
 
 from .atomic import atomic_write
+from .platform_support.paths import data_dir
 
 MAX_PER_WINDOW = 20   # 窓ごとに残す閉じた期間の上限
 RESET_TOLERANCE = 60.0  # resets_at の API の揺れを吸う秒数 (history.py と同じ)
 
-DEFAULT_PATH = (Path.home() / "Library" / "Application Support" / "quota-canvas"
-                / "periods.jsonl")
+DEFAULT_PATH = data_dir() / "periods.jsonl"
 
 
 @dataclass

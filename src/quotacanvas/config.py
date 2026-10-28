@@ -24,10 +24,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 # 列の組み立ては render と共通の規則 (1 列 = large 1 枚 or small 2 枚)。
 from .render import MAX_COLUMNS as MAX_PANEL_COLUMNS, group_columns
 from .i18n import LANGUAGE_CHOICES, t
+from .platform_support.paths import config_path
+from .platform_support.config_lock import config_lock
 
 log = logging.getLogger("quotacanvas")
 
-DEFAULT_PATH = Path.home() / ".config" / "quota-canvas" / "config.toml"
+DEFAULT_PATH = config_path()
 
 PROVIDERS = ("claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek", "kimi")
 
@@ -974,7 +976,7 @@ def config_from_dict(data: Any, source: str = JSON_SOURCE) -> Config:
     return _build(data, Path(source))
 
 
-def save_config(cfg: Config, path: Optional[PathLike] = None) -> Path:
+def _save_config_unlocked(cfg: Config, path: Optional[PathLike] = None) -> Path:
     """format_toml の内容を設定ファイルに原子的に書き込む（一時ファイル → rename）。
 
     書き込んだパスを返す。
@@ -994,3 +996,42 @@ def save_config(cfg: Config, path: Optional[PathLike] = None) -> Path:
         if tmp is not None:
             tmp.unlink(missing_ok=True)
     return target
+
+
+def save_config(cfg: Config, path: Optional[PathLike] = None) -> Path:
+    """Serialize complete replacements with other cooperating config writers."""
+    target = Path(path).expanduser() if path is not None else DEFAULT_PATH
+    with config_lock(target):
+        return _save_config_unlocked(cfg, target)
+
+
+def merge_config_changes(original: dict, edited: dict, latest: dict) -> dict:
+    """Apply only edits, recursively for objects; lists remain a single value."""
+    if not all(isinstance(item, dict) for item in (original, edited, latest)):
+        raise ConfigError("original, edited, latest must be JSON objects")
+    result = latest.copy()
+    missing = object()
+    for key, new in edited.items():
+        old = original.get(key, missing)
+        if old is not missing and old == new and type(old) is type(new):
+            continue
+        if isinstance(new, dict) and (old is missing or isinstance(old, dict)):
+            current = result.get(key)
+            result[key] = merge_config_changes(old if old is not missing else {}, new,
+                                               current if isinstance(current, dict) else {})
+        else:
+            result[key] = new
+    for key in original:
+        if key not in edited:
+            result.pop(key, None)
+    return result
+
+
+def apply_config_changes(original: dict, edited: dict, path: Optional[PathLike] = None) -> Config:
+    target = Path(path).expanduser() if path is not None else DEFAULT_PATH
+    with config_lock(target):
+        latest = config_to_dict(load_config(target))
+        merged = merge_config_changes(original, edited, latest)
+        cfg = config_from_dict(merged)
+        _save_config_unlocked(cfg, target)
+        return cfg

@@ -18,7 +18,6 @@ import json
 import logging
 import os
 import shutil
-import signal
 import subprocess
 import tempfile
 import threading
@@ -28,6 +27,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..platform_support import process
+from ..platform_support.process import kill_group as _kill_process_group
 from ..i18n import t
 from ..models import ProviderUsage, ResetCredit, Window
 from ._base import (
@@ -55,15 +56,7 @@ TOKEN_REFRESH_MODES = ("cli", "off")  # providers.codex.token_refresh の値
 
 # codex 実行ファイルのフォールバック候補 (which("codex") で見つからないとき)。
 # LaunchAgent は PATH が最小限なため ~ 配下も明示する。
-_CODEX_FALLBACKS = (
-    "/opt/homebrew/bin/codex",
-    "/usr/local/bin/codex",
-    "~/.codex/bin/codex",
-)
-
-# 子プロセスに渡す環境変数はこの 7 つだけ (os.environ 全部は渡さない)。
-_ENV_KEYS = ("HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "PATH", "SHELL")
-_PATH_PREFIX = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+_CODEX_FALLBACKS = process.CODEX_PATHS
 
 _refresh_mode: Optional[str] = None        # None = 未設定 (run 以外は触らない)
 _cooldown_until: Optional[float] = None    # 次に codex を起動してよい monotonic 時刻
@@ -121,24 +114,10 @@ def _kill_running_child() -> None:
 atexit.register(_kill_running_child)  # 終了時にもみ消し (実行中の codex を残さない)
 
 
-def _prefixed_env() -> Dict[str, str]:
-    """子プロセス用の限定 env。PATH の先頭に LaunchAgent でも届く場所を足す。"""
-    env = {key: os.environ[key] for key in _ENV_KEYS if key in os.environ}
-    extra = os.pathsep + os.environ["PATH"] if os.environ.get("PATH") else ""
-    env["PATH"] = _PATH_PREFIX + extra
-    return env
-
-
 def _find_codex_cli(search_path: Optional[str] = None) -> Optional[str]:
     """codex 実行ファイルのパス。見つからなければ None。"""
-    found = shutil.which("codex", path=search_path)
-    if found:
-        return found
-    for candidate in _CODEX_FALLBACKS:
-        path = os.path.expanduser(candidate)
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
-    return None
+    return process.find_cli("codex", search_path, _CODEX_FALLBACKS,
+                            which=shutil.which)
 
 
 def _read_auth_state() -> Tuple[Optional[str], Optional[datetime]]:
@@ -156,18 +135,6 @@ def _read_auth_state() -> Tuple[Optional[str], Optional[datetime]]:
     raw = data.get("last_refresh") if isinstance(data, dict) else None
     last = _parse_iso(raw) if isinstance(raw, str) else _from_epoch(raw)
     return (token or None), last
-
-
-def _kill_process_group(proc: subprocess.Popen) -> None:
-    """proc のプロセスグループを SIGKILL して終わるのを待つ。"""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (OSError, ProcessLookupError):
-        pass  # 既に終わっている
-    try:
-        proc.wait()
-    except OSError:
-        pass
 
 
 def _advanced(before: Tuple[Optional[str], Optional[datetime]],
@@ -201,7 +168,7 @@ def _refresh_via_cli() -> bool:
     if _cooldown_until is not None and now < _cooldown_until:
         log.debug("codex CLI でのトークン更新はクールダウン中")
         return False
-    env = _prefixed_env()
+    env = process.limited_env()
     codex_cli = _find_codex_cli(env["PATH"])
     if not codex_cli:
         if _last_not_found is None or now - _last_not_found >= CLI_REFRESH_COOLDOWN:
@@ -215,12 +182,12 @@ def _refresh_via_cli() -> bool:
         env["PATH"] = env["PATH"] + os.pathsep + bindir  # 見つけたバイナリの仲間も使えるように
     before = _read_auth_state()
     try:
-        proc = subprocess.Popen(
+        proc = process.start(subprocess.Popen,
             [codex_cli, "exec", "--skip-git-repo-check", "--sandbox", "read-only",
              "--ephemeral", "-C", tempfile.gettempdir(), "ok"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, cwd=tempfile.gettempdir(),
-            env=env, start_new_session=True,
+            env=env,
         )
     except OSError:
         log.warning("codex CLI を起動できなかった")  # 起動失敗はクールダウンに入れない

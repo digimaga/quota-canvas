@@ -230,6 +230,27 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `{"name": …, "windows": […]}` objects (the app's form: an array keeps the order that
   JSON objects cannot), and dict-form `workers` are reordered by `worker_order` when
   present; the TOML is written in that order.
+- `quota-canvas config --apply-json` — reads `{"original": {...}, "edited": {...}}` on
+  stdin. Under the same inter-process lock used by config writers, it reads the latest
+  effective config, recursively applies only differences, validates and atomically saves
+  it, and returns the effective JSON. Missing keys represent deletions; `null` remains a
+  value; arrays are replaced as a unit. Concurrent edits of the same value are resolved
+  by the later save. `--set-json` remains a whole-config replacement. Manual writers that
+  do not use this lock are not serialized. Unknown TOML keys retain their existing
+  warning/ignore behavior, and are not promised to survive a save.
+- `quota-canvas notifications-plan` — reads `{previous, current, now, notified}` JSON on
+  stdin; `previous` is null or the prior status object, `current` is the current status,
+  `now` is a Unix timestamp in seconds (or an ISO 8601 timestamp), and `notified` is an
+  array of acknowledged keys. Returns
+  `{"candidates": [...]}` with stable `key` and `kind`: `status`, `reset`, and `burst`
+  carry `card`; `credit` carries `provider`, `name`, and `expires_at`. This command has
+  no notification or state side effects. The app processes snapshots in order, formats and
+  delivers candidates through the OS, and records keys according to delivery acceptance;
+  when notifications are disabled it records candidates without delivery. Initial card
+  transitions are not notified; an expiring reset credit can be notified on the first read.
+  If planning or candidate decoding fails, the app retains that snapshot and later snapshots
+  in order and stops the drain; the next normal status read starts a retry. Planning errors
+  clear on successful planning, while a delivery error remains until that key is accepted.
 - `quota-canvas refresh [--json]` — creates `refresh-request` (above) and exits; it does
   not check whether the engine is running. With `--json` it prints `{"requested": true}`.
 - `quota-canvas pick [--json]` — which service to use right now, as one line (the same

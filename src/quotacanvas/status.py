@@ -13,13 +13,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from .atomic import atomic_write as _atomic_write
+from .platform_support.paths import data_dir
 from .config import Config
 from .gate import evaluate, format_line
 from .i18n import t
 from .models import Pace, PaceStatus, ProviderUsage
 from .render import _STATUS_BADGE, advice_text  # カードの advice / badge 文言は画面表示 (render) と共通
 
-DATA_DIR = Path.home() / "Library" / "Application Support" / "quota-canvas"
+DATA_DIR = data_dir()
 STATUS_PATH = DATA_DIR / "status.json"
 FRAME_PATH = DATA_DIR / "frame.png"
 

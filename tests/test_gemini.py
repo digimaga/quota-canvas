@@ -196,10 +196,10 @@ def test_usage_env_is_a_whitelist(monkeypatch):
     monkeypatch.setenv("HOME", "/home/tester")
     monkeypatch.setenv("PATH", "/usr/original/bin")
     monkeypatch.setenv("EXTRA", "must not pass")
-    env = gemini._usage_env()
-    assert set(env) <= set(gemini._ENV_KEYS)  # os.environ 全部は渡さない
+    env = gemini.process.limited_env()
+    assert set(env) <= set(gemini.process.ENV_KEYS)  # os.environ 全部は渡さない
     assert "GEMINI_API_KEY" not in env and "GOOGLE_API_KEY" not in env
-    assert env["PATH"].startswith(gemini._PATH_PREFIX)
+    assert env["PATH"].startswith(gemini.process.PATH_PREFIX)
 
 
 def test_agy_usage_success(fake_agy):
@@ -211,7 +211,7 @@ def test_agy_usage_success(fake_agy):
     assert kwargs["start_new_session"] is True     # 時間切れで killpg できるように
     assert kwargs["stdout"] == subprocess.PIPE
     assert kwargs["stderr"] == subprocess.DEVNULL
-    assert set(kwargs["env"]) <= set(gemini._ENV_KEYS)
+    assert set(kwargs["env"]) <= set(gemini.process.ENV_KEYS)
     proc = fake_agy.procs[0]
     assert proc.comm_timeouts == [gemini.USAGE_TIMEOUT]  # 30 秒で見限る
 
@@ -248,8 +248,8 @@ def test_agy_usage_timeout_kills_process_group(monkeypatch):
     FakeAgy(monkeypatch, [subprocess.TimeoutExpired(cmd="agy", timeout=30)])
     monkeypatch.setattr(gemini, "_find_agy", lambda path=None: "/fake/bin/agy")
     killed = []
-    monkeypatch.setattr(gemini.os, "getpgid", lambda pid: pid + 1)
-    monkeypatch.setattr(gemini.os, "killpg",
+    monkeypatch.setattr(gemini.process.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(gemini.process.os, "killpg",
                         lambda pgid, sig: killed.append((pgid, sig)))
     with pytest.raises(gemini.CredentialError) as ei:
         gemini._agy_usage()
@@ -260,8 +260,8 @@ def test_agy_usage_timeout_kills_process_group(monkeypatch):
 def test_agy_usage_timeout_waits_after_kill(monkeypatch):
     fake = FakeAgy(monkeypatch, [subprocess.TimeoutExpired(cmd="agy", timeout=30)])
     monkeypatch.setattr(gemini, "_find_agy", lambda path=None: "/fake/bin/agy")
-    monkeypatch.setattr(gemini.os, "getpgid", lambda pid: 42424)
-    monkeypatch.setattr(gemini.os, "killpg", lambda pgid, sig: None)
+    monkeypatch.setattr(gemini.process.os, "getpgid", lambda pid: 42424)
+    monkeypatch.setattr(gemini.process.os, "killpg", lambda pgid, sig: None)
     with pytest.raises(gemini.CredentialError):
         gemini._agy_usage()
     assert fake.procs[0].waits == [None]  # kill 後に wait で回収する

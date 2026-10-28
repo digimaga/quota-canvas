@@ -48,8 +48,9 @@ SwiftPM で実行ファイルをビルドし、リソースと Info.plist を .a
   UNUserNotificationCenter.add がエラー無しで受理した後に UserDefaults に保存し、
   再起動で再通知しない（トグルがオフのときは投稿せずキーだけ記録。
   権限が未確定・拒否のときは保存しない）。カードの遷移は初回読み込みでは差分の基準にするだけ。
-  判定は View から切り離した純粋な型 `NotificationPlanner`（前回 status・今回 status・
-  通知済みキーから通知リストを返す）。設定「表示」タブの「通知を出す」でオフにできる
+  判定は共通 Python エンジンの `notifications-plan`（前回 status・今回 status・
+  通知済みキーから通知リストを返す）。判定に失敗した状態は順序を保って保持し、次の
+  通常読込で再試行する。判定の復旧と通知投稿の失敗は別に表示する。設定「表示」タブの「通知を出す」でオフにできる
   （UserDefaults、既定オン）。
   status.json の定期読み込みはアプリ起動時に始めるので、メニューを閉じている間も
   通知とメニューバーの点の変化が動く。
@@ -96,9 +97,9 @@ SwiftPM で実行ファイルをビルドし、リソースと Info.plist を .a
 ## 構成
 
 - `Models.swift` — Codable モデル（status.json / detect）+ 共有ヘルパ
-- `ConfigDocument.swift` — 設定 JSON の可逆ラッパ（知らないキーを壊さず送り返す）
+- `ConfigDocument.swift` — 設定 JSON の編集用ラッパ
 - `EngineClient.swift` — Process で CLI を呼ぶ（stdout を JSON、キーは stdin）
 - `StatusStore.swift` — status.json の 10 秒ポーリング + ログイン時起動（SMAppService）
-- `NotificationPlanner.swift` — F4 通知の差分判定（純粋な型。前回 status → 通知リスト）
+- `NotificationPlanner.swift` — Python の通知候補をローカライズされた表示文に変換
 - `NotificationCoordinator.swift` — 通知の投稿（UNUserNotificationCenter）+ 通知済みキーの保存（UserDefaults）
 - `Views/` — MenuPopoverView / SettingsView（表示タブ）/ ServiceSettingsView（サービスタブ）/ RoutingSettingsView（振り分けタブ）/ FramePreviewView

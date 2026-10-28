@@ -18,10 +18,7 @@ import logging
 import os
 import re
 import shutil
-import signal
-import stat
 import subprocess
-import tempfile
 import threading
 import time
 import unicodedata
@@ -30,6 +27,8 @@ from datetime import datetime, timedelta, timezone
 from shutil import rmtree
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..platform_support import process, security
+from ..platform_support.process import kill_group as _kill_process_group
 from ..i18n import t
 from ..models import ProviderUsage, Window
 from ._base import (
@@ -50,16 +49,7 @@ TOKEN_REFRESH_MODES = ("cli", "off")  # providers.claude.token_refresh の値
 
 # claude 実行ファイルのフォールバック候補 (which("claude") で見つからないとき)。
 # LaunchAgent は PATH が最小限なため ~ 配下も明示する。
-_CLAUDE_FALLBACKS = (
-    "/opt/homebrew/bin/claude",
-    "/usr/local/bin/claude",
-    "~/.local/bin/claude",
-    "~/.claude/local/claude",
-)
-
-# 子プロセスに渡す環境変数はこの 7 つだけ (os.environ 全部は渡さない)。
-_ENV_KEYS = ("HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "PATH", "SHELL")
-_PATH_PREFIX = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+_CLAUDE_FALLBACKS = process.CLAUDE_PATHS
 
 _refresh_mode: Optional[str] = None        # None = 未設定 (run 以外は触らない)
 _cooldown_until: Optional[float] = None    # 次に claude -p を起動してよい monotonic 時刻
@@ -90,9 +80,9 @@ def _read_keychain_payload() -> Tuple[str, Optional[str], Optional[datetime]]:
     """
     global _last_expiry
     try:
-        proc = subprocess.run(
-            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-            capture_output=True, text=True, timeout=TIMEOUT,
+        proc = security.run(
+            ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            timeout=TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         raise CredentialError("timeout") from None
@@ -153,24 +143,10 @@ def _kill_running_child() -> None:
 atexit.register(_kill_running_child)  # 終了時にもみ消し (実行中の claude を残さない)
 
 
-def _prefixed_env() -> Dict[str, str]:
-    """子プロセス用の限定 env。PATH の先頭に LaunchAgent でも届く場所を足す。"""
-    env = {key: os.environ[key] for key in _ENV_KEYS if key in os.environ}
-    extra = os.pathsep + os.environ["PATH"] if os.environ.get("PATH") else ""
-    env["PATH"] = _PATH_PREFIX + extra
-    return env
-
-
 def _find_claude_cli(search_path: Optional[str] = None) -> Optional[str]:
     """claude 実行ファイルのパス。見つからなければ None。"""
-    found = shutil.which("claude", path=search_path)
-    if found:
-        return found
-    for candidate in _CLAUDE_FALLBACKS:
-        path = os.path.expanduser(candidate)
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
-    return None
+    return process.find_cli("claude", search_path, _CLAUDE_FALLBACKS,
+                            which=shutil.which)
 
 
 def _current_expiry() -> Optional[datetime]:
@@ -179,18 +155,6 @@ def _current_expiry() -> Optional[datetime]:
         return _read_keychain_payload()[2]
     except CredentialError:
         return None
-
-
-def _kill_process_group(proc: subprocess.Popen) -> None:
-    """proc のプロセスグループを SIGKILL して終わるのを待つ。"""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (OSError, ProcessLookupError):
-        pass  # 既に終わっている
-    try:
-        proc.wait()
-    except OSError:
-        pass
 
 
 def _refresh_via_cli() -> bool:
@@ -207,7 +171,7 @@ def _refresh_via_cli() -> bool:
     if _cooldown_until is not None and now < _cooldown_until:
         log.debug("claude CLI でのトークン更新はクールダウン中")
         return False
-    env = _prefixed_env()
+    env = process.limited_env()
     claude_cli = _find_claude_cli(env["PATH"])
     if not claude_cli:
         if _last_not_found is None or now - _last_not_found >= CLI_REFRESH_COOLDOWN:
@@ -221,42 +185,19 @@ def _refresh_via_cli() -> bool:
         env["PATH"] = env["PATH"] + os.pathsep + bindir  # 見つけたバイナリの仲間も使えるように
     before = _current_expiry()
     try:
-        base = os.path.join(os.path.expanduser("~"), "Library", "Caches", "quota-canvas")
-        os.makedirs(base, mode=0o700, exist_ok=True)
-        base_info = os.lstat(base)
-        if (not stat.S_ISDIR(base_info.st_mode)
-                or base_info.st_uid != os.getuid()):
-            raise OSError("unsafe Claude refresh directory")
-        if stat.S_IMODE(base_info.st_mode) != 0o700:
-            os.chmod(base, 0o700)
-            base_info = os.lstat(base)
-            if (not stat.S_ISDIR(base_info.st_mode)
-                    or base_info.st_uid != os.getuid()
-                    or stat.S_IMODE(base_info.st_mode) != 0o700):
-                raise OSError("unsafe Claude refresh directory")
-        with os.scandir(base) as entries:
-            for entry in entries:
-                if not entry.name.startswith("claude-refresh-"):
-                    continue
-                try:
-                    old_info = os.lstat(entry.path)
-                except OSError:
-                    continue
-                if stat.S_ISDIR(old_info.st_mode) and old_info.st_uid == os.getuid():
-                    rmtree(entry.path, ignore_errors=True)
-        project_dir = tempfile.mkdtemp(prefix="claude-refresh-", dir=base)
+        project_dir = process.claude_refresh_dir()
     except OSError:
         log.warning("claude CLI を起動できなかった")  # 起動失敗はクールダウンに入れない
         return False
     try:
         try:
-            proc = subprocess.Popen(
+            proc = process.start(subprocess.Popen,
                 [claude_cli, "-p", "ok", "--model", "haiku", "--max-turns", "1",
                  "--no-session-persistence", "--setting-sources", "project",
                  "--strict-mcp-config", "--disable-slash-commands"],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, cwd=project_dir,
-                env=env, start_new_session=True,
+                env=env,
             )
         except OSError:
             log.warning("claude CLI を起動できなかった")  # 起動失敗はクールダウンに入れない

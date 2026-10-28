@@ -20,6 +20,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Set
 
+from .platform_support import appearance
+
 log = logging.getLogger("quotacanvas")
 
 LANGUAGES = ("ja", "en")
@@ -52,8 +54,7 @@ def catalog(lang: str) -> Dict[str, str]:
 def system_language() -> str:
     """macOS の優先言語の先頭が日本語なら ja、それ以外は en。"""
     try:
-        out = subprocess.run(["defaults", "read", "-g", "AppleLanguages"],
-                             capture_output=True, text=True, timeout=2).stdout
+        out = appearance.language_output()
     except (OSError, subprocess.SubprocessError):
         return FALLBACK
     for line in out.splitlines():

@@ -4,6 +4,7 @@ import AppKit
 /// メニューバーのポップオーバー本体。
 struct MenuPopoverView: View {
     @EnvironmentObject private var statusStore: StatusStore
+    @ObservedObject private var notifications = NotificationCoordinator.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
 
@@ -84,6 +85,9 @@ struct MenuPopoverView: View {
             Text("エンジンのパスを「設定 → 表示」で確認してください。")
                 .font(.caption).foregroundStyle(.secondary)
         } else {
+            if let error = notifications.error {
+                Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+            }
             // エンジン停止（5 分以上更新なし）でも直前のカードは残して見せ、警告を上に出す
             if statusStore.isStale {
                 Label("エンジンが動いていません（5 分以上更新がありません）", systemImage: "zzz")
