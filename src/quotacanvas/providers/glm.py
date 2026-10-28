@@ -1,15 +1,12 @@
 """GLM (Z.ai): API キーで利用枠を取得する。
 
 キーの探索順: キーチェーン quota-canvas/glm → 環境変数 ZAI_API_KEY
-→ ~/.config/glm-run/zai_api_key → ~/.dsh/.credentials.yaml
 """
 
 from __future__ import annotations
 
 import os
-import re
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import keychain
@@ -22,9 +19,6 @@ from ._base import (
 
 GLM_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
 
-_ZAI_KEY_LINE = re.compile(r"^\s*ZAI_API_KEY:\s*(.+?)\s*$", re.MULTILINE)
-
-
 # ----------------------------------------------------------- credentials
 
 def locate_glm_key() -> Tuple[str, str]:
@@ -35,21 +29,6 @@ def locate_glm_key() -> Tuple[str, str]:
     env = os.environ.get("ZAI_API_KEY")
     if env and env.strip():
         return env.strip(), t("providers.detect.glm_env")
-    candidate = Path.home() / ".config" / "glm-run" / "zai_api_key"
-    try:
-        text = candidate.read_text(encoding="utf-8").strip()
-    except OSError:
-        text = ""
-    if text:
-        return text, "~/.config/glm-run/zai_api_key"
-    try:
-        match = _ZAI_KEY_LINE.search(
-            (Path.home() / ".dsh" / ".credentials.yaml").read_text(encoding="utf-8")
-        )
-    except OSError:
-        match = None
-    if match:
-        return match.group(1).strip("'\""), "~/.dsh/.credentials.yaml"
     raise CredentialError(t("providers.api_key_not_set"))
 
 

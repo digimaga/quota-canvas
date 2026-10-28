@@ -501,51 +501,30 @@ def test_glm_key_order_keychain_first(monkeypatch):
     assert "キーチェーン" in source
 
 
-def test_glm_key_order_env_then_files(monkeypatch, tmp_path):
+def test_glm_key_order_env(monkeypatch):
     monkeypatch.setattr(providers.glm.keychain, "read", lambda account: None)
     monkeypatch.setenv("ZAI_API_KEY", "from-env")
     key, source = providers.glm.locate_glm_key()
     assert key == "from-env" and source == "環境変数 ZAI_API_KEY"
 
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-
-    # 環境変数が空文字なら「無い」扱い: この時点ではファイルも無くて未設定
+    # 環境変数が空白だけなら「無い」扱い
     monkeypatch.setenv("ZAI_API_KEY", " ")
     with pytest.raises(CredentialError):
         providers.glm.locate_glm_key()
 
-    # env なし → ~/.config/glm-run/zai_api_key
+    # 環境変数も無い → CredentialError
     monkeypatch.delenv("ZAI_API_KEY")
-    cfg = home / ".config" / "glm-run"
-    cfg.mkdir(parents=True)
-    (cfg / "zai_api_key").write_text("from-file\n", encoding="utf-8")
-    key, source = providers.glm.locate_glm_key()
-    assert key == "from-file" and source == "~/.config/glm-run/zai_api_key"
-
-    # それも無し → ~/.dsh/.credentials.yaml
-    (cfg / "zai_api_key").unlink()
-    dsh = home / ".dsh"
-    dsh.mkdir()
-    (dsh / ".credentials.yaml").write_text('other: x\nZAI_API_KEY: "from-yaml"\n', encoding="utf-8")
-    key, source = providers.glm.locate_glm_key()
-    assert key == "from-yaml" and source == "~/.dsh/.credentials.yaml"
-
-    # 全部無し → CredentialError
-    (dsh / ".credentials.yaml").unlink()
     with pytest.raises(CredentialError):
         providers.glm.locate_glm_key()
 
 
-def test_glm_detect_sources(monkeypatch, tmp_path):
+def test_glm_detect_sources(monkeypatch):
     monkeypatch.setattr(providers.glm.keychain, "read", lambda account: "k")
     det = providers.glm.detect()
     assert det.detected and "キーチェーン" in det.source
 
     monkeypatch.setattr(providers.glm.keychain, "read", lambda account: None)
     monkeypatch.delenv("ZAI_API_KEY", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
     det = providers.glm.detect()
     assert det.detected is False and det.error == "API キーが未設定"
 
