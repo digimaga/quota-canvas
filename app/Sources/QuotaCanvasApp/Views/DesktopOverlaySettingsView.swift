@@ -13,15 +13,8 @@ struct DesktopOverlaySettingsView: View {
     var body: some View {
         Form {
             Toggle("デスクトップに表示", isOn: $enabled)
-            Picker("位置", selection: $position) {
-                Text("左上").tag(DesktopOverlayController.Position.topLeft.rawValue)
-                Text("上中央").tag(DesktopOverlayController.Position.topCenter.rawValue)
-                Text("右上").tag(DesktopOverlayController.Position.topRight.rawValue)
-                Text("左中央").tag(DesktopOverlayController.Position.centerLeft.rawValue)
-                Text("右中央").tag(DesktopOverlayController.Position.centerRight.rawValue)
-                Text("左下").tag(DesktopOverlayController.Position.bottomLeft.rawValue)
-                Text("下中央").tag(DesktopOverlayController.Position.bottomCenter.rawValue)
-                Text("右下").tag(DesktopOverlayController.Position.bottomRight.rawValue)
+            LabeledContent("位置") {
+                DesktopOverlayPositionPad(selection: $position)
             }
             Picker("表示する画面", selection: $screen) {
                 Text("メインの画面").tag("")
@@ -76,5 +69,72 @@ struct DesktopOverlaySettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
             screens = NSScreen.screens
         }
+    }
+}
+
+/// 画面に見立てた四角形の 4 隅と各辺の中央に丸を置き、クリック 1 回で位置を選ぶ。
+struct DesktopOverlayPositionPad: View {
+    @Binding var selection: String
+
+    private typealias Position = DesktopOverlayController.Position
+    private static let size = CGSize(width: 176, height: 110)
+    private static let dot: CGFloat = 18
+
+    private static func label(_ position: Position) -> LocalizedStringKey {
+        switch position {
+        case .topLeft: return "左上"
+        case .topCenter: return "上中央"
+        case .topRight: return "右上"
+        case .centerLeft: return "左中央"
+        case .centerRight: return "右中央"
+        case .bottomLeft: return "左下"
+        case .bottomCenter: return "下中央"
+        case .bottomRight: return "右下"
+        }
+    }
+
+    /// 四角形の左上を原点にした丸の中心
+    private static func point(_ position: Position) -> CGPoint {
+        let w = size.width, h = size.height
+        switch position {
+        case .topLeft: return CGPoint(x: 0, y: 0)
+        case .topCenter: return CGPoint(x: w / 2, y: 0)
+        case .topRight: return CGPoint(x: w, y: 0)
+        case .centerLeft: return CGPoint(x: 0, y: h / 2)
+        case .centerRight: return CGPoint(x: w, y: h / 2)
+        case .bottomLeft: return CGPoint(x: 0, y: h)
+        case .bottomCenter: return CGPoint(x: w / 2, y: h)
+        case .bottomRight: return CGPoint(x: w, y: h)
+        }
+    }
+
+    var body: some View {
+        let pad = Self.dot / 2
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.12))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.5), lineWidth: 1))
+                .frame(width: Self.size.width, height: Self.size.height)
+                .offset(x: pad, y: pad)
+            ForEach(Position.allCases, id: \.self) { position in
+                let selected = selection == position.rawValue
+                let center = Self.point(position)
+                Button {
+                    selection = position.rawValue
+                } label: {
+                    Circle()
+                        .fill(selected ? Color.accentColor : Color(nsColor: .windowBackgroundColor))
+                        .overlay(Circle().stroke(selected ? Color.accentColor : Color.secondary, lineWidth: 1.5))
+                        .frame(width: Self.dot, height: Self.dot)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help(Self.label(position))
+                .accessibilityLabel(Self.label(position))
+                .accessibilityAddTraits(selected ? .isSelected : [])
+                .offset(x: center.x, y: center.y)
+            }
+        }
+        .frame(width: Self.size.width + Self.dot, height: Self.size.height + Self.dot, alignment: .topLeading)
     }
 }
