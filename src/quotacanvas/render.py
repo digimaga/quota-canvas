@@ -221,27 +221,32 @@ def default_separator():
 class _S(object):
     """ImageDraw wrapper applying a global pixel offset (burn-in shift)."""
 
-    def __init__(self, img, offset):
-        # type: (Image.Image, Tuple[int, int]) -> None
+    def __init__(self, img, offset, scale=1.0):
+        # type: (Image.Image, Tuple[int, int], float) -> None
         self.d = ImageDraw.Draw(img)
         self.percent_colors = True  # % の数字を状態色にするか (render が設定)
         self.sep = None  # 文の区切り。None なら文言の " · " のまま (render が設定)
         self.ox = int(offset[0])
         self.oy = int(offset[1])
+        self.scale = scale
+        self.scaled_fonts = {}
+
+    def _font(self, font):
+        if self.scale == 1.0 or not hasattr(font, "font_variant"):
+            return font
+        if font not in self.scaled_fonts:
+            self.scaled_fonts[font] = font.font_variant(size=max(1, round(font.size * self.scale)))
+        return self.scaled_fonts[font]
 
     def _p(self, xy):
         n = len(xy)
         if n == 2:
-            return (xy[0] + self.ox, xy[1] + self.oy)
-        if n == 4:
-            return (xy[0] + self.ox, xy[1] + self.oy,
-                    xy[2] + self.ox, xy[3] + self.oy)
-        return tuple(v + (self.ox if i % 2 == 0 else self.oy)
+            return ((xy[0] + self.ox) * self.scale, (xy[1] + self.oy) * self.scale)
+        return tuple((v + (self.ox if i % 2 == 0 else self.oy)) * self.scale
                      for i, v in enumerate(xy))
 
     def _b(self, box):
-        return (box[0] + self.ox, box[1] + self.oy,
-                box[2] + self.ox, box[3] + self.oy)
+        return self._p(box)
 
     def _t(self, txt):
         """文言の区切り " · " (先頭の "· " も) を self.sep に置き換える。"""
@@ -259,37 +264,38 @@ class _S(object):
         return 2
 
     def text(self, xy, txt, font, fill, anchor=None):
-        self.d.text(self._p(xy), self._t(txt), font=font, fill=fill,
+        self.d.text(self._p(xy), self._t(txt), font=self._font(font), fill=fill,
                     anchor=anchor)
 
     def textlength(self, txt, font):
-        return self.d.textlength(self._t(txt), font=font)
+        return self.d.textlength(self._t(txt), font=self._font(font)) / self.scale
 
     def line(self, box, fill, width=1):
-        self.d.line(self._p(box), fill=fill, width=width)
+        self.d.line(self._p(box), fill=fill, width=max(1, round(width * self.scale)))
 
     def rectangle(self, box, fill=None, outline=None, width=1):
-        self.d.rectangle(self._b(box), fill=fill, outline=outline, width=width)
+        self.d.rectangle(self._b(box), fill=fill, outline=outline, width=max(1, round(width * self.scale)))
 
     def polygon(self, pts, fill=None, outline=None):
         self.d.polygon([self._p(p) for p in pts], fill=fill, outline=outline)
 
     def rrect(self, box, radius=0, fill=None, outline=None, width=1, corners=None):
         try:
-            self.d.rounded_rectangle(self._b(box), radius=radius, fill=fill,
-                                     outline=outline, width=width, corners=corners)
+            self.d.rounded_rectangle(self._b(box), radius=radius * self.scale, fill=fill,
+                                     outline=outline, width=max(1, round(width * self.scale)), corners=corners)
         except TypeError:  # Pillow < 9.1 has no `corners`
-            self.d.rounded_rectangle(self._b(box), radius=radius, fill=fill,
-                                     outline=outline, width=width)
+            self.d.rounded_rectangle(self._b(box), radius=radius * self.scale, fill=fill,
+                                     outline=outline, width=max(1, round(width * self.scale)))
 
 
 def _text_bbox(s, xy, txt, font, anchor):
     # type: (_S, Tuple[float, float], str, ImageFont.FreeTypeFont, str) -> Tuple[float, float, float, float]
     """bbox of `txt` as s.text would draw it (global offset removed, so the
     result is in the caller's local coordinates)."""
-    bb = s.d.textbbox((xy[0] + s.ox, xy[1] + s.oy), s._t(txt), font=font,
+    bb = s.d.textbbox(s._p(xy), s._t(txt), font=s._font(font),
                       anchor=anchor)
-    return (bb[0] - s.ox, bb[1] - s.oy, bb[2] - s.ox, bb[3] - s.oy)
+    return (bb[0] / s.scale - s.ox, bb[1] / s.scale - s.oy,
+            bb[2] / s.scale - s.ox, bb[3] / s.scale - s.oy)
 
 
 # ------------------------------------------------------------- primitives ---
@@ -1636,8 +1642,8 @@ def _draw_large_column(s, box, p, colors, gauge, now):
 
 def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
            layout=None, recommendation=None, percent_colors=True,
-           separator=None):
-    # type: (Sequence[Tuple[ProviderUsage, Optional[Pace]]], datetime, Tuple[int, int], str, Optional[dict], Optional[Sequence[PanelSpec]], Optional[str], bool) -> Image.Image
+           separator=None, scale=1.0):
+    # type: (Sequence[Tuple[ProviderUsage, Optional[Pace]]], datetime, Tuple[int, int], str, Optional[dict], Optional[Sequence[PanelSpec]], Optional[str], bool, Optional[str], float) -> Image.Image
     """Render the 1920x462 canvas. `cards` are (provider, pace) pairs in
     display order; pace=None marks a provider whose fetch failed.
     gauge: "remaining" (fill = what is left, default) or "used"
@@ -1657,8 +1663,8 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
     消える (残りの列が詰まる)。"""
     if gauge not in ("remaining", "used"):
         raise ValueError("gauge must be 'remaining' or 'used'")
-    img = Image.new("RGB", (CANVAS_W, CANVAS_H), BG)
-    s = _S(img, offset)
+    img = Image.new("RGB", (round(CANVAS_W * scale), round(CANVAS_H * scale)), BG)
+    s = _S(img, offset, scale)
     s.percent_colors = percent_colors
     s.sep = separator
     _draw_header(s, now, recommendation)
@@ -1700,10 +1706,10 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
     return img
 
 
-def render_error(message, now):
-    # type: (str, datetime) -> Image.Image
-    img = Image.new("RGB", (CANVAS_W, CANVAS_H), BG)
-    s = _S(img, (0, 0))
+def render_error(message, now, scale=1.0):
+    # type: (str, datetime, float) -> Image.Image
+    img = Image.new("RGB", (round(CANVAS_W * scale), round(CANVAS_H * scale)), BG)
+    s = _S(img, (0, 0), scale)
     _draw_header(s, now)
     cy = (HEADER_H + CANVAS_H) / 2.0
     s.rrect((CANVAS_W / 2.0 - 22, cy - 86, CANVAS_W / 2.0 + 22, cy - 78),

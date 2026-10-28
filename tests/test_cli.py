@@ -484,7 +484,7 @@ def test_english_config_gives_english_cli_message(monkeypatch, capsys, tmp_path)
 
     captured = {}
     monkeypatch.setattr(cli, "render_error",
-                        lambda msg, now: captured.setdefault("msg", msg)
+                        lambda msg, now, scale=1.0: captured.setdefault("msg", msg)
                         or Image.new("RGB", (1920, 462)))
     monkeypatch.setattr(providers, "fetch_all", lambda now=None, enabled=None: [])
     cfg_path = tmp_path / "config.toml"

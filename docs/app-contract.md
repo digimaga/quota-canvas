@@ -323,3 +323,15 @@ app may put into `providers.<p>.windows` (empty list = show every window).
 Strings the engine returns or draws — `advice`, `status_label`, `label`, `error`
 (in status.json and CLI `{"error"}`), panel text — are in the language chosen by
 `display.language` (`"auto"` = follow the Mac's language, Japanese or English).
+
+## Desktop overlay frames
+
+The app writes `desktop-request.json` atomically beside `frame.png` with
+`{"pixel_width": N}` for the overlay's actual width in display pixels, and removes
+it when the overlay is disabled. On each frame write the engine clamps the requested
+width to 3840; above 1920 it atomically writes a matching high-resolution
+`desktop.png`, otherwise it removes that file. Invalid or missing requests remove
+`desktop.png`. A request older than 24 hours is invalid; while enabled the app
+touches its request approximately hourly. The app uses `desktop.png` when it is
+no more than 15 seconds older than `frame.png`, and otherwise displays
+`frame.png`. Paused or sleeping frames remain unchanged until the next normal redraw.

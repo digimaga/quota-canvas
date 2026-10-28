@@ -20,6 +20,7 @@ final class DesktopOverlayController {
     struct FrameIdentity: Equatable {
         let modified: Date
         let size: UInt64
+        let url: URL
     }
 
     enum FrameLoad {
@@ -37,6 +38,7 @@ final class DesktopOverlayController {
     private var canDisplay = false
     private var previouslyAvailable = false
     private var frameIdentity: FrameIdentity?
+    private var requestedPixelWidth: Int?
 
     private init() {
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
@@ -66,7 +68,11 @@ final class DesktopOverlayController {
             Task { @MainActor in self?.settingsChanged() }
         })
         let refreshTimer = Timer(timeInterval: 10, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.reload() }
+            Task { @MainActor in
+                guard let self else { return }
+                if self.canDisplay { self.updateRequest(pixelWidth: self.requestedPixelWidth) }
+                self.reload()
+            }
         }
         RunLoop.main.add(refreshTimer, forMode: .common)
         timer = refreshTimer
@@ -85,6 +91,8 @@ final class DesktopOverlayController {
         guard started else { return }
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: Self.enabledKey) else {
+            requestedPixelWidth = nil
+            updateRequest(pixelWidth: nil)
             canDisplay = false
             loadGeneration += 1
             panel.orderOut(nil)
@@ -92,6 +100,8 @@ final class DesktopOverlayController {
         }
         let screenID = defaults.string(forKey: Self.screenKey) ?? ""
         guard let screen = NSScreen.screens.first(where: { Self.screenID($0) == screenID }) ?? NSScreen.screens.first else {
+            requestedPixelWidth = nil
+            updateRequest(pixelWidth: nil)
             canDisplay = false
             loadGeneration += 1
             panel.orderOut(nil)
@@ -102,8 +112,41 @@ final class DesktopOverlayController {
         let opacity = defaults.object(forKey: Self.opacityKey) == nil ? 1 : defaults.double(forKey: Self.opacityKey)
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(defaults.bool(forKey: Self.aboveIconsKey) ? .desktopIconWindow : .desktopWindow)) + 1)
         panel.alphaValue = min(1, max(0.3, opacity))
-        panel.setFrame(Self.overlayFrame(position: position, width: width, margin: Self.margin, visibleFrame: screen.visibleFrame), display: true)
+        let frame = Self.overlayFrame(position: position, width: width, margin: Self.margin, visibleFrame: screen.visibleFrame)
+        panel.setFrame(frame, display: true)
+        requestedPixelWidth = Int((frame.width * screen.backingScaleFactor).rounded())
+        updateRequest(pixelWidth: requestedPixelWidth)
         canDisplay = true
+    }
+
+    private func updateRequest(pixelWidth: Int?) {
+        let url = AppPaths.frameURL.deletingLastPathComponent().appendingPathComponent("desktop-request.json")
+        do {
+            try Self.updateRequest(at: url, pixelWidth: pixelWidth)
+        } catch {
+            NSLog("Desktop overlay request: %@", error.localizedDescription)
+        }
+    }
+
+    nonisolated static func updateRequest(at url: URL, pixelWidth: Int?, now: Date = Date()) throws {
+        let files = FileManager.default
+        guard let pixelWidth else {
+            if files.fileExists(atPath: url.path) { try files.removeItem(at: url) }
+            return
+        }
+        if let data = try? Data(contentsOf: url),
+           let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           (request["pixel_width"] as? Int) == pixelWidth {
+            let attributes = try files.attributesOfItem(atPath: url.path)
+            if let modified = attributes[.modificationDate] as? Date,
+               now.timeIntervalSince(modified) >= 3600 {
+                try files.setAttributes([.modificationDate: now], ofItemAtPath: url.path)
+            }
+            return
+        }
+        try files.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONSerialization.data(withJSONObject: ["pixel_width": pixelWidth])
+        try data.write(to: url, options: .atomic)
     }
 
     static func screenID(_ screen: NSScreen) -> String? {
@@ -156,13 +199,20 @@ final class DesktopOverlayController {
     }
 
     nonisolated static func loadFrame(at url: URL, previous: FrameIdentity?) -> FrameLoad {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let modified = attributes[.modificationDate] as? Date,
+        guard let frameAttributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let frameModified = frameAttributes[.modificationDate] as? Date else { return .unavailable }
+        let desktopURL = url.deletingLastPathComponent().appendingPathComponent("desktop.png")
+        let desktopAttributes = try? FileManager.default.attributesOfItem(atPath: desktopURL.path)
+        let desktopModified = desktopAttributes?[.modificationDate] as? Date
+        let useDesktop = desktopModified.map { frameModified.timeIntervalSince($0) <= 15 } ?? false
+        let selectedURL = useDesktop ? desktopURL : url
+        let attributes = useDesktop ? desktopAttributes : frameAttributes
+        guard let attributes, let modified = attributes[.modificationDate] as? Date,
               let size = (attributes[.size] as? NSNumber)?.uint64Value else { return .unavailable }
-        let identity = FrameIdentity(modified: modified, size: size)
+        let identity = FrameIdentity(modified: modified, size: size, url: selectedURL)
         if identity == previous { return .unchanged }
         let options = [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+        guard let source = CGImageSourceCreateWithURL(selectedURL as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, options) else { return .unavailable }
         return .image(image, identity)
     }
