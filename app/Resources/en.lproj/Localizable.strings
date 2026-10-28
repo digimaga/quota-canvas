@@ -251,3 +251,27 @@
 
 "取得: %@" = "Fetched: %@";
 "取得時刻: 不明" = "Fetch time: unknown";
+
+/* Desktop overlay */
+"デスクトップ" = "Desktop";
+"デスクトップに表示" = "Show on desktop";
+"位置" = "Position";
+"左上" = "Top left";
+"上中央" = "Top center";
+"右上" = "Top right";
+"左中央" = "Center left";
+"右中央" = "Center right";
+"左下" = "Bottom left";
+"下中央" = "Bottom center";
+"右下" = "Bottom right";
+"表示する画面" = "Display";
+"メインの画面" = "Main display";
+"接続されていない画面" = "Disconnected display";
+"幅" = "Width";
+"不透明度" = "Opacity";
+"重なり順" = "Stacking order";
+"デスクトップアイコンの奥" = "Behind desktop icons";
+"デスクトップアイコンの手前" = "In front of desktop icons";
+"どちらでも通常のアプリのウィンドウより奥に表示されます" = "Both options appear behind normal app windows.";
+
+"残高" = "Balance";

@@ -152,3 +152,18 @@ enabled = true
 # 過去の設定ファイルとの互換で受け付けるだけで、現在は使われない。
 # token_refresh = "cli"
 # color = "#8E75F0"
+
+[providers.openrouter]
+enabled = true
+# quota-canvas set-key openrouter で API キーを保存
+# color = "#8B5CF6"
+
+[providers.deepseek]
+enabled = true
+# quota-canvas set-key deepseek で API キーを保存
+# color = "#4D6BFE"
+
+[providers.kimi]
+enabled = true
+# quota-canvas set-key kimi で Moonshot API キーを保存
+# color = "#18A999"

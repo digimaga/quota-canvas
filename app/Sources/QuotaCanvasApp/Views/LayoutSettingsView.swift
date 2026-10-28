@@ -206,7 +206,7 @@ struct LayoutSettingsView: View {
                     LazyVGrid(columns: [GridItem(.flexible(minimum: 10, maximum: .infinity), alignment: .leading),
                                         GridItem(.flexible(minimum: 10, maximum: .infinity), alignment: .leading)],
                               alignment: .leading, spacing: 4) {
-                        ForEach(windows) { window in
+                        ForEach(windows.filter { $0.id.contains(":") }) { window in
                             Toggle(window.label, isOn: subBinding(slot, window.id))
                                 .toggleStyle(.checkbox)
                                 .lineLimit(1)
@@ -415,6 +415,12 @@ struct LayoutSettingsView: View {
                 service.windowList.map { window in
                     WindowChoice(id: "\(service.provider):\(window.key)",
                                  label: "\(service.displayName) \(window.displayLabel)")
+                }
+            }
+            // Balance-only providers have no window to offer as a main slot.
+            for balance in snapshot?.balances ?? [] {
+                if !windows.contains(where: { $0.id == balance.provider || $0.id.hasPrefix(balance.provider + ":") }) {
+                    windows.append(WindowChoice(id: balance.provider, label: balance.name))
                 }
             }
         } catch {

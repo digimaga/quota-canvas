@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import socket
 import urllib.error
 import urllib.parse
@@ -15,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .. import keychain
 from ..i18n import t
 from ..keychain import KeychainError
 from ..models import ProviderUsage
@@ -165,3 +168,33 @@ def _short_reason(exc: BaseException) -> str:
     if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)):
         return "invalid JSON"
     return type(exc).__name__  # never embed exception text (may contain secrets)
+
+
+def locate_api_key(provider: str, variable: str) -> Tuple[str, str]:
+    """Read a provider key without making a network request."""
+    stored = keychain.read(provider)
+    if stored:
+        return stored, t("providers.detect.keychain", provider=provider)
+    value = os.environ.get(variable)
+    if value and value.strip():
+        return value.strip(), t("providers.detect.env", variable=variable)
+    raise CredentialError(t("providers.api_key_not_set"))
+
+
+def detect_api_key(provider: str, name: str, variable: str) -> Detection:
+    """Describe whether the provider has a locally available API key."""
+    try:
+        _, source = locate_api_key(provider, variable)
+    except CredentialError as exc:
+        return Detection(False, None, str(exc))
+    return Detection(True, t("providers.detect.api_key", name=name, source=source))
+
+
+def finite_number(value: Any) -> float:
+    """Parse an API monetary value and reject non-finite or boolean values."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError("invalid numeric value")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("invalid numeric value")
+    return result

@@ -12,8 +12,16 @@ login_expired_run_grok = "ログインの期限切れ（grok を一度起動し�
 login_expired_refreshing = "ログインの期限切れ（自動更新中）"
 reset_credit = "リセット権"
 
+balance = "残高"
+insufficient_balance = "残高不足"
+
+limit_remaining = "上限まで残り"
+monthly_usage = "今月の使用"
+total_usage = "累計の使用"
+
 [window]
 weekly = "週間"
+monthly = "月間"
 five_hours = "5時間"
 days = "{n}日"
 hours = "{n}時間"
@@ -26,6 +34,10 @@ gemini = "Antigravity CLI (agy) の /usage"
 glm = "GLM (Z.ai) の API キー（{source}）"
 glm_keychain = "キーチェーン quota-canvas/glm"
 glm_env = "環境変数 ZAI_API_KEY"
+
+api_key = "{name} の API キー（{source}）"
+keychain = "キーチェーン quota-canvas/{provider}"
+env = "環境変数 {variable}"
 
 [claude]
 weekly_scoped = "週間 {model}"

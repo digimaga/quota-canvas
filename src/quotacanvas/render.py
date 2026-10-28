@@ -26,7 +26,7 @@ from typing import List, Optional, Sequence, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
 from .i18n import t
-from .models import Pace, PaceStatus, ProviderUsage, Window
+from .models import Balance, Pace, PaceStatus, ProviderUsage, Window
 
 __all__ = ["render", "render_error", "advice_text", "auto_layout", "group_columns",
            "PanelSpec", "BRAND_COLORS", "CANVAS_W", "CANVAS_H",
@@ -73,6 +73,9 @@ BRAND_COLORS = {
     "glm": "#3B82F6",
     "grok": "#E5E7EB",
     "gemini": "#8E75F0",
+    "openrouter": "#8B5CF6",
+    "deepseek": "#4D6BFE",
+    "kimi": "#18A999",
 }
 _BRAND_DEFAULT = (154, 163, 175)  # #9CA3AF for unknown services
 
@@ -218,27 +221,32 @@ def default_separator():
 class _S(object):
     """ImageDraw wrapper applying a global pixel offset (burn-in shift)."""
 
-    def __init__(self, img, offset):
-        # type: (Image.Image, Tuple[int, int]) -> None
+    def __init__(self, img, offset, scale=1.0):
+        # type: (Image.Image, Tuple[int, int], float) -> None
         self.d = ImageDraw.Draw(img)
         self.percent_colors = True  # % の数字を状態色にするか (render が設定)
         self.sep = None  # 文の区切り。None なら文言の " · " のまま (render が設定)
         self.ox = int(offset[0])
         self.oy = int(offset[1])
+        self.scale = scale
+        self.scaled_fonts = {}
+
+    def _font(self, font):
+        if self.scale == 1.0 or not hasattr(font, "font_variant"):
+            return font
+        if font not in self.scaled_fonts:
+            self.scaled_fonts[font] = font.font_variant(size=max(1, round(font.size * self.scale)))
+        return self.scaled_fonts[font]
 
     def _p(self, xy):
         n = len(xy)
         if n == 2:
-            return (xy[0] + self.ox, xy[1] + self.oy)
-        if n == 4:
-            return (xy[0] + self.ox, xy[1] + self.oy,
-                    xy[2] + self.ox, xy[3] + self.oy)
-        return tuple(v + (self.ox if i % 2 == 0 else self.oy)
+            return ((xy[0] + self.ox) * self.scale, (xy[1] + self.oy) * self.scale)
+        return tuple((v + (self.ox if i % 2 == 0 else self.oy)) * self.scale
                      for i, v in enumerate(xy))
 
     def _b(self, box):
-        return (box[0] + self.ox, box[1] + self.oy,
-                box[2] + self.ox, box[3] + self.oy)
+        return self._p(box)
 
     def _t(self, txt):
         """文言の区切り " · " (先頭の "· " も) を self.sep に置き換える。"""
@@ -256,37 +264,38 @@ class _S(object):
         return 2
 
     def text(self, xy, txt, font, fill, anchor=None):
-        self.d.text(self._p(xy), self._t(txt), font=font, fill=fill,
+        self.d.text(self._p(xy), self._t(txt), font=self._font(font), fill=fill,
                     anchor=anchor)
 
     def textlength(self, txt, font):
-        return self.d.textlength(self._t(txt), font=font)
+        return self.d.textlength(self._t(txt), font=self._font(font)) / self.scale
 
     def line(self, box, fill, width=1):
-        self.d.line(self._p(box), fill=fill, width=width)
+        self.d.line(self._p(box), fill=fill, width=max(1, round(width * self.scale)))
 
     def rectangle(self, box, fill=None, outline=None, width=1):
-        self.d.rectangle(self._b(box), fill=fill, outline=outline, width=width)
+        self.d.rectangle(self._b(box), fill=fill, outline=outline, width=max(1, round(width * self.scale)))
 
     def polygon(self, pts, fill=None, outline=None):
         self.d.polygon([self._p(p) for p in pts], fill=fill, outline=outline)
 
     def rrect(self, box, radius=0, fill=None, outline=None, width=1, corners=None):
         try:
-            self.d.rounded_rectangle(self._b(box), radius=radius, fill=fill,
-                                     outline=outline, width=width, corners=corners)
+            self.d.rounded_rectangle(self._b(box), radius=radius * self.scale, fill=fill,
+                                     outline=outline, width=max(1, round(width * self.scale)), corners=corners)
         except TypeError:  # Pillow < 9.1 has no `corners`
-            self.d.rounded_rectangle(self._b(box), radius=radius, fill=fill,
-                                     outline=outline, width=width)
+            self.d.rounded_rectangle(self._b(box), radius=radius * self.scale, fill=fill,
+                                     outline=outline, width=max(1, round(width * self.scale)))
 
 
 def _text_bbox(s, xy, txt, font, anchor):
     # type: (_S, Tuple[float, float], str, ImageFont.FreeTypeFont, str) -> Tuple[float, float, float, float]
     """bbox of `txt` as s.text would draw it (global offset removed, so the
     result is in the caller's local coordinates)."""
-    bb = s.d.textbbox((xy[0] + s.ox, xy[1] + s.oy), s._t(txt), font=font,
+    bb = s.d.textbbox(s._p(xy), s._t(txt), font=s._font(font),
                       anchor=anchor)
-    return (bb[0] - s.ox, bb[1] - s.oy, bb[2] - s.ox, bb[3] - s.oy)
+    return (bb[0] / s.scale - s.ox, bb[1] / s.scale - s.oy,
+            bb[2] / s.scale - s.ox, bb[3] / s.scale - s.oy)
 
 
 # ------------------------------------------------------------- primitives ---
@@ -809,6 +818,11 @@ def auto_layout(cards):
     groups = _group_services(cards)[:MAX_SERVICES]
     n = len(groups)
     n_large = n if n <= 4 else MAX_SERVICES - n   # n=5..8 -> 3, 2, 1, 0
+    # Balance-only panels occupy small slots; retain the old layout otherwise.
+    if any(g["best"] is None and not g["error"] for g in groups):
+        groups.sort(key=lambda g: g["best"] is None and not g["error"])
+        normal = sum(g["best"] is not None or bool(g["error"]) for g in groups)
+        n_large = min(normal, MAX_SERVICES - n, 4)
     specs = []  # type: List[PanelSpec]
     for i, g in enumerate(groups):
         size = "large" if i < n_large else "small"
@@ -1276,9 +1290,15 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
                    span=reset_span) \
         if win.resets_at is not None else t("render.card.no_reset")
 
+    balances = getattr(main_item[0], "balances", None) or []
+    if balances:
+        reset_line += " · " + _balance_text(balances[0])
+
     if narrow:
         l1 = el + (t("render.card.narrow_el_reset", span=reset_span)
                    if reset_span else "")
+        if balances:
+            l1 += " · " + _balance_text(balances[0])
         ind_lines = [l1, proj]
         for k, txt in enumerate(ind_lines):
             f, shown = _fit_text(s, txt, "w4", 16, cw, min_size=11)
@@ -1531,6 +1551,10 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     rtxt = t("render.card.reset_compact", span=reset_span) \
         if reset_span is not None else t("render.card.no_reset")
 
+    balances = getattr(main_item[0], "balances", None) or []
+    if balances:
+        rtxt = _balance_text(balances[0]) + " · " + rtxt
+
     # リセット行は「目盛り下端 (ゲージ下端 +4px) 〜アドバイス行 bbox 上端」の
     # 帯に、実フォントの bbox で上下 2px 以上の余白を保てる行数だけ描く
     # (大パネルの _draw_reset_credits と同じ方針)。2 行 (残り時間 + リセット
@@ -1566,12 +1590,39 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
            anchor="ls")
 # ------------------------------------------------------------------ entry ---
 
+def _balance_text(balance: Balance) -> str:
+    """Format a display-only amount with its label or the default balance label."""
+    symbol = {"USD": "$", "CNY": "¥"}.get(balance.currency, balance.currency + " ")
+    return "%s %s%.2f" % (balance.label or t("providers.balance"), symbol, balance.amount)
+
+
+def _draw_balance_card(s, box, g, theme):
+    # type: (_S, Tuple[int, int, int, int], dict, tuple) -> None
+    """Draw a balance-only provider in the selected panel."""
+    x0, y0, x1, y1 = box
+    usage = g["items"][0][0]
+    s.rrect(box, radius=CARD_RADIUS, fill=CARD_BG)
+    s.rrect((x0, y0, x0 + 6, y1), radius=3, fill=theme,
+            corners=(True, False, False, True))
+    x = x0 + 24
+    s.text((x, y0 + 24), g["name"], font=F("w7", 20), fill=TEXT, anchor="lm")
+    for i, b in enumerate(usage.balances):
+        text = _balance_text(b)
+        font, text = _fit_text(s, text, "w5", 18, x1 - x - 16, min_size=10)
+        s.text((x, y0 + 58 + i * 27), text, font=font, fill=TEXT, anchor="lm")
+    if usage.stale_error:
+        _draw_stale_mark(s, x1 - 16, y1 - 25, g["stale"], x1 - x - 16)
+
+
 def _draw_large_column(s, box, p, colors, gauge, now):
     # type: (_S, Tuple[int, int, int, int], dict, Optional[dict], str, datetime) -> None
     """One large column: a service card, or the gray error card when the
     provider's fetch failed."""
     theme = _brand_color(colors, p["g"]["provider"])
     if p["main"] is None:
+        if not p["g"]["error"] and p["g"]["items"][0][0].balances:
+            _draw_balance_card(s, box, p["g"], theme)
+            return
         _draw_error_card(s, box, p["g"], theme)
         return
     mi = p["main"]
@@ -1591,8 +1642,8 @@ def _draw_large_column(s, box, p, colors, gauge, now):
 
 def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
            layout=None, recommendation=None, percent_colors=True,
-           separator=None):
-    # type: (Sequence[Tuple[ProviderUsage, Optional[Pace]]], datetime, Tuple[int, int], str, Optional[dict], Optional[Sequence[PanelSpec]], Optional[str], bool) -> Image.Image
+           separator=None, scale=1.0):
+    # type: (Sequence[Tuple[ProviderUsage, Optional[Pace]]], datetime, Tuple[int, int], str, Optional[dict], Optional[Sequence[PanelSpec]], Optional[str], bool, Optional[str], float) -> Image.Image
     """Render the 1920x462 canvas. `cards` are (provider, pace) pairs in
     display order; pace=None marks a provider whose fetch failed.
     gauge: "remaining" (fill = what is left, default) or "used"
@@ -1612,8 +1663,8 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
     消える (残りの列が詰まる)。"""
     if gauge not in ("remaining", "used"):
         raise ValueError("gauge must be 'remaining' or 'used'")
-    img = Image.new("RGB", (CANVAS_W, CANVAS_H), BG)
-    s = _S(img, offset)
+    img = Image.new("RGB", (round(CANVAS_W * scale), round(CANVAS_H * scale)), BG)
+    s = _S(img, offset, scale)
     s.percent_colors = percent_colors
     s.sep = separator
     _draw_header(s, now, recommendation)
@@ -1643,7 +1694,9 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
             if p is None:
                 continue                # 空き段: 何も描かず位置だけ保つ
             theme = _brand_color(colors, p["g"]["provider"])
-            if p["main"] is None:
+            if p["main"] is None and not p["g"]["error"] and p["g"]["items"][0][0].balances:
+                _draw_balance_card(s, sbox, p["g"], theme)
+            elif p["main"] is None:
                 _draw_small_error(s, sbox, p["g"]["name"], p["g"]["error"],
                                   theme)
             else:
@@ -1653,10 +1706,10 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
     return img
 
 
-def render_error(message, now):
-    # type: (str, datetime) -> Image.Image
-    img = Image.new("RGB", (CANVAS_W, CANVAS_H), BG)
-    s = _S(img, (0, 0))
+def render_error(message, now, scale=1.0):
+    # type: (str, datetime, float) -> Image.Image
+    img = Image.new("RGB", (round(CANVAS_W * scale), round(CANVAS_H * scale)), BG)
+    s = _S(img, (0, 0), scale)
     _draw_header(s, now)
     cy = (HEADER_H + CANVAS_H) / 2.0
     s.rrect((CANVAS_W / 2.0 - 22, cy - 86, CANVAS_W / 2.0 + 22, cy - 78),

@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PIL import Image
 
-from . import gate, keychain, macpower, providers
+from . import desktop_frame, gate, keychain, macpower, providers
 from .i18n import LANGUAGE_CHOICES, current_language, set_language, t, translations
 from .config import (
     DEFAULT_PATH, PROVIDERS, Sleep, Config, ConfigError, brightness_for, config_from_dict,
@@ -49,7 +49,7 @@ BACKOFF_BASE = timedelta(minutes=5)
 SHIFT_EVERY = timedelta(minutes=3)
 SHIFTS = [(0, 0), (4, 0), (4, 4), (0, 4), (-4, 4), (-4, 0), (-4, -4), (0, -4), (4, -4)]
 
-PROVIDER_ORDER = {"claude": 0, "codex": 1, "glm": 2, "grok": 3, "gemini": 4}
+PROVIDER_ORDER = {"claude": 0, "codex": 1, "glm": 2, "grok": 3, "gemini": 4, "openrouter": 5, "deepseek": 6, "kimi": 7}
 
 Card = Tuple[ProviderUsage, Optional[Pace]]
 
@@ -87,10 +87,14 @@ def build_cards(usages: List[ProviderUsage], history: History, now: datetime,
     cards: List[Tuple[tuple, Card]] = []
     for u in usages:
         if u.error and not u.windows:
-            if u.error in translations("providers.no_credentials"):
+            if (u.error in translations("providers.no_credentials") or
+                    (u.provider in gate.NON_ROUTING_PROVIDERS
+                     and u.error in translations("providers.api_key_not_set"))):
                 continue  # the service isn't set up on this Mac; nothing to warn about
             cards.append(((1, PROVIDER_ORDER.get(u.provider, 9), ""), (u, None)))
             continue
+        if u.balances and not u.windows and not u.error:
+            cards.append(((1, PROVIDER_ORDER.get(u.provider, 9), ""), (u, None)))
         allowed = provider_windows.get(u.provider) if provider_windows else None
         for w in u.windows:
             parent = None
@@ -291,7 +295,7 @@ def _output(img, screen, out: Optional[Path]) -> object:
 
 def _write_app_files(cfg: Config, cards: List[Card], usages: List[ProviderUsage],
                      now: datetime, img, layout=None, recommendation=None,
-                     all_windows: Optional[List[Card]] = None) -> None:
+                     all_windows: Optional[List[Card]] = None, offset=(0, 0)) -> None:
     """status.json と frame.png を書く (app 連携用、docs/app-contract.md)。
     書けなくても run は止めない。layout は render に渡した配置 (None = 自動配置)、
     recommendation は recommend.recommend の返り値 (None = 推奨なし)、
@@ -322,18 +326,26 @@ def _write_app_files(cfg: Config, cards: List[Card], usages: List[ProviderUsage]
             write_frame(img)
         except OSError as exc:
             log.warning("frame.png を書けません: %s", exc)
+        else:
+            try:
+                desktop_frame.update(lambda scale: _render_frame(
+                    cards, now, cfg, layout,
+                    recommendation=recommendation.text if recommendation else None,
+                    offset=offset, scale=scale))
+            except Exception as exc:
+                log.warning("desktop.png を更新できません: %s", exc)
 
 
 def _render_frame(cards: List[Card], now: datetime, cfg: Config, layout,
-                  recommendation: Optional[str] = None, offset=(0, 0)):
+                  recommendation: Optional[str] = None, offset=(0, 0), scale=1.0):
     """1 フレームを描く。recommendation はヘッダに描く推奨 1 行 (F1)。"""
     if not cards:
-        return render_error(t("cli.no_usage"), now)
+        return render_error(t("cli.no_usage"), now, scale=scale)
     return render(cards, now, offset=offset, gauge=cfg.display.gauge,
                   colors=_brand_colors(cfg), layout=layout,
                   recommendation=recommendation,
                   percent_colors=cfg.display.percent_colors,
-                  separator=cfg.display.separator or default_separator())
+                  separator=cfg.display.separator or default_separator(), scale=scale)
 
 
 def _render_layout(cfg: Config, cards: Optional[List[Card]] = None):
@@ -1217,7 +1229,7 @@ def main(argv=None) -> int:
                     screen = sent_to
             # 送ったフレームだけ frame.png に書く (黒で消したときはそのまま)
             _write_app_files(cfg, cards, visible_usages, now, sent, layout=layout,
-                             recommendation=rec, all_windows=windows_all)
+                             recommendation=rec, all_windows=windows_all, offset=shift)
         # 待ち時間を 1 秒刻みに分け、設定変更・反映要求・スリープ状態の変化を監視する。
         # 延期した取り直しがあれば、その時刻で待ちを打ち切る (眠っている間は縮めない)。
         wait = redraw

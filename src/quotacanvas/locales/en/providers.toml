@@ -12,8 +12,16 @@ login_expired_run_grok = "Login expired (run grok once)"
 login_expired_refreshing = "Login expired (auto-refreshing)"
 reset_credit = "Reset credits"
 
+balance = "Balance"
+insufficient_balance = "Insufficient balance"
+
+limit_remaining = "Remaining to limit"
+monthly_usage = "Used this month"
+total_usage = "Total usage"
+
 [window]
 weekly = "Weekly"
+monthly = "Monthly"
 five_hours = "5h"
 days = "{n}d"
 hours = "{n}h"
@@ -26,6 +34,10 @@ gemini = "Antigravity CLI (agy) /usage"
 glm = "GLM (Z.ai) API key ({source})"
 glm_keychain = "keychain quota-canvas/glm"
 glm_env = "env ZAI_API_KEY"
+
+api_key = "{name} API key ({source})"
+keychain = "keychain quota-canvas/{provider}"
+env = "env {variable}"
 
 [claude]
 weekly_scoped = "Weekly {model}"

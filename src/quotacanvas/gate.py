@@ -31,8 +31,9 @@ from .i18n import t
 if TYPE_CHECKING:  # 循環 import を避ける (実行時は duck typing)
     from .config import Routing
 
-# 判定に使う canonical な provider 名 (config.PROVIDERS と同じ。単独で保つ)
+# routing check の既定ワーカー名。残高表示専用のサービスは含めない。
 KNOWN_PROVIDERS = ("claude", "codex", "glm", "grok", "gemini")
+NON_ROUTING_PROVIDERS = frozenset(("openrouter", "deepseek", "kimi"))
 
 # ワーカー名の制約。既定ワーカーの名前は status.json 由来の windows[].provider の
 # 生の文字列なので、この条件を満たす名前だけを判定・表示に使う (format_line の
@@ -447,10 +448,10 @@ def default_workers(status: Optional[dict]) -> Dict[str, List[str]]:
     present: List[str] = []
     for w in windows:
         p = w.get("provider")
-        if isinstance(p, str) and p and p not in present and safe_worker_name(p):
+        if isinstance(p, str) and p and p not in NON_ROUTING_PROVIDERS and p not in present and safe_worker_name(p):
             present.append(p)
     for p in error_providers(status):
-        if p not in present:
+        if p not in NON_ROUTING_PROVIDERS and p not in present:
             present.append(p)
     ordered = [p for p in KNOWN_PROVIDERS if p in present] \
         + [p for p in present if p not in KNOWN_PROVIDERS]
@@ -492,7 +493,8 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
     窓が見つからない / provider がエラー / データが古いときは verdict "unknown"
     を返し、起動を止めない (fail-open)。
     """
-    windows = status_windows(status)
+    windows = [w for w in status_windows(status)
+               if w.get("provider") not in NON_ROUTING_PROVIDERS]
     errors = error_providers(status)
     floor = float(getattr(routing_cfg, "floor_percent", DEFAULT_FLOOR_PERCENT))
     floor_hours = float(getattr(routing_cfg, "floor_hours", DEFAULT_FLOOR_HOURS))
@@ -505,14 +507,22 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
     holds: Dict[str, str] = {}
     for wid, reset in previous_holds.items():
         reset_dt = parse_dt(reset)
-        if isinstance(wid, str) and reset_dt is not None and reset_dt > now:
+        if (isinstance(wid, str) and wid.split(":", 1)[0] not in NON_ROUTING_PROVIDERS
+                and reset_dt is not None and reset_dt > now):
             holds[wid] = reset
     previous_holds = dict(holds)
     margin_minutes = getattr(routing_cfg, "short_over_margin_minutes", None)
 
     workers: List[WorkerResult] = []
     for name, patterns in specs.items():
-        providers = _worker_providers(name, patterns)
+        if name in NON_ROUTING_PROVIDERS:
+            continue
+        original_patterns = patterns or []
+        patterns = [p for p in original_patterns
+                    if p.split(":", 1)[0] not in NON_ROUTING_PROVIDERS]
+        if original_patterns and not patterns:
+            continue
+        providers = _worker_providers(name, patterns) - NON_ROUTING_PROVIDERS
         mine = [w for w in windows if w.get("provider") in providers]
         if any(_is_stale_window(w, stale_min, now) for w in mine):
             workers.append(WorkerResult(name=name, verdict="unknown", reason="stale",

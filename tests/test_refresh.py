@@ -749,7 +749,7 @@ def test_run_filters_cached_usage_on_config_reload_and_restores_on_enable(monkey
     _mock_fetch(monkeypatch, calls)
     monkeypatch.setattr(cli, "render", lambda cards, now, **kw: rendered.append(
         [pu.provider for pu, _ in cards]) or Image.new("RGB", (8, 8)))
-    monkeypatch.setattr(cli, "render_error", lambda *a: rendered.append([]) or Image.new("RGB", (8, 8)))
+    monkeypatch.setattr(cli, "render_error", lambda *a, **k: rendered.append([]) or Image.new("RGB", (8, 8)))
     monkeypatch.setattr(cli, "write_status", lambda payload, *a, **kw: written.append(payload))
     monkeypatch.setattr(cli, "write_frame", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "STATUS_PATH", tmp_path / "status.json")

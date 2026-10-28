@@ -376,7 +376,7 @@ def test_window_identity_variants():
 # ------------------------------------------------- Provider / REGISTRY 構造
 
 def test_registry_shape():
-    assert list(providers.REGISTRY) == ["claude", "codex", "glm", "grok", "gemini"]
+    assert list(providers.REGISTRY) == ["claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek", "kimi"]
     for pid, provider in providers.REGISTRY.items():
         assert provider.id == pid
         assert callable(provider.detect) and callable(provider.fetch)
@@ -488,8 +488,8 @@ def test_fetch_all_picks_up_registry_additions(monkeypatch):
     dummy = Provider("grok", "Grok", False, lambda: Detection(True, "テスト"), fetch)
     monkeypatch.setitem(providers.REGISTRY, "grok", dummy)
     results = providers.fetch_all(NOW)
-    assert [r.provider for r in results] == ["claude", "codex", "glm", "grok", "gemini"]
-    assert results[-2].name == "Grok"
+    assert [r.provider for r in results] == ["claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek", "kimi"]
+    assert next(r for r in results if r.provider == "grok").name == "Grok"
 
 
 # ------------------------------------------------------- GLM キーの探索順
@@ -615,6 +615,8 @@ def test_detect_all_fallback_error_english(monkeypatch):
     _install(monkeypatch, "claude", Detection(False, None, None), None)
     # gemini は実機の agy を見に行くので、既定エラーの確認では差し替える
     _install(monkeypatch, "gemini", Detection(False, None, None), None)
+    for pid in ("openrouter", "deepseek", "kimi"):
+        _install(monkeypatch, pid, Detection(False, None, None), None)
     i18n.set_language("en")
     try:
         entries = providers.detect_all(NOW)

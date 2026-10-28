@@ -92,8 +92,25 @@ struct MenuPopoverView: View {
                 Divider()
             }
             cardList
+            balancesSection
             resetCreditsSection
             errorList
+        }
+    }
+
+    @ViewBuilder
+    private var balancesSection: some View {
+        let balances = statusStore.status?.balances ?? []
+        if !balances.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("残高").font(.caption).bold()
+                ForEach(Array(balances.enumerated()), id: \.offset) { _, balance in
+                    HStack {
+                        Text("\(balance.name): \(balance.displayText)")
+                        if balance.staleError != nil { Text("取得失敗中").foregroundStyle(.orange) }
+                    }.font(.caption2)
+                }
+            }
         }
     }
 
@@ -147,15 +164,42 @@ struct MenuPopoverView: View {
     @ViewBuilder
     private var cardList: some View {
         let cards = statusStore.status?.cards ?? []
-        if cards.isEmpty {
+        if cards.isEmpty && (statusStore.status?.balances ?? []).isEmpty {
             Text("表示するカードがありません").font(.callout).foregroundStyle(.secondary)
         }
-        ForEach(cards, id: \.id) { card in
-            CardRow(card: card, gauge: statusStore.status?.gauge)
-            if card.id != cards.last?.id {
+        let ordered = Self.orderedCards(cards, layout: statusStore.status?.layout)
+        ForEach(Array(ordered.enumerated()), id: \.offset) { index, entry in
+            CardRow(card: entry.card, gauge: statusStore.status?.gauge)
+                .padding(.leading, entry.isSub ? 12 : 0)
+            if index != ordered.count - 1 {
                 Divider()
             }
         }
+    }
+
+    /// 画面の配置（status.json の layout）の左のパネルから順に、主枠 → そのサブ枠の順で並べる。
+    /// main が provider ID のときはそのサービスの未使用の最初のカードに当てる。
+    /// 配置に無いカードは元の順で末尾に置く。
+    static func orderedCards(_ cards: [StatusCard], layout: [LayoutPanel]?) -> [(card: StatusCard, isSub: Bool)] {
+        var used = Set<Int>()
+        var result: [(card: StatusCard, isSub: Bool)] = []
+        func take(_ ref: String?, isSub: Bool) {
+            guard let ref, !ref.isEmpty else { return }
+            let index = cards.indices.first { !used.contains($0) && cards[$0].id == ref }
+                ?? (ref.contains(":") ? nil
+                    : cards.indices.first { !used.contains($0) && cards[$0].provider == ref })
+            guard let index else { return }
+            used.insert(index)
+            result.append((cards[index], isSub))
+        }
+        for panel in layout ?? [] {
+            take(panel.main, isSub: false)
+            for sub in panel.subs ?? [] { take(sub, isSub: true) }
+        }
+        for index in cards.indices where !used.contains(index) {
+            result.append((cards[index], false))
+        }
+        return result
     }
 
     @ViewBuilder

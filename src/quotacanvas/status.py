@@ -202,6 +202,10 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
             if pace is not None
             for item in (_window_item(pu, pace),)
         ],
+        "balances": [dict(provider=u.provider, name=u.name, currency=b.currency,
+                          amount=b.amount, label=b.label, fetched_at=_iso(u.fetched_at),
+                          stale_error=u.stale_error)
+                     for u in usages for b in u.balances],
         "errors": [
             {"provider": u.provider, "name": u.name, "error": u.error}
             for u in usages if u.error

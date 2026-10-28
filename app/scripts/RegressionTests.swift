@@ -87,6 +87,14 @@ struct RegressionTests {
         let expectedAge = RelativeDateTimeFormatter().localizedString(for: first.fetchedAt!, relativeTo: reference)
         check(fetchText.contains(expectedAge), "card shows fetch age independent of redraw")
         check(CardRow(card: decoded.cards![1], gauge: nil).fetchText(now: reference) == String(localized: "取得時刻: 不明"), "unknown fetch time shown")
+        let balanceJSON = #"{"balances":[{"provider":"kimi","name":"Kimi","currency":"USD","amount":49.58,"label":"今月の使用","stale_error":"HTTP 429","fetched_at":"2026-01-02T03:04:05Z"},{"provider":"deepseek","name":"DeepSeek","currency":"CNY","amount":110}]}"#
+        let balanceStatus = try JSONDecoder().decode(EngineStatus.self, from: Data(balanceJSON.utf8))
+        check(balanceStatus.balances?.first?.amount == 49.58, "balance decoding")
+        check(balanceStatus.balances?.first?.staleError == "HTTP 429", "balance stale state")
+        check(balanceStatus.balances?.first?.fetchedAt != nil, "balance fetched_at decoding")
+        check(balanceStatus.balances?.first?.displayText == "今月の使用 $49.58", "balance label precedes amount")
+        check(balanceStatus.balances?.last?.fetchedAt == nil, "optional balance fetched_at")
+        check(balanceStatus.balances?.last?.displayText.contains("¥110.00") == true, "default balance label")
 
         let input = Data(repeating: 65, count: 1_000_000)
         let code = "import sys; sys.stderr.buffer.write(b'e'*1000000); sys.stderr.flush(); sys.stdout.buffer.write(b'o'*1000000); sys.stdout.flush(); data=sys.stdin.buffer.read(); sys.stdout.buffer.write(str(len(data)).encode())"
@@ -123,6 +131,23 @@ struct RegressionTests {
         let result = try await client.getConfig()
         check(result.paused, "concurrent pause retained")
         check(result.brightness == 25, "concurrent brightness retained")
+        let menuCards = try JSONDecoder().decode([StatusCard].self, from: Data("""
+            [{"id":"claude:weekly","provider":"claude"},{"id":"claude:5h","provider":"claude"},
+             {"id":"codex:weekly","provider":"codex"},{"id":"gemini:weekly","provider":"gemini"},
+             {"id":"glm:5h","provider":"glm"},{"id":"other:x","provider":"other"}]
+            """.utf8))
+        let menuLayout = try JSONDecoder().decode([LayoutPanel].self, from: Data("""
+            [{"main":"codex:weekly","subs":[]},{"main":"claude:weekly","subs":["claude:5h"]},
+             {"main":"gemini","subs":[]},{"main":"","subs":[]},{"main":"glm:5h"}]
+            """.utf8))
+        let menuOrder = MenuPopoverView.orderedCards(menuCards, layout: menuLayout)
+        check(menuOrder.map { $0.card.id ?? "" } ==
+              ["codex:weekly", "claude:weekly", "claude:5h", "gemini:weekly", "glm:5h", "other:x"],
+              "menu cards follow panel order with subs after main")
+        check(menuOrder.map(\.isSub) == [false, false, true, false, false, false], "menu sub cards marked")
+        check(MenuPopoverView.orderedCards(menuCards, layout: nil).map { $0.card.id ?? "" } ==
+              menuCards.map { $0.id ?? "" }, "menu keeps card order without layout")
+
         print("Regression checks: \(checks) passed")
     }
 }
