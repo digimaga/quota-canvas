@@ -2,7 +2,7 @@
 
 English | [日本語](README.ja.md)
 
-A macOS tool that displays remaining quota and usage pace for Claude, Codex, GLM, Grok, Gemini, OpenRouter, DeepSeek, and Kimi on a TURZX 9.2" USB screen. It consists of a Python engine and a menu bar app in `app/`.
+A macOS tool that displays remaining quota and usage pace for Claude, Codex, GLM, Grok, Gemini, OpenRouter, DeepSeek, and Kimi on a TURZX 9.2" USB screen, or as a panel embedded in the Mac desktop when you have no screen. It consists of a Python engine and a menu bar app in `app/`.
 
 ![QuotaCanvas example (remaining quota and pace for Codex, Claude, Gemini, Grok, and GLM)](docs/images/sample-en.png)
 
@@ -26,7 +26,7 @@ Requires Apple Silicon and macOS 14 or later. No Homebrew or Python installation
    - macOS 15 or later: open System Settings > Privacy & Security, scroll down, and click "Open Anyway" for QuotaCanvas.
    - macOS 14: right-click QuotaCanvas in Finder and choose Open.
 4. A gauge icon appears in the menu bar. In Settings… > Services, choose the services to show and enter an API key for services that need one.
-5. Connect the TURZX screen over USB; quotas appear within about a minute. Without the screen, turn off "Use the TURZX screen" in Settings > Display.
+5. Connect the TURZX screen over USB; quotas appear within about a minute. Without the screen, turn off "Use the TURZX screen" in Settings > Display, and turn on "Show on desktop" in Settings > Desktop to show the same panel on the Mac desktop.
 
 To update, drag the QuotaCanvas.app from the new DMG to Applications and replace the old one.
 

@@ -77,7 +77,7 @@ if "$engine"; then
     "$PYTHON" -I -m pip install --no-cache-dir --no-compile "$BUILD_SRC"
     rm -rf "$BUILD_SRC"
     trap - EXIT
-    rm -f "$ENGINE/python/lib/python3.13/site-packages/turzx-0.1.0.dist-info/direct_url.json"
+    rm -f "$ENGINE/python/lib/python3.13/site-packages/turzx-"*.dist-info/direct_url.json
 
     # Build libusb from its verified release for macOS 14 and arm64.
     LIBUSB_VERSION=1.0.30

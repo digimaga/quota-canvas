@@ -1,6 +1,6 @@
 {
   "name": "quota-canvas-routing",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Adds quota-canvas's per-worker quota verdict (one line) plus routing rules to the session start context. macOS only.",
   "author": {
     "name": "digimaga",

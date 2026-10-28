@@ -2,7 +2,7 @@
 
 [English](README.md) | 日本語
 
-Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi の利用枠の残量とペースを TURZX 9.2" USB 画面に表示する macOS 用ツール。Python エンジンと `app/` のメニューバーアプリで構成する。
+Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi の利用枠の残量とペースを TURZX 9.2" USB 画面に表示する macOS 用ツール。画面が無くても、Mac のデスクトップに埋め込んで表示できる。Python エンジンと `app/` のメニューバーアプリで構成する。
 
 ![QuotaCanvas の表示例（Codex・Claude・Gemini・Grok・GLM の残量とペース）](docs/images/sample-ja.png)
 
@@ -26,7 +26,7 @@ Apple Silicon、macOS 14 以上に対応。Homebrew や Python のインスト�
    - macOS 15 以降: 「システム設定 > プライバシーとセキュリティ」を開き、下の方にある QuotaCanvas の「このまま開く」を押す。
    - macOS 14: Finder で QuotaCanvas を右クリックして「開く」を選ぶ。
 4. メニューバーにゲージのアイコンが出る。「設定… > サービス」で表示するサービスを選び、API キーが要るサービスはキーを入れる。
-5. TURZX 画面を USB でつなぐと、1 分ほどで残量が表示される。画面を使わない場合は「設定 > 表示」で「TURZX 画面を使う」をオフにする。
+5. TURZX 画面を USB でつなぐと、1 分ほどで残量が表示される。画面を使わない場合は「設定 > 表示」で「TURZX 画面を使う」をオフにし、「設定 > デスクトップ」で「デスクトップに表示」をオンにすると、同じ表示を Mac のデスクトップに出せる。
 
 更新するときは、新しい DMG の QuotaCanvas.app を同じように Applications へドラッグして置き換える。
 
