@@ -4,7 +4,9 @@ English | [日本語](README.ja.md)
 
 A macOS menu bar app that shows remaining quota and usage pace for Claude, Codex, GLM, Grok, Gemini, OpenRouter, DeepSeek, and Kimi on your desktop, in the menu bar, or on an optional TURZX 9.2" USB screen.
 
-![QuotaCanvas panel (example on the TURZX screen)](docs/images/sample-en.png)
+![QuotaCanvas panel embedded in the macOS desktop](docs/images/desktop-ja.png)
+
+Embedded in the desktop like wallpaper — your icons stay on top, and windows cover it as usual.
 
 ## Features
 
@@ -50,6 +52,8 @@ To build the DMG, install Swift Command Line Tools, then run `cd app && ./script
 To uninstall, turn off “Run the engine in the background” in settings before deleting the app. If the app was deleted first, use `launchctl bootout` on each label in `~/Library/LaunchAgents/com.digimaga.quota-canvas.app*.plist`, then delete those plists.
 
 ## TURZX screen (optional)
+
+![QuotaCanvas panel on the TURZX screen](docs/images/sample-en.png)
 
 TURZX 9.2-inch USB secondary screen, 1920×462 IPS. A single USB Type-C cable supplies power and data. macOS sees it as a USB device named `TURZX1.0` (VID `0x1cbe` / PID `0x0092`), not as a display. No dedicated driver is required; communication uses `libusb`.
 

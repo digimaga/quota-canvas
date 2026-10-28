@@ -4,7 +4,9 @@
 
 Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi の利用枠の残量とペースを、Mac のデスクトップやメニューバー、または任意の TURZX 9.2" USB 画面に表示する macOS アプリ。
 
-![QuotaCanvas のパネル（TURZX 画面の表示例）](docs/images/sample-ja.png)
+![macOS のデスクトップに埋め込んだ QuotaCanvas のパネル](docs/images/desktop-ja.png)
+
+壁紙のようにデスクトップに埋め込まれ、アイコンはその上に、ウィンドウはいつも通り手前に出る。
 
 ## できること
 
@@ -50,6 +52,8 @@ DMG をビルドするには Swift Command Line Tools を用意し、`cd app && 
 アンインストールは、設定で「エンジンを常駐させる」をオフにしてからアプリを削除する。オフにせず削除した場合は `~/Library/LaunchAgents/com.digimaga.quota-canvas.app*.plist` の各ラベルを `launchctl bootout` で停止してから plist を削除する。
 
 ## TURZX 画面（任意）
+
+![TURZX 画面に表示した QuotaCanvas のパネル](docs/images/sample-ja.png)
 
 TURZX 9.2 インチ USB セカンダリースクリーン（1920×462 IPS）。USB Type-C ケーブル 1 本で給電と通信を行う。macOS のディスプレイとしては認識されず、USB 機器「TURZX1.0」（VID `0x1cbe` / PID `0x0092`）として扱う。専用ドライバーは不要で、通信には `libusb` を使う。
 
