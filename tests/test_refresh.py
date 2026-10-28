@@ -754,6 +754,7 @@ def test_run_filters_cached_usage_on_config_reload_and_restores_on_enable(monkey
     monkeypatch.setattr(cli, "write_frame", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "STATUS_PATH", tmp_path / "status.json")
     monkeypatch.setattr(cli.gate, "BURN_PATH", tmp_path / "burn.json")
+    monkeypatch.setattr(cli.gate, "OFF_PATH", tmp_path / "off.json")
     clock = FakeClock(limit=8, plan=[
         (2, lambda: cfg_path.write_text(disabled, encoding="utf-8")),
         (4, lambda: cfg_path.write_text(enabled, encoding="utf-8")),
