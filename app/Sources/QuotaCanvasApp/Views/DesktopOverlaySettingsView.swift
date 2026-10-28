@@ -37,7 +37,14 @@ struct DesktopOverlaySettingsView: View {
             LabeledContent("幅") {
                 HStack {
                     Slider(value: $width, in: 320...1920, step: 1)
-                    Text("\(Int(width)) pt").monospacedDigit().frame(width: 70, alignment: .trailing)
+                    // スライダーに加えて 1pt 単位で直接入力・増減できるようにする
+                    TextField("幅", value: $width, format: .number.precision(.fractionLength(0)).grouping(.never))
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
+                        .monospacedDigit()
+                        .frame(width: 60)
+                    Stepper("幅", value: $width, in: 320...1920, step: 1).labelsHidden()
+                    Text(verbatim: "pt")
                 }
             }
             LabeledContent("不透明度") {
@@ -58,7 +65,12 @@ struct DesktopOverlaySettingsView: View {
         .onChange(of: enabled) { _, _ in DesktopOverlayController.shared.settingsChanged() }
         .onChange(of: position) { _, _ in DesktopOverlayController.shared.settingsChanged() }
         .onChange(of: screen) { _, _ in DesktopOverlayController.shared.settingsChanged() }
-        .onChange(of: width) { _, _ in DesktopOverlayController.shared.settingsChanged() }
+        .onChange(of: width) { _, newValue in
+            // 手入力で範囲外や小数が入ったら 320〜1920 の整数に直す（直した値で再度呼ばれる）
+            let clamped = min(1920, max(320, newValue.rounded()))
+            if clamped != newValue { width = clamped; return }
+            DesktopOverlayController.shared.settingsChanged()
+        }
         .onChange(of: opacity) { _, _ in DesktopOverlayController.shared.settingsChanged() }
         .onChange(of: aboveIcons) { _, _ in DesktopOverlayController.shared.settingsChanged() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
