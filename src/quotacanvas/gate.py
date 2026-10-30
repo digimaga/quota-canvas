@@ -456,6 +456,11 @@ def _judge(entry: dict, floor_percent: float, floor_hours: float, now: datetime,
             return "go", "over_near_reset"
         return "reserve", "over"
     reset = parse_dt(entry.get("resets_at"))
+    cautious = parse_dt(entry.get("cautious_exhausts_at"))
+    if (not short and st in ("tight", "on_track", "spare") and reset is not None
+            and cautious is not None and (reset - cautious).total_seconds() > long_margin_minutes * 60):
+        # 使用率の端数 (最大 1%) を見込むとリセット前に尽きる。境界では go にしない
+        return "reserve", "over_rounding"
     leftover, tolerance = entry.get("projected_leftover"), entry.get("leftover_tolerance")
     if (st in ("tight", "on_track") and reset is not None
             and parse_dt(spare_holds.get(entry.get("id"))) == reset
@@ -663,7 +668,7 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             remaining=norm_remaining(entry.get("remaining")),
             status=norm_status(entry.get("status")),
             resets_at=entry.get("resets_at") if isinstance(entry.get("resets_at"), str) else None,
-            exhausts_at=entry.get("exhausts_at") if isinstance(entry.get("exhausts_at"), str) else None,
+            exhausts_at=_exhausts_field(entry, reason),
             burn_until=to_local(until).isoformat() if active else None,
             provider=_one_provider(providers),
         ))
@@ -676,6 +681,13 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
 
 
 # ------------------------------------------------------------------ 表示 (line / check)
+
+def _exhausts_field(entry: dict, reason: str) -> Optional[str]:
+    """WorkerResult.exhausts_at: over_rounding のときは端数を見込んだ枯渇見込み時刻。"""
+    key = "cautious_exhausts_at" if reason == "over_rounding" else "exhausts_at"
+    value = entry.get(key)
+    return value if isinstance(value, str) else None
+
 
 def model_verdict(name: str, model: Any, result: RoutingResult) -> WorkerResult:
     """合成判定。確定した stop を優先し、それ以外に未知があれば unknown。"""
@@ -746,8 +758,8 @@ def format_worker_segments(result: RoutingResult, now: datetime, lang: Optional[
         text = "%s=%s(%s" % (w.name, w.verdict, pct_str(w.remaining))
         if w.reason == "disabled":
             text += "," + t("routing.gate.disabled")
-        if w.status == "over":
-            text += "," + t("routing.gate.over")
+        if w.status == "over" or w.reason == "over_rounding":
+            text += "," + t("routing.gate.over" if w.status == "over" else "routing.gate.over_rounding")
             ex = fmt_reset(w.exhausts_at, now)
             if ex:
                 text += t("routing.gate.exhausts", dt=ex)

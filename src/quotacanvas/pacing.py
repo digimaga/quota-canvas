@@ -343,6 +343,22 @@ def compute_pace(window: Window, samples: List[Sample], now: datetime, tz=None,
     remaining_fraction = min(1.0, max(0.0, t_days / length_days)) if length_days > 0 else 0.0
     tolerance = end_tolerance + (early_tolerance - end_tolerance) * remaining_fraction
 
+    # 使用率は多くの provider が整数で返すので、実際は最大 1% 多く使っている。週の序盤は
+    # 経過が短く 1% の差で速度が大きく変わり、10% → 11% の 1 段で「収まる」から「超過」へ
+    # 入れ替わる。1% 多めに見ても届くかを別に出し、振り分け判定が境界で go にしないようにする。
+    cautious_exhausts_at = None
+    if (length >= _DAY and float(used).is_integer() and used < 99 and exhausts_at is None
+            and elapsed.total_seconds() > 0):
+        used_hi = used + 1.0
+        rate_recent_hi = _recent_rate(used_hi, same_period, now, wall_elapsed, length, span)
+        rate_win_hi = used_hi / _as_days(elapsed)
+        rate_hi = (0.5 * rate_win_hi + 0.5 * rate_recent_hi if rate_recent_hi is not None
+                   else rate_win_hi)
+        if rate_hi > 0:
+            reached = advance((100.0 - used_hi) / rate_hi)
+            if reached < resets:
+                cautious_exhausts_at = reached
+
     if used >= 100:
         status = PaceStatus.EXHAUSTED
     elif exhausts_at is not None:
@@ -363,4 +379,5 @@ def compute_pace(window: Window, samples: List[Sample], now: datetime, tz=None,
         daily_used=_daily_used(window, same_period, start, now, used),
         burst_rate_per_day=burst_rate, burst_exhausts_at=burst_exhausts_at,
         bedtime_at=bedtime_at, allowance_per_day=allowance,
+        cautious_exhausts_at=cautious_exhausts_at,
     )

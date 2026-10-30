@@ -109,3 +109,7 @@ class Pace:
     allowance_per_day: Optional[float] = None
     projected_leftover: Optional[float] = None  # predicted unused percentage points
     leftover_tolerance: Optional[float] = None  # tolerance at this point in the window
+    # 1 日以上の窓で、使用率が整数 (端数切り捨て・丸めで最大 1% 低く見えている) のとき、
+    # 1% 多く使っていたと仮定してもリセット前に 100% に届く時刻。status が over 以外のときだけ。
+    # 振り分け判定 (gate.py) が境界での go を避けるために使う。表示の status は変えない。
+    cautious_exhausts_at: Optional[datetime] = None

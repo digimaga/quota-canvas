@@ -96,6 +96,8 @@ def _window_item(pu: ProviderUsage, pace: Pace) -> Dict[str, Any]:
         item["leftover_tolerance"] = pace.leftover_tolerance
     if pace.exhausts_at is not None:
         item["exhausts_at"] = _iso(pace.exhausts_at)
+    if pace.cautious_exhausts_at is not None:
+        item["cautious_exhausts_at"] = _iso(pace.cautious_exhausts_at)
     if pu.fetched_at is not None:
         item["fetched_at"] = _iso(pu.fetched_at)
     if pu.stale_error:

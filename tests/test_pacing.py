@@ -308,3 +308,31 @@ def test_missing_rate_uses_used_as_projection():
     assert pace.projected_leftover == 80
     assert pace.leftover_tolerance == 10
     assert pace.status is PaceStatus.SPARE
+
+
+# --- 使用率の端数を見込んだ枯渇見込み --------------------------------------
+
+
+def test_cautious_exhausts_when_one_more_percent_runs_out():
+    """28% は tight だが、実際は最大 29% 使っている。29% のペースならリセット前に尽きる。"""
+    pace = compute_pace(weekly(28.0), [], NOW)
+    assert pace.status is PaceStatus.TIGHT
+    assert pace.exhausts_at is None
+    assert pace.cautious_exhausts_at is not None
+    assert NOW < pace.cautious_exhausts_at < RESET
+
+
+def test_no_cautious_exhausts_with_room():
+    pace = compute_pace(weekly(27.0), [], NOW)
+    assert pace.status is PaceStatus.ON_TRACK
+    assert pace.cautious_exhausts_at is None  # 28% ペースでも 98% で届かない
+
+
+def test_no_cautious_exhausts_for_fractional_or_over():
+    assert compute_pace(weekly(27.9), [], NOW).cautious_exhausts_at is None  # 端数あり = 精度十分
+    assert compute_pace(weekly(40.0), [], NOW).cautious_exhausts_at is None  # すでに over
+
+
+def test_no_cautious_exhausts_for_short_window():
+    five_h = Window("claude", "5h", "5時間", 50.0, NOW + timedelta(hours=2), timedelta(hours=5))
+    assert compute_pace(five_h, [], NOW).cautious_exhausts_at is None

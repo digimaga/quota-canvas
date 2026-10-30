@@ -238,6 +238,7 @@
 "解除" = "Lift";
 "空の行があります。入力するか削除してください。" = "There is an empty row. Fill it in or delete it.";
 "リセット直前のペース超過（使い切ってよい）" = "Over pace, but the reset is imminent (ok to burn through)";
+"ペース超過の境界（使用率の端数を見込むと尽きる）" = "Borderline over pace (runs out once the rounded usage is accounted for)";
 
 "超過・枯渇は赤、余裕ありは緑。オフにすると全部白になります。" = "Over or exhausted is red; spare is green. When off, all values are white.";
 "使い切り" = "Burn";

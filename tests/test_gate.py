@@ -1236,3 +1236,33 @@ def test_spare_hold_survives_unjudged_data_and_floor_precedes_long_margin():
     entry.update(status="over", remaining=1,
                  exhausts_at=(reset - timedelta(minutes=119)).isoformat())
     assert evaluate(status(entry), cfg(), {}, NOW, previous=recovered.to_dict()).workers[0].reason == "below_floor"
+
+
+@pytest.mark.parametrize("minutes, verdict, reason", [
+    (121, "reserve", "over_rounding"), (120, "go", "on_track"), (None, "go", "on_track")])
+def test_long_over_rounding(minutes, verdict, reason):
+    """端数を見込むと尽きる長い窓は、リセット直前でなければ reserve。"""
+    reset = NOW + timedelta(days=3)
+    entry = win("claude:weekly", "claude", "on_track", 50, resets=reset)
+    entry["length"] = 7 * 86400
+    if minutes is not None:
+        entry["cautious_exhausts_at"] = (reset - timedelta(minutes=minutes)).isoformat()
+    result = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (result.verdict, result.reason) == (verdict, reason)
+    if verdict == "reserve":
+        assert result.exhausts_at == entry["cautious_exhausts_at"]
+        assert "ペース超過の境界" in format_line(evaluate(status(entry), cfg(), {}, NOW), NOW, lang="ja")
+
+
+def test_fable_follows_overall_weekly_rounding():
+    """Fable 専用枠が余っていても、全体の週間枠が端数込みで尽きるなら reserve。"""
+    reset = NOW + timedelta(days=3)
+    overall = win("claude:weekly", "claude", "on_track", 90, resets=reset)
+    overall["length"] = 7 * 86400
+    overall["cautious_exhausts_at"] = (reset - timedelta(hours=8)).isoformat()
+    fable = win("claude:weekly_fable", "claude", "spare", 94, resets=reset)
+    fable["length"] = 7 * 86400
+    settings = config_from_dict({"routing": {"enabled": True, "workers": {
+        "fable": ["claude:weekly", "claude:weekly_fable"]}}}).routing
+    result = evaluate(status(overall, fable), settings, {}, NOW).worker("fable")
+    assert (result.verdict, result.reason) == ("reserve", "over_rounding")
