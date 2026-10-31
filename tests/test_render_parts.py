@@ -110,7 +110,7 @@ def test_part_sub_rows_render_as_breakdown(gauge, text_calls):
     assert "20%" in texts and "2%" in texts               # 使用量 (gauge 非依存)
     # 数値に添う語 (gauge="used" はメイン数字の語として +1)
     assert texts.count("使用") == (3 if gauge == "used" else 2)
-    assert texts.count("使い切り") == 1                   # バッジはメインのみ
+    assert texts.count("適正ペース") == 1                   # バッジはメインのみ
 
 
 def test_part_colors_are_painted(monkeypatch):

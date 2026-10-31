@@ -241,6 +241,7 @@
 "ペース超過の境界（使用率の端数を見込むと尽きる）" = "Borderline over pace (runs out once the rounded usage is accounted for)";
 
 "超過・枯渇は赤、余裕ありは緑。オフにすると全部白になります。" = "Over or exhausted is red; spare is green. When off, all values are white.";
+"適正ペース" = "Maxing out";
 "使い切り" = "Burn";
 "判定の更新が古いか、更新時刻が不明です" = "Verdict is stale or its update time is unknown";
 "エンジンを常駐させる" = "Run the engine in the background";

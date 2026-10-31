@@ -1,7 +1,7 @@
 """表示文字列の多言語化 (追加依存なし)。
 
 文言は ``locales/<言語>/<領域>.toml`` に置く。キーは ``<領域>.<TOML のキー>``
-(例: ``locales/ja/render.toml`` の ``[badge] tight = "使い切り"`` は
+(例: ``locales/ja/render.toml`` の ``[badge] tight = "適正ペース"`` は
 ``t("render.badge.tight")``)。値の差し込みは ``{pct}`` のような名前付きで、
 ``t("render.advice.slow_down", pct=12)`` のように渡す (語順が言語ごとに違うため)。
 

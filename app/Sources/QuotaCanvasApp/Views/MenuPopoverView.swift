@@ -359,7 +359,7 @@ struct CardRow: View {
         switch card.status {
         case "over": return String(localized: "ペース超過")
         case "exhausted": return String(localized: "枯渇")
-        case "tight": return String(localized: "使い切り")
+        case "tight": return String(localized: "適正ペース")
         case "on_track": return String(localized: "順調")
         case "spare": return String(localized: "余裕あり")
         case "fresh": return String(localized: "リセット直後")

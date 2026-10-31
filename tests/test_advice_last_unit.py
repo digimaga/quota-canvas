@@ -148,7 +148,7 @@ def test_weekly_last_unit_never_shows_per_day_allowance():
 @pytest.mark.parametrize("used,compact_expected,normal_expected", [
     (97.0, "ペース超過 · リセットまで18分",
      "ペースを落とす · リセットまでの18分は残り3%で"),
-    (93.5, "使い切り · リセットまで18分",
+    (93.5, "適正ペース · リセットまで18分",
      "ほぼ使い切れる見込み · リセットまで18分"),
     (92.0, "順調 · リセットまで18分",
      "順調 · リセットまで18分、残り8%は使い切ってよい"),

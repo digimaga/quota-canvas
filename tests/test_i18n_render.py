@@ -166,6 +166,13 @@ def test_en_status_and_advice_wording(monkeypatch):
         "Limit hit · resets in 3h"
 
 
+
+def test_ja_tight_badge_differs_from_burn_mode(monkeypatch):
+    # ペース判定 tight は使い切りモード (burn) の「使い切り」と取り違えない名前にする
+    monkeypatch.setattr(i18n, "_current", "ja")
+    assert i18n.t("render.badge.tight") == "適正ペース"
+    assert i18n.t("render.badge_short.tight") == "適正"
+
 def test_ja_advice_texts_are_japanese_not_keys():
     # ja では日本語が返る (文言キーの落ち込み = キー文字列のまま、を逆側から拾う)
     i18n.set_language("ja")
