@@ -1512,3 +1512,27 @@ def test_build_cards_makes_one_local_card(tmp_path):
     cards = build_cards([ok, broken], History(tmp_path / "history.jsonl"), NOW)
     assert [c[0].provider for c in cards] == ["local:test-server", "local:test-server"]
     assert [c[1] for c in cards] == [None, None]
+
+
+@pytest.mark.parametrize("running,capacity,want", [
+    (0, 4, "4/4"),     # 全空き
+    (1, 4, "3/4"),     # 1 本使用 → 残り 3
+    (4, 4, "0/4"),     # 満杯
+    (6, 4, "0/4"),     # running > capacity でも負にしない
+])
+def test_local_card_shows_free_slots(monkeypatch, running, capacity, want):
+    # 大きい数字は残量カードと同じ向き: 使用中ではなく空き本数 (残り n/capacity)。
+    from quotacanvas import render as render_mod
+
+    drawn = []
+    orig = render_mod._S.text
+
+    def spy(self, xy, text, *args, **kwargs):
+        drawn.append(text)
+        return orig(self, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(render_mod._S, "text", spy)
+    render([(_local_usage(slots=LocalSlots(running, 0, capacity)), None)], NOW,
+           layout=[PanelSpec(main="local:test-server", size="large")])
+    assert want in drawn
+    assert render_mod.t("render.local.free_word") in drawn

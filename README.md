@@ -221,7 +221,7 @@ The default freshness limit is 20 minutes (`stale_minutes`). An old `fetched_at`
 
 #### Local LLM servers
 
-`[providers.local.<name>]` watches the parallel-slot availability of a local OpenAI-compatible server through its Prometheus `/metrics` endpoint (tensorfold / vLLM / SGLang / llama.cpp, or custom metric names). There is no remaining-% or reset time; instead each poll records `running` / `waiting` against the configured `capacity` and shows a card with in use n/capacity · queue n (free = green, full = yellow, queued = red). Bind a server to a worker with the id `local:<name>`:
+`[providers.local.<name>]` watches the parallel-slot availability of a local OpenAI-compatible server through its Prometheus `/metrics` endpoint (tensorfold / vLLM / SGLang / llama.cpp, or custom metric names). There is no remaining-% or reset time; instead each poll records `running` / `waiting` against the configured `capacity` and shows a card with n/capacity left · queue n (n = free slots, counting down like the other cards) (free = green, full = yellow, queued = red). Bind a server to a worker with the id `local:<name>`:
 
 ```toml
 [providers.local.myserver]

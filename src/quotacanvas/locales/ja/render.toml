@@ -85,7 +85,7 @@ at = "取得失敗中 {hh:02d}:{mm:02d} 時点"
 
 [local]
 # ローカル LLM サーバー ([providers.local.<名前>]) の並列枠カードの文言。
-running_word = "使用中"
+free_word = "残り"
 waiting = "待ち {waiting}"
 state_free = "空きあり"
 state_full = "満杯"

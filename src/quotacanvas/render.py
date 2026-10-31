@@ -1642,7 +1642,8 @@ def _local_state(slots):
 def _draw_local_card(s, box, g, theme):
     # type: (_S, Tuple[int, int, int, int], dict, tuple) -> None
     """ローカル LLM サーバー (providers.local) の並列枠のカード。
-    「使用中 n/capacity・待ち n」を、空き (緑) / 満杯 (黄) / 待ちあり (赤) の
+    「残り n/capacity・待ち n」(n は空き本数 = capacity - running。ほかの
+    カードの残量と同じく減っていく向き) を、空き (緑) / 満杯 (黄) / 待ちあり (赤) の
     状態色で描く。大きい列にも小パネルにも使う (高さで切り替え)。
     取得失敗中は呼び出し側がエラーカードに流すので、ここには成功時しか来ない。"""
     x0, y0, x1, y1 = box
@@ -1673,13 +1674,15 @@ def _draw_local_card(s, box, g, theme):
                    bx0 - 10 - (tx0 + 18), min_size=12)
     s.text((tx0 + 18, hy), g["name"], font=nf, fill=TEXT, anchor="lm")
 
-    # -- 2. big "running/capacity" + waiting count --------------------------
-    frac = "%d/%d" % (slots.running, slots.capacity)
+    # -- 2. big "free/capacity" + waiting count -----------------------------
+    # 残量カードと向きを揃え、使用中の本数ではなく空き本数を出す。
+    free = _clamp(slots.capacity - slots.running, 0, slots.capacity)
+    frac = "%d/%d" % (free, slots.capacity)
     pf = F("w8", 44 if compact else 64)
     cy = y0 + (100 if compact else 170)
     s.text((tx0, cy), frac, font=pf, fill=color, anchor="ls")
     wx = tx0 + s.textlength(frac, font=pf) + 10
-    s.text((wx, cy + 2), t("render.local.running_word"),
+    s.text((wx, cy + 2), t("render.local.free_word"),
            font=F("w5", 15 if compact else 17), fill=TEXT_DIM, anchor="ls")
     wtxt = t("render.local.waiting", waiting=slots.waiting)
     wf = _fit_font(s, wtxt, "w6", 16 if compact else 18, tx1 - wx, min_size=10)
@@ -1697,7 +1700,6 @@ def _draw_local_card(s, box, g, theme):
     by0 = by1 - bar_h
     bw = tx1 - tx0
     s.rrect((tx0, by0, tx1, by1), radius=bar_h / 2.0, fill=TRACK)
-    free = _clamp(slots.capacity - slots.running, 0, slots.capacity)
     lit_w = free / float(slots.capacity) * bw if slots.capacity > 0 else 0.0
     if lit_w > 0:
         s.rrect((tx0, by0, tx0 + lit_w, by1),

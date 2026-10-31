@@ -84,7 +84,7 @@ at = "Fetch failed · {hh:02d}:{mm:02d}"
 
 [local]
 # Local LLM server slots card ([providers.local.<name>]).
-running_word = "in use"
+free_word = "left"
 waiting = "queue {waiting}"
 state_free = "free"
 state_full = "full"

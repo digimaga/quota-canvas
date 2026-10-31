@@ -218,7 +218,7 @@ review: 使える 1（reviewer）。このモデルが実装した差分はレ�
 
 #### ローカル LLM サーバー
 
-`[providers.local.<名前>]` は、ローカルの OpenAI 互換サーバーの並列枠の空きを Prometheus 形式の `/metrics` から取得する（tensorfold / vLLM / SGLang / llama.cpp の既定指標、または指標名の明示指定）。残量 % やリセット時刻の概念はなく、毎回 `running` / `waiting` と設定した `capacity` を比べ、「使用中 n/capacity・待ち n」のカードを表示する（空き = 緑、満杯 = 黄、待ちあり = 赤）。ワーカーには `local:<名前>` で束ねる:
+`[providers.local.<名前>]` は、ローカルの OpenAI 互換サーバーの並列枠の空きを Prometheus 形式の `/metrics` から取得する（tensorfold / vLLM / SGLang / llama.cpp の既定指標、または指標名の明示指定）。残量 % やリセット時刻の概念はなく、毎回 `running` / `waiting` と設定した `capacity` を比べ、「残り n/capacity・待ち n」のカードを表示する（n は空き本数で、ほかのカードと同じく減っていく向き）（空き = 緑、満杯 = 黄、待ちあり = 赤）。ワーカーには `local:<名前>` で束ねる:
 
 ```toml
 [providers.local.myserver]
