@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import time
 import urllib.request
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -38,6 +39,14 @@ LOCAL_ENGINES = tuple(ENGINE_METRICS) + ("custom",)
 
 DEFAULT_TIMEOUT = 3.0
 LOCAL_TIMEOUT_MAX = 30.0
+
+# 待ちが続いているかを確かめるための取り直し回数 (最初の 1 回を含む上限)。
+QUEUE_CONFIRM_SAMPLES = 3
+# 取り直しの間隔 (秒)。
+QUEUE_CONFIRM_INTERVAL = 2.0
+# 取り直し時の timeout の上限 (秒)。routing local-check がワーカー起動前に
+# 同期で呼ぶので、待ちがあるときの遅延を小さく抑える。
+QUEUE_CONFIRM_TIMEOUT = 2.0
 
 # /metrics の本文の読み取り上限 (巨大な応答で固まらないための保険)。
 MAX_METRICS_BYTES = 1024 * 1024
@@ -148,6 +157,11 @@ def _http_get_text(url: str, headers: Dict[str, str], timeout: float) -> str:
     return body.decode("utf-8")
 
 
+def _sleep(seconds: float) -> None:
+    """指定秒だけ待つ (テストの差し替えポイント)。"""
+    time.sleep(seconds)
+
+
 def _reason(exc: BaseException) -> str:
     """失敗理由の短い表示。解析系は自前の固定語、ほかは _short_reason に任せる。"""
     if isinstance(exc, MetricsError):
@@ -163,6 +177,10 @@ def fetch_one(name: str, entry: Any, now: datetime) -> ProviderUsage:
     どんな失敗でも例外を外に漏らさず error に短い理由 (秘密を含まない) を
     入れる。成功時のみ slots が載る。ローカルサーバーの空きは分単位で変わる
     ので、失敗時に前回の値を使い回す (last-good) ことはしない。
+
+    1 回目で待ち (waiting > 0) があれば、一瞬だけの待ちか確かめるため
+    QUEUE_CONFIRM_INTERVAL 秒あけて最大 QUEUE_CONFIRM_SAMPLES 回まで
+    取り直し、waiting が最小の回の値を採る (同値なら後の回)。
     """
     provider = "local:" + name
     usage_name = entry.label or name
@@ -174,16 +192,38 @@ def fetch_one(name: str, entry: Any, now: datetime) -> ProviderUsage:
             # サーバー実装によってどちらかしか見ないことがあるので両方送る。
             headers["x-api-key"] = key
             headers["Authorization"] = "Bearer " + key
-        text = _http_get_text(metrics_url(entry), headers, float(entry.timeout))
-        values, broken = parse_metrics(text)
-        # 対象の 2 指標だけ厳しく: 1 系列でも壊れていたら合計を信用できないので
-        # 失敗。無ければもちろん失敗 (対象外の指標のゴミは無視)。
-        if running_metric in broken or waiting_metric in broken:
-            raise MetricsError(INVALID_METRICS)
-        if running_metric not in values or waiting_metric not in values:
-            raise MetricsError(METRIC_MISSING)
-        slots = LocalSlots(running=int(round(values[running_metric])),
-                           waiting=int(round(values[waiting_metric])),
+        url = metrics_url(entry)
+        timeout = float(entry.timeout)
+
+        def read_slots(timeout: float) -> Tuple[int, int]:
+            """1 回ぶん取得して (running, waiting) を返す。失敗は例外のまま。"""
+            text = _http_get_text(url, headers, timeout)
+            values, broken = parse_metrics(text)
+            # 対象の 2 指標だけ厳しく: 1 系列でも壊れていたら合計を信用できない
+            # ので失敗。無ければもちろん失敗 (対象外の指標のゴミは無視)。
+            if running_metric in broken or waiting_metric in broken:
+                raise MetricsError(INVALID_METRICS)
+            if running_metric not in values or waiting_metric not in values:
+                raise MetricsError(METRIC_MISSING)
+            return (int(round(values[running_metric])),
+                    int(round(values[waiting_metric])))
+
+        # 1 回目の失敗は外側の except で error にする。1 回目は設定の
+        # timeout のまま、取り直しは待ち時間を抑えるため上限を掛ける。
+        best = read_slots(timeout)
+        samples = 1
+        while best[1] > 0 and samples < QUEUE_CONFIRM_SAMPLES:
+            try:
+                _sleep(QUEUE_CONFIRM_INTERVAL)
+                latest = read_slots(min(timeout, QUEUE_CONFIRM_TIMEOUT))
+            except Exception:  # noqa: BLE001 - 成功した回の値を使う
+                break
+            samples += 1
+            if latest[1] <= best[1]:   # 最小値。同値なら後の回を採る
+                best = latest
+            if latest[1] == 0:
+                break
+        slots = LocalSlots(running=best[0], waiting=best[1],
                            capacity=int(entry.capacity))
         return ProviderUsage(provider, usage_name, [], None, now, slots=slots)
     except Exception as exc:  # noqa: BLE001 - 常に usage に変換する

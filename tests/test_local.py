@@ -77,6 +77,12 @@ def _no_real_local_keychain(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    """待ちの取り直しで実際には待たない (providers.local._sleep を差し替え)。"""
+    monkeypatch.setattr(providers.local, "_sleep", lambda seconds: None)
+
+
+@pytest.fixture(autouse=True)
 def _restore_language():
     prev = i18n.current_language()
     yield
@@ -99,6 +105,26 @@ def _fake_http(monkeypatch, body=None, error=None):
         if error is not None:
             raise error
         return body
+
+    monkeypatch.setattr(providers.local, "_http_get_text", fake)
+    return calls
+
+
+def _fake_http_sequence(monkeypatch, bodies):
+    """providers.local._http_get_text を呼び出し順に bodies を返すよう差し替える。
+
+    要素が例外なら送出する。想定より多く呼ばれたら AssertionError。
+    """
+    calls = []
+
+    def fake(url, headers, timeout):
+        calls.append({"url": url, "headers": dict(headers), "timeout": timeout})
+        if len(calls) > len(bodies):
+            raise AssertionError("想定より多く /metrics を取得した")
+        item = bodies[len(calls) - 1]
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     monkeypatch.setattr(providers.local, "_http_get_text", fake)
     return calls
@@ -341,6 +367,88 @@ def test_fetch_one_broken_target_series_is_error(monkeypatch, body):
     usage = fetch_one("test-server", entry(), NOW)
     assert usage.error == "invalid metrics"
     assert usage.slots is None
+
+
+def test_fetch_one_waiting_zero_fetches_once(monkeypatch):
+    calls = _fake_http_sequence(monkeypatch, [_metrics(1, 0)])
+    usage = fetch_one("test-server", entry(), NOW)
+    assert usage.error is None
+    assert usage.slots == LocalSlots(running=1, waiting=0, capacity=4)
+    assert len(calls) == 1
+
+
+def test_fetch_one_refetch_stops_when_waiting_becomes_zero(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(providers.local, "_sleep", sleeps.append)
+    calls = _fake_http_sequence(monkeypatch, [_metrics(2, 1), _metrics(3, 0)])
+    usage = fetch_one("test-server", entry(), NOW)
+    assert usage.error is None
+    assert usage.slots == LocalSlots(running=3, waiting=0, capacity=4)
+    assert len(calls) == 2
+    assert sleeps == [pytest.approx(2.0)]
+
+
+def test_fetch_one_picks_min_waiting_within_sample_limit(monkeypatch):
+    # 3 回とも待ちあり → 最小の waiting (同値なら後の回) を採り、3 回で打ち切る
+    sleeps = []
+    monkeypatch.setattr(providers.local, "_sleep", sleeps.append)
+    calls = _fake_http_sequence(monkeypatch, [_metrics(1, 3), _metrics(2, 1),
+                                              _metrics(4, 1)])
+    usage = fetch_one("test-server", entry(), NOW)
+    assert usage.error is None
+    assert usage.slots == LocalSlots(running=4, waiting=1, capacity=4)
+    assert len(calls) == 3
+    assert sleeps == [pytest.approx(2.0), pytest.approx(2.0)]
+
+
+def test_fetch_one_refetch_error_keeps_first_sample(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(providers.local, "_sleep", sleeps.append)
+    calls = _fake_http_sequence(monkeypatch, [_metrics(2, 1),
+                                              urllib.error.URLError("refused")])
+    usage = fetch_one("test-server", entry(), NOW)
+    assert usage.error is None
+    assert usage.slots == LocalSlots(running=2, waiting=1, capacity=4)
+    assert len(calls) == 2
+    assert sleeps == [pytest.approx(2.0)]
+
+
+def test_fetch_one_keeps_smaller_waiting_not_last_sample(monkeypatch):
+    # waiting 2,1,3 → 2 回目 (1) が最小なので後の回 (3) は採らない
+    calls = _fake_http_sequence(monkeypatch, [_metrics(1, 2), _metrics(2, 1),
+                                              _metrics(3, 3)])
+    usage = fetch_one("test-server", entry(), NOW)
+    assert usage.error is None
+    assert usage.slots == LocalSlots(running=2, waiting=1, capacity=4)
+    assert len(calls) == 3
+
+
+def test_fetch_one_refetch_metrics_error_stops_with_earlier_sample(monkeypatch):
+    # 取り直しで指標欠落 (MetricsError) なら打ち切り、1 回目の値を採る
+    calls = _fake_http_sequence(monkeypatch, [_metrics(2, 1), "something:else 1\n"])
+    usage = fetch_one("test-server", entry(), NOW)
+    assert usage.error is None
+    assert usage.slots == LocalSlots(running=2, waiting=1, capacity=4)
+    assert len(calls) == 2
+
+
+def test_fetch_one_third_sample_failure_keeps_second_sample(monkeypatch):
+    calls = _fake_http_sequence(monkeypatch, [_metrics(1, 2), _metrics(3, 1),
+                                              urllib.error.URLError("refused")])
+    usage = fetch_one("test-server", entry(), NOW)
+    assert usage.error is None
+    assert usage.slots == LocalSlots(running=3, waiting=1, capacity=4)
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("configured,retry_timeout", [(5.0, 2.0), (1.5, 1.5)])
+def test_fetch_one_refetch_timeout_is_capped(monkeypatch, configured,
+                                             retry_timeout):
+    calls = _fake_http_sequence(monkeypatch, [_metrics(2, 1), _metrics(2, 0)])
+    usage = fetch_one("test-server", entry(timeout=configured), NOW)
+    assert usage.error is None
+    assert calls[0]["timeout"] == pytest.approx(configured)
+    assert calls[1]["timeout"] == pytest.approx(retry_timeout)
 
 
 def test_fetch_all_skips_disabled(monkeypatch):
