@@ -49,6 +49,9 @@ BACKOFF_BASE = timedelta(minutes=5)
 # Burn-in protection: shift the whole picture by a few pixels every few minutes.
 SHIFT_EVERY = timedelta(minutes=3)
 SHIFTS = [(0, 0), (4, 0), (4, 4), (0, 4), (-4, 4), (-4, 0), (-4, -4), (0, -4), (4, -4)]
+# ローカル LLM サーバーの並列枠だけは短い間隔で取り直す (「処理中 n / 待ち n」は
+# 分単位で変わるため)。他のサービスは poll.interval のまま。
+LOCAL_REFRESH = 60  # 秒
 
 PROVIDER_ORDER = {"claude": 0, "codex": 1, "glm": 2, "grok": 3, "gemini": 4, "openrouter": 5, "deepseek": 6, "kimi": 7}
 
@@ -260,8 +263,15 @@ class Poller:
         if self.local:
             # ローカル LLM サーバーは last-good (通信失敗時の前回値) を使わず、
             # 今の状態または失敗をそのまま返す。空きは分単位で変わるため。
-            result.extend(providers.local.fetch_all(self.local, now))
+            result.extend(self.fetch_local(now))
         return result
+
+    def fetch_local(self, now: datetime) -> List[ProviderUsage]:
+        """ローカル LLM サーバーの並列枠だけを取得する ([providers.local] が
+        無ければ空)。run ループが他のサービスと別に LOCAL_REFRESH 秒ごとに呼ぶ。"""
+        if not self.local:
+            return []
+        return providers.local.fetch_all(self.local, now)
 
 
 def _open_screen():
@@ -505,6 +515,22 @@ def _effective_poll(args, cfg: Config) -> Tuple[int, int]:
         interval if interval is not None else cfg.poll.interval,
         redraw if redraw is not None else cfg.poll.redraw,
     )
+
+
+def _local_state(usages: List[ProviderUsage]) -> Dict[str, Tuple[Optional[str], Optional[int], Optional[int]]]:
+    """ローカル枠の「前回と変わったか」判定用の署名。
+
+    provider ("local:<名前>") ごとに error / running / waiting を持つ。run ループは
+    LOCAL_REFRESH 秒ごとのローカル取得の前後でこれを比べ、変わったときだけ redraw を待たずに
+    描き直す (USB 送画を無駄に増やさないため)。"""
+    state: Dict[str, Tuple[Optional[str], Optional[int], Optional[int]]] = {}
+    for u in usages:
+        if u.provider.startswith("local:"):
+            slots = u.slots
+            state[u.provider] = (u.error,
+                                 slots.running if slots is not None else None,
+                                 slots.waiting if slots is not None else None)
+    return state
 
 
 # ----------------------------------------------------------- config command
@@ -1372,7 +1398,9 @@ def main(argv=None) -> int:
 
     usages: List[ProviderUsage] = []
     next_fetch = 0.0
+    next_draw = 0.0  # 次の描画期限 (monotonic)。ローカル枠の変化時は待たずに描く
     last_fetch: Optional[float] = None  # 最後に利用量を取り直した monotonic 時刻
+    last_local_fetch: Optional[float] = None  # 最後にローカル枠だけを取り直した monotonic 時刻
     deferred_fetch: Optional[float] = None  # 延期した反映要求で取り直す monotonic 時刻
     wake = ""  # 前回の待ちを打ち切った理由 ("refresh" / "config" / "display" / "" = 満了)
     started = time.monotonic()
@@ -1472,11 +1500,29 @@ def main(argv=None) -> int:
             system_asleep or macpower.display_asleep())
         if requested and sleeping and deferred_fetch is None:
             deferred_fetch = mono  # 眠っていて取れなかった要求は、起きた周回で取り直す
+        fetched = False
         if (due or requested) and not sleeping:
             usages = poller.fetch(now)
             last_fetch = time.monotonic()
+            last_local_fetch = last_fetch  # 全体取得にはローカル枠も含まれる
             next_fetch = last_fetch + interval  # 取り直したら定期取得もそこから interval 後へ
             deferred_fetch = None
+            fetched = True
+        # ローカル LLM サーバーの並列枠だけは LOCAL_REFRESH 秒ごとに取り直す。
+        # 他のサービスは poll.interval のまま。眠っている間は取りに行かない。
+        local_changed = False
+        if not poller.local:
+            # [providers.local] を全部外したら、残っている古いローカル枠も消す
+            usages = [u for u in usages if not u.provider.startswith("local:")]
+        elif not sleeping and (
+                last_local_fetch is None or mono - last_local_fetch >= LOCAL_REFRESH):
+            before = _local_state(usages)
+            fresh = poller.fetch_local(now)
+            last_local_fetch = time.monotonic()
+            # provider が "local:" で始まるものだけを新しい結果に置き換える
+            # (全体取得と同じく末尾に並べる)。
+            usages = [u for u in usages if not u.provider.startswith("local:")] + fresh
+            local_changed = before != _local_state(usages)
         # local:<名前> は providers.<名前> の有効判定とは別 ([providers.local]
         # 側の enabled で fetch_all が既に絞っている) のでそのまま通す。
         visible_usages = [u for u in usages
@@ -1494,58 +1540,71 @@ def main(argv=None) -> int:
         rec = recommend(visible_usages, history, now, early_tolerance=cfg.pacing.early_tolerance,
                         end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep)
         layout = _render_layout(cfg, cards)
-        if cfg.display.paused:
-            # 一時停止中: 画面には何も送らず status.json だけ更新する (frame.png はそのまま)
-            _write_app_files(cfg, cards, visible_usages, now, None, layout=layout,
-                             recommendation=rec, all_windows=windows_all)
-        elif sleeping:
-            # Mac が眠っている: 黒 1 枚と明るさ 0 を送ってからは黙る
-            # (frame.png はそのまま、status.json は更新し続ける)
-            with guard.lock:
-                if not guard.dimmed:
-                    guard.dimmed = _sleep_screen(screen)
-            _write_app_files(cfg, cards, visible_usages, now, None, layout=layout,
-                             recommendation=rec, all_windows=windows_all)
-        else:
-            # ロックは USB 操作 (_open_screen / 明るさ / 送画) の短い区間だけで
-            # 使う。render と status.json への書き込みはロックの外で行う。
-            shift = SHIFTS[int((time.monotonic() - started) // SHIFT_EVERY.total_seconds()) % len(SHIFTS)]
-            img = _render_frame(cards, now, cfg, layout,
-                                recommendation=rec.text if rec else None,
-                                offset=shift)
-            sent = img
-            with guard.lock:
-                # ロックを取る直前に眠り始めたかもしれない: もう一度取り直して
-                # から送る。まだ眠っているなら dimmed を戻さず、通常フレームも
-                # 送らない (黒で消したままにする)。
-                if cfg.display.sleep_with_mac and (
-                        guard.system_asleep or macpower.display_asleep()):
+        # 描画・送画・status.json は redraw 秒ごと。ただしローカル枠が変わった
+        # 周回は redraw を待たずに描き直す。wake で起きた周回 (設定変更・反映
+        # 要求・スリープ状態の変化) は従来どおり即描画する。
+        draw = (sleeping or fetched or local_changed or wake != ""
+                or mono >= next_draw)
+        if draw:
+            if cfg.display.paused:
+                # 一時停止中: 画面には何も送らず status.json だけ更新する (frame.png はそのまま)
+                _write_app_files(cfg, cards, visible_usages, now, None, layout=layout,
+                                 recommendation=rec, all_windows=windows_all)
+            elif sleeping:
+                # Mac が眠っている: 黒 1 枚と明るさ 0 を送ってからは黙る
+                # (frame.png はそのまま、status.json は更新し続ける)
+                with guard.lock:
                     if not guard.dimmed:
                         guard.dimmed = _sleep_screen(screen)
-                    sent = None
-                else:
-                    if guard.dimmed:
-                        # スリープから復帰: 明るさを設定し直してすぐ描き直す
-                        guard.dimmed = False
-                        applied_brightness = None
-                    if screen is None and not args.no_screen:
-                        screen = _open_screen()
-                        if screen is not None:
-                            applied_brightness = None  # 新しく開いた画面には明るさを設定し直す
-                    applied_brightness = _apply_brightness(screen, cfg, applied_brightness)
-                    sent_to = _output(img, screen, args.out)
-                    if sent_to is not screen:
-                        # 開き直した (または失った) 画面には明るさを設定し直す
-                        applied_brightness = _apply_brightness(sent_to, cfg, None)
-                    screen = sent_to
-            # 送ったフレームだけ frame.png に書く (黒で消したときはそのまま)
-            _write_app_files(cfg, cards, visible_usages, now, sent, layout=layout,
-                             recommendation=rec, all_windows=windows_all, offset=shift)
+                _write_app_files(cfg, cards, visible_usages, now, None, layout=layout,
+                                 recommendation=rec, all_windows=windows_all)
+            else:
+                # ロックは USB 操作 (_open_screen / 明るさ / 送画) の短い区間だけで
+                # 使う。render と status.json への書き込みはロックの外で行う。
+                shift = SHIFTS[int((time.monotonic() - started) // SHIFT_EVERY.total_seconds()) % len(SHIFTS)]
+                img = _render_frame(cards, now, cfg, layout,
+                                    recommendation=rec.text if rec else None,
+                                    offset=shift)
+                sent = img
+                with guard.lock:
+                    # ロックを取る直前に眠り始めたかもしれない: もう一度取り直して
+                    # から送る。まだ眠っているなら dimmed を戻さず、通常フレームも
+                    # 送らない (黒で消したままにする)。
+                    if cfg.display.sleep_with_mac and (
+                            guard.system_asleep or macpower.display_asleep()):
+                        if not guard.dimmed:
+                            guard.dimmed = _sleep_screen(screen)
+                        sent = None
+                    else:
+                        if guard.dimmed:
+                            # スリープから復帰: 明るさを設定し直してすぐ描き直す
+                            guard.dimmed = False
+                            applied_brightness = None
+                        if screen is None and not args.no_screen:
+                            screen = _open_screen()
+                            if screen is not None:
+                                applied_brightness = None  # 新しく開いた画面には明るさを設定し直す
+                        applied_brightness = _apply_brightness(screen, cfg, applied_brightness)
+                        sent_to = _output(img, screen, args.out)
+                        if sent_to is not screen:
+                            # 開き直した (または失った) 画面には明るさを設定し直す
+                            applied_brightness = _apply_brightness(sent_to, cfg, None)
+                        screen = sent_to
+                # 送ったフレームだけ frame.png に書く (黒で消したときはそのまま)
+                _write_app_files(cfg, cards, visible_usages, now, sent, layout=layout,
+                                 recommendation=rec, all_windows=windows_all, offset=shift)
+            next_draw = time.monotonic() + redraw
         # 待ち時間を 1 秒刻みに分け、設定変更・反映要求・スリープ状態の変化を監視する。
-        # 延期した取り直しがあれば、その時刻で待ちを打ち切る (眠っている間は縮めない)。
+        # 次の描画期限・次のローカル取得時刻・延期した取り直しの最も早いものまで待つ
+        # (眠っている間はローカル取得も延期分も縮めない = 従来どおり redraw のまま)。
         wait = redraw
-        if deferred_fetch is not None and not sleeping:
-            wait = min(redraw, max(0.0, deferred_fetch - time.monotonic()))
+        if not sleeping:
+            now_mono = time.monotonic()
+            wait = min(wait, max(0.0, next_draw - now_mono))
+            if deferred_fetch is not None:
+                wait = min(wait, max(0.0, deferred_fetch - now_mono))
+            if poller.local and last_local_fetch is not None:
+                wait = min(wait, max(0.0, last_local_fetch + LOCAL_REFRESH - now_mono))
         wake = wait_for_wakeup(cfg, wait, _sleep_mismatch)
 
 

@@ -16,7 +16,7 @@ from quotacanvas import providers
 from quotacanvas.cli import Poller
 from quotacanvas.history import History
 from quotacanvas.lastgood import LastGood
-from quotacanvas.models import ProviderUsage, ResetCredit, Window
+from quotacanvas.models import LocalSlots, ProviderUsage, ResetCredit, Window
 
 NOW = datetime(2026, 10, 25, 9, 0, 0, tzinfo=timezone.utc)
 LAST_GOOD = "last-good.json"
@@ -322,6 +322,47 @@ def test_backoff_substitute_keeps_last_success_fetch_time(tmp_path, monkeypatch)
     later = NOW + timedelta(minutes=1)
     assert poller.fetch(later)[0].fetched_at == NOW          # 429 を受けた周回
     assert poller.fetch(later + timedelta(minutes=1))[0].fetched_at == NOW  # バックオフ中
+
+
+# -------------------------------------------- (C) ローカル枠だけの取り直し
+
+def test_fetch_local_without_local_returns_empty(tmp_path, monkeypatch):
+    """[providers.local] が無ければ providers.local.fetch_all を呼ばない。"""
+    calls = []
+    monkeypatch.setattr(providers.local, "fetch_all",
+                        lambda entries, now: calls.append((entries, now)) or [])
+    poller = _poller(tmp_path)                      # local 未設定 (空)
+    assert poller.fetch_local(NOW) == []
+    assert calls == []
+
+
+def test_fetch_local_delegates_to_providers_local(tmp_path, monkeypatch):
+    """local があれば providers.local.fetch_all(self.local, now) に委譲する。"""
+    entry = object()
+    usage = ProviderUsage("local:srv", "Local", [], None, NOW,
+                          slots=LocalSlots(running=2, waiting=1, capacity=4))
+    calls = []
+
+    def fake(entries, now):
+        calls.append((entries, now))
+        return [usage]
+
+    monkeypatch.setattr(providers.local, "fetch_all", fake)
+    poller = _poller(tmp_path, local={"srv": entry})
+    assert poller.fetch_local(NOW) == [usage]
+    assert calls == [({"srv": entry}, NOW)]
+    assert poller.local == {"srv": entry}           # 設定は書き換えない
+
+
+def test_fetch_includes_local_after_registry(tmp_path, monkeypatch):
+    """全体取得でもローカル枠は従来どおり末尾に並ぶ (fetch_local 経由)。"""
+    FakeFetch(monkeypatch, lambda pid, now: _other(pid, now))
+    usage = ProviderUsage("local:srv", "Local", [], None, NOW,
+                          slots=LocalSlots(running=0, waiting=0, capacity=4))
+    monkeypatch.setattr(providers.local, "fetch_all", lambda entries, now: [usage])
+    poller = _poller(tmp_path, enabled={"claude"}, local={"srv": object()})
+    result = poller.fetch(NOW)
+    assert [u.provider for u in result] == ["claude", "local:srv"]
 
 
 def test_last_good_invalid_utf8_is_treated_as_corrupt(tmp_path, caplog):

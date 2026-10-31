@@ -15,9 +15,18 @@ from PIL import Image
 
 from quotacanvas import cli, providers, refresh
 from quotacanvas.config import load_config
-from quotacanvas.models import ProviderUsage, Window
+from quotacanvas.models import LocalSlots, ProviderUsage, Window
 
 CONFIG_TOML = "[poll]\ninterval = 60\nredraw = 30\n"
+LOCAL_CONFIG_TOML = """\
+[poll]
+interval = 60
+redraw = 60
+[providers.local.srv]
+base_url = "http://127.0.0.1:8000"
+engine = "vllm"
+capacity = 4
+"""
 
 
 @pytest.fixture(autouse=True)
@@ -156,16 +165,37 @@ def _mock_fetch(monkeypatch, calls):
     monkeypatch.setattr(providers, "fetch_all", fetch_all)
 
 
-def _run_loop(monkeypatch, tmp_path, clock, plan=(), config_text=CONFIG_TOML):
+def _mock_local_fetch(monkeypatch, calls, running=lambda mono: 0):
+    """providers.local.fetch_all をモックし、呼ばれた fake 時計の monotonic 時刻を
+    calls に記録する。running で処理中の数を時刻から決める (変化の検出用)。
+    redraw (60 秒) と区別できるよう、取り直しの間隔は 10 秒にして試す。"""
+    monkeypatch.setattr(cli, "LOCAL_REFRESH", 10)
+    def fetch_all(entries, now):
+        mono = cli.time.monotonic()
+        calls.append(mono)
+        slots = LocalSlots(running=running(mono), waiting=0, capacity=4)
+        return [ProviderUsage("local:srv", "Local", [], None, now, slots=slots)]
+
+    monkeypatch.setattr(providers.local, "fetch_all", fetch_all)
+
+
+def _run_loop(monkeypatch, tmp_path, clock, plan=(), config_text=CONFIG_TOML,
+              renders=None):
     """run を --no-screen で動かし、fake 時計が limit に達するまで回す。
 
-    戻り値は providers.fetch_all の呼び出し記録。"""
+    戻り値は providers.fetch_all の呼び出し記録。renders を渡すと描画した
+    周回の fake 時計の monotonic 時刻が入る。"""
     _patch_clock(monkeypatch, clock)
     clock.plan = sorted(plan)
     calls = []
     _mock_fetch(monkeypatch, calls)
-    monkeypatch.setattr(cli, "render",
-                        lambda cards, now, **kw: Image.new("RGB", (8, 8)))
+
+    def fake_render(cards, now, **kw):
+        if renders is not None:
+            renders.append(cli.time.monotonic())
+        return Image.new("RGB", (8, 8))
+
+    monkeypatch.setattr(cli, "render", fake_render)
     monkeypatch.setattr(cli, "write_status", lambda *a, **k: None)
     monkeypatch.setattr(cli, "write_frame", lambda *a, **k: None)
     cfg_path = tmp_path / "config.toml"
@@ -274,6 +304,52 @@ def test_run_stays_quiet_while_paused_but_loop_keeps_going(monkeypatch, tmp_path
     assert calls[1][0] == pytest.approx(30.0, abs=2.0)
     assert len(written) >= 2  # 一時停止中でも status.json は更新され続ける
     assert all(p["paused"] for p in written)
+
+
+# ------------------------- ローカル枠だけ LOCAL_REFRESH 秒ごとの取り直し (run ループ)
+
+def test_run_refreshes_only_local_every_10s(monkeypatch, tmp_path):
+    """[providers.local] があるときはローカル枠だけ 10 秒ごとに取り直し、
+    他のサービスは poll.interval (60 秒) まで取りに行かない。"""
+    local_calls = []
+    _mock_local_fetch(monkeypatch, local_calls)
+    calls = _run_loop(monkeypatch, tmp_path, FakeClock(limit=40),
+                      config_text=LOCAL_CONFIG_TOML)
+    assert len(calls) == 1                    # 全体取得は t=0 の 1 回だけ
+    assert local_calls == [0.0, 10.0, 20.0, 30.0]  # ローカルは 10 秒ごと (t=0 は全体取得に含む)
+
+
+def test_run_does_not_double_fetch_local_with_full_fetch(monkeypatch, tmp_path):
+    """全体取得 (interval=60) と重なる周回では、ローカル枠を二重に取りに行かない。"""
+    local_calls = []
+    _mock_local_fetch(monkeypatch, local_calls)
+    calls = _run_loop(monkeypatch, tmp_path, FakeClock(limit=70),
+                      config_text=LOCAL_CONFIG_TOML)
+    assert len(calls) == 2
+    assert local_calls.count(60.0) == 1
+
+
+def test_run_redraws_immediately_when_local_slots_change(monkeypatch, tmp_path):
+    """ローカル枠が変わった周回は redraw (60 秒) を待たずに描き直す。"""
+    local_calls = []
+    _mock_local_fetch(monkeypatch, local_calls, running=lambda mono: int(mono // 10))
+    renders = []
+    _run_loop(monkeypatch, tmp_path, FakeClock(limit=25),
+              config_text=LOCAL_CONFIG_TOML, renders=renders)
+    assert local_calls == [0.0, 10.0, 20.0]
+    assert renders == [0.0, 10.0, 20.0]       # 変化した周回で描く
+
+
+def test_run_does_not_redraw_when_local_slots_unchanged(monkeypatch, tmp_path):
+    """ローカル枠が変わらなければ、10 秒ごとの取得では描画・送画しない
+    (USB 送画を増やさない)。次の描画は redraw の期限まで。"""
+    local_calls = []
+    _mock_local_fetch(monkeypatch, local_calls)
+    renders = []
+    _run_loop(monkeypatch, tmp_path, FakeClock(limit=40),
+              config_text=LOCAL_CONFIG_TOML, renders=renders)
+    assert local_calls == [0.0, 10.0, 20.0, 30.0]
+    assert renders == [0.0]                   # redraw=60 まで描き直さない
 
 
 # --------------------------------------------------- Mac スリープ連携 (run ループ)
