@@ -63,11 +63,18 @@ _child: Optional[subprocess.Popen] = None    # 起動中の子プロセス (終�
 
 # ----------------------------------------------------------- credentials
 
+# 2026-10 の改称: Max 5x -> Max、Max 20x -> Ultra (キーチェーンは旧名のまま)
+_MAX_TIER_NAMES = {"5x": "max", "20x": "ultra"}
+
+
 def _plan_label(subscription: Optional[str], tier: Optional[str]) -> Optional[str]:
-    """subscriptionType に rateLimitTier の倍率を足す ("max" +
-    "default_claude_max_20x" -> "max 20x")。倍率が読めなければそのまま。"""
+    """subscriptionType と rateLimitTier からプラン名を作る。max / ultra は倍率で
+    新しい名前に読み替え ("max" + "default_claude_max_20x" -> "ultra")、
+    それ以外は倍率を足す。倍率が読めなければそのまま。"""
     m = re.search(r"_(\d+x)$", str(tier or ""))
     if subscription and m:
+        if subscription in ("max", "ultra") and m.group(1) in _MAX_TIER_NAMES:
+            return _MAX_TIER_NAMES[m.group(1)]
         return "%s %s" % (subscription, m.group(1))
     return subscription
 

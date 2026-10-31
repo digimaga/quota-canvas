@@ -95,7 +95,7 @@ def test_parse_claude_null_windows_are_skipped():
 
 
 def test_claude_keychain_tier_adds_multiplier(monkeypatch):
-    """rateLimitTier の倍率 (5x / 20x) がプラン名に付く。無ければ付かない。"""
+    """max は倍率で新しいプラン名 (5x -> Max / 20x -> Ultra) に読み替える。"""
     import json
     import subprocess
     from types import SimpleNamespace
@@ -109,10 +109,13 @@ def test_claude_keychain_tier_adds_multiplier(monkeypatch):
 
     sub = keychain({"subscriptionType": "max",
                     "rateLimitTier": "default_claude_max_20x"})
-    assert parse_claude({}, NOW, sub)[0] == "Claude Max 20x"
+    assert parse_claude({}, NOW, sub)[0] == "Claude Ultra"
     sub = keychain({"subscriptionType": "max",
                     "rateLimitTier": "default_claude_max_5x"})
-    assert parse_claude({}, NOW, sub)[0] == "Claude Max 5x"
+    assert parse_claude({}, NOW, sub)[0] == "Claude Max"
+    sub = keychain({"subscriptionType": "ultra",
+                    "rateLimitTier": "default_claude_max_20x"})
+    assert parse_claude({}, NOW, sub)[0] == "Claude Ultra"
     sub = keychain({"subscriptionType": "pro",
                     "rateLimitTier": "default_claude_ai"})
     assert parse_claude({}, NOW, sub)[0] == "Claude Pro"
