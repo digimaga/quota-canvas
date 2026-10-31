@@ -34,4 +34,16 @@ models_roles = "{path}: '{name}' must be a nonempty array of impl / review / con
 models_text = "{path}: '{name}' must be a string of at most {max} characters without control characters or line breaks"
 models_order = "{path}: 'routing.model_order' must be an array of valid model names"
 
+# [providers.local.<name>] (local LLM servers) validation messages
+local_table = "{path}: 'providers.local' must be a table of name → table ([providers.local.<name>]; got: {value!r})"
+local_name = "{path}: invalid local server name '{name}' (use up to 40 ASCII letters, digits, '.', '_' or '-')"
+local_label = "{path}: '{name}' must be a nonempty string of at most 40 characters (current: {value!r})"
+local_url = "{path}: 'providers.local.{name}.base_url' must be an http(s) URL (e.g. base_url = \"http://localhost:8000\"; current: {value!r})"
+local_required = "{path}: '{name}' is required"
+local_metrics_path = "{path}: 'providers.local.{name}.metrics_path' must be a path of at most 200 characters starting with \"/\" (current: {value!r})"
+local_metric_name = "{path}: '{name}' must be a nonempty string of at most 200 characters (current: {value!r})"
+local_env_name = "{path}: 'providers.local.{name}.api_key_env' must be an environment variable name (a letter followed by letters, digits or '_'; current: {value!r})"
+local_timeout = "{path}: 'providers.local.{name}.timeout' must be a positive number of seconds (current: {value!r})"
+local_custom_metrics = "{path}: 'providers.local.{name}' requires both running_metric and waiting_metric when engine = \"custom\""
+
 tolerance_order = "{path}: pacing.end_tolerance must not exceed pacing.early_tolerance"

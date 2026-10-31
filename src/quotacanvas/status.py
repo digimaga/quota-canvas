@@ -18,6 +18,7 @@ from .config import Config
 from .gate import evaluate, format_line, format_model_lines
 from .i18n import t
 from .models import Pace, PaceStatus, ProviderUsage
+from .providers import local as local_provider
 from .render import _STATUS_BADGE, advice_text  # カードの advice / badge 文言は画面表示 (render) と共通
 
 DATA_DIR = data_dir()
@@ -158,6 +159,10 @@ def _colors_payload(cfg: Config) -> Optional[Dict[str, str]]:
         return None
     colors = dict(BRAND_COLORS)
     colors.update({name: c for name, c in cfg.providers.colors.items() if c})
+    # ローカル LLM サーバーは台ごとの指定 ([providers.local.<名前>].color) を
+    # "local:<名前>" キーで載せる (既定は BRAND_COLORS["local"] のシアン)。
+    colors.update({"local:" + name: entry.color
+                   for name, entry in cfg.providers.local.items() if entry.color})
     return colors
 
 
@@ -196,6 +201,10 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
         item = _card(pu, pace, now)
         if item is not None:
             card_items.append(item)
+    # ローカル LLM サーバー (providers.local) の並列枠も窓と同じ形で載せる
+    # (残量 % は無く、running / waiting / capacity が入る)。gate の判定材料。
+    local_items = [local_provider.window_entry(u) for u in usages
+                   if u.provider.startswith("local:")]
     payload = {
         "updated_at": _iso(now),
         "paused": bool(cfg.display.paused),
@@ -207,7 +216,7 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
             item for pu, pace in (cards if all_windows is None else all_windows)
             if pace is not None
             for item in (_window_item(pu, pace),)
-        ],
+        ] + local_items,
         "balances": [dict(provider=u.provider, name=u.name, currency=b.currency,
                           amount=b.amount, label=b.label, fetched_at=_iso(u.fetched_at),
                           stale_error=u.stale_error)

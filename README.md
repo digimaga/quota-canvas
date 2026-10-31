@@ -217,6 +217,28 @@ For windows of 24 hours or longer, over pace is `go` when exhaustion is within `
 
 The default freshness limit is 20 minutes (`stale_minutes`). An old `fetched_at` or `stale_error` on a window of a relevant provider also makes the worker `unknown`. Reset credit counts are displayed but do not change verdicts.
 
+#### Local LLM servers
+
+`[providers.local.<name>]` watches the parallel-slot availability of a local OpenAI-compatible server through its Prometheus `/metrics` endpoint (tensorfold / vLLM / SGLang / llama.cpp, or custom metric names). There is no remaining-% or reset time; instead each poll records `running` / `waiting` against the configured `capacity` and shows a card with in use n/capacity · queue n (free = green, full = yellow, queued = red). Bind a server to a worker with the id `local:<name>`:
+
+```toml
+[providers.local.myserver]
+base_url = "http://localhost:8000"   # required
+capacity = 4                          # parallel slots (required; not reported by /metrics)
+# label = "My Server"                 # display name
+# engine = "tensorfold"               # metric-name defaults: tensorfold / vllm / sglang / llamacpp / custom
+# metrics_path = "/metrics"
+# running_metric / waiting_metric = "..."   # override the engine default; required for engine = "custom"
+# api_key_env = "MY_SERVER_API_KEY"   # or: quota-canvas set-key local:myserver  (no key = anonymous)
+# timeout = 3                         # seconds
+# color = "#22D3EE"                   # name-dot color (default cyan)
+
+[routing.workers]
+deepseek = ["local:myserver"]         # free = boost, queued = stop, full = reserve
+```
+
+`quota-canvas routing local-check myserver` fetches `/metrics` directly (no cache) for wrapper pre-launch checks: exit 0 for free / full, exit 3 for queued / unreachable, with a one-line reason on stderr.
+
 #### Commands
 
 ```bash

@@ -1,7 +1,7 @@
 # ワーカー振り分け判定 (gate.py / cli.py の routing コマンド) の文言。
 # gate 系の ja は旧 ~/.claude/bin/quota-gate の line と同じ書式
 # (ワーカーの並び順は [routing.workers] の設定順。CLAUDE.md がこの形を前提)。
-usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <ワーカー名> [--json] | quota-canvas routing burn [ワーカー名 on|off [--until HH:MM|ISO]] | quota-canvas routing mode [NAME standard|burn|off] [--until HH:MM|ISO] [--json] | quota-canvas routing hook [--event NAME]"
+usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <ワーカー名> [--json] | quota-canvas routing local-check <名前> | quota-canvas routing burn [ワーカー名 on|off [--until HH:MM|ISO]] | quota-canvas routing mode [NAME standard|burn|off] [--until HH:MM|ISO] [--json] | quota-canvas routing hook [--event NAME]"
 state_error = "routing の状態を保存できません: {detail}"
 
 [gate]
@@ -34,12 +34,24 @@ unknown = "quota-canvas: {name}=unknown（{reason}）。判定できないため
 remains = "残り{pct}"
 remains_reset = "残り{pct}、~{dt}"
 
+[local]
+# ローカル LLM サーバー ([providers.local.<名前>]) の並列枠の文言。
+# slots / waiting は quota 行 (=boost(1/4,待ち0)) と local-check の 1 行で共用。
+slots = "{running}/{capacity}"
+waiting = "待ち{waiting}"
+unreachable = "サーバーに届かない"
+waiting_detail = "待ち{waiting}（キューが消化されるまで停止）"
+full_detail = "使用中{running}/{capacity}（満杯なので様子見）"
+forced = "QUOTA_GATE_FORCE=1"
+
 [burn]
 none = "使い切りモード: なし"
 entry = "使い切りモード: {name}（~{dt}）"
 set = "{host}: 使い切りモード {name}（~{dt}）"
 cleared = "{host}: 使い切りモード {name} を解除"
 bad_until = "--until は HH:MM か ISO 形式"
+local_no_effect = "{name} は local 枠だけのワーカーなので使い切りモード (burn) は効きません (残量の概念が無いため)"
+local_note = "（burn 無効・local 枠のみ）"
 
 [hook]
 # routing hook が additionalContext に載せる振り分けのルール (セッション開始時に

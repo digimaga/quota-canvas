@@ -1,6 +1,6 @@
 # Worker routing messages (gate.py / the routing CLI commands). The ja gate
 # strings mirror the old ~/.claude/bin/quota-gate line format.
-usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <worker> [--json] | quota-canvas routing burn [worker on|off [--until HH:MM|ISO]] | quota-canvas routing mode [NAME standard|burn|off] [--until HH:MM|ISO] [--json] | quota-canvas routing hook [--event NAME]"
+usage = "usage: quota-canvas routing line [--json] | quota-canvas routing check <worker> [--json] | quota-canvas routing local-check <name> | quota-canvas routing burn [worker on|off [--until HH:MM|ISO]] | quota-canvas routing mode [NAME standard|burn|off] [--until HH:MM|ISO] [--json] | quota-canvas routing hook [--event NAME]"
 state_error = "Unable to save routing state: {detail}"
 
 [gate]
@@ -33,12 +33,24 @@ unknown = "quota-canvas: {name}=unknown ({reason}). Cannot judge, continuing"
 remains = "remaining {pct}"
 remains_reset = "remaining {pct}, ~{dt}"
 
+[local]
+# Local LLM server slots ([providers.local.<name>]). slots / waiting are shared
+# by the quota line (=boost(1/4,queue 0)) and the local-check one-liner.
+slots = "{running}/{capacity}"
+waiting = "queue {waiting}"
+unreachable = "server unreachable"
+waiting_detail = "{waiting} queued (stop until the queue drains)"
+full_detail = "{running}/{capacity} in use (full; hold off)"
+forced = "QUOTA_GATE_FORCE=1"
+
 [burn]
 none = "burn mode: none"
 entry = "burn mode: {name} (until ~{dt})"
 set = "{host}: burn mode {name} (until ~{dt})"
 cleared = "{host}: burn mode {name} cleared"
 bad_until = "--until takes HH:MM or an ISO 8601 time"
+local_no_effect = "burn mode has no effect on {name}: it is bound to local slots only (no quota left to burn through)"
+local_note = "(burn n/a: local slots only)"
 
 [hook]
 # Rules `routing hook` appends to the quota line in additionalContext (read by

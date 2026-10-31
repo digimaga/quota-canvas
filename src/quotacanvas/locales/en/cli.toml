@@ -16,8 +16,12 @@ routing_check = "verdict for one worker: exit 3 on stop, a note for reserve/unkn
 routing_mode = "worker modes: list / <name> standard|burn|off"
 routing_burn = "burn mode: list / <name> on [--until HH:MM|ISO] / <name> off"
 routing_hook = "for the SessionStart hook: print the verdict line plus routing rules as one JSON line (always exit 0)"
+routing_local_check = "current slots of one local LLM server: reads /metrics directly (no cache). free/full -> exit 0, queued/unreachable -> exit 3"
 routing_status = "status.json to read (default: {default}; env QUOTA_STATUS_PATH)"
 routing_fallback = "fallback when the primary status.json is missing/stale (default: env {var})"
+
+[local_check]
+unknown = "local server '{name}' is not configured (it may be disabled; check [providers.local.{name}])"
 
 [init]
 exists = "{path} already exists; not overwriting"
@@ -48,6 +52,7 @@ none = "No recommendation right now"
 
 [set_key]
 unknown_provider = "Unknown provider: {provider} (one of {choices})"
+bad_local_name = "Invalid local server name: {name} (1-40 chars of A-Z a-z 0-9 . _ -)"
 no_key_needed = "{name} does not use an API key; set-key is not needed"
 deleted = "Deleted the {name} API key from the Keychain"
 prompt = "API key for {name} (one line): "

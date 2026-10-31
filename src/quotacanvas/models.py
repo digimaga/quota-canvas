@@ -51,8 +51,21 @@ class Balance:
 
 
 @dataclass
+class LocalSlots:
+    """ローカル LLM サーバー 1 台ぶんの並列枠の空き (/metrics)。
+
+    残量 % やリセット時刻の概念は無い。running / waiting はサーバーの
+    Prometheus 指標 (ラベル付きの行は合計)、capacity は設定値。
+    """
+
+    running: int           # 処理中のリクエスト数
+    waiting: int           # 待ち行列に入っているリクエスト数
+    capacity: int          # 設定で持つ並列数の上限 (サーバーは返さない)
+
+
+@dataclass
 class ProviderUsage:
-    provider: str          # "claude" | "codex" | "glm"
+    provider: str          # "claude" | "codex" | "glm" | "local:<名前>"
     name: str              # display name, e.g. "Claude Max"
     windows: List[Window] = field(default_factory=list)
     error: Optional[str] = None   # short reason when the fetch failed
@@ -61,6 +74,7 @@ class ProviderUsage:
     retry_after: Optional[float] = None  # seconds to wait before retrying (HTTP 429 Retry-After)
     stale_error: Optional[str] = None    # current fetch failure while showing last good data
     balances: List[Balance] = field(default_factory=list)
+    slots: Optional[LocalSlots] = None   # providers.local.<名前> の並列枠 (成功時)
 
 
 @dataclass

@@ -23,7 +23,7 @@ from ._base import (  # noqa: F401  (re-export)
     _from_epoch, _from_epoch_millis, _parse_iso, _short_reason, _utc_now,
     _window_identity, http_get_json,
 )
-from . import claude, codex, gemini, glm, grok, openrouter, deepseek, kimi  # noqa: F401
+from . import claude, codex, gemini, glm, grok, openrouter, deepseek, kimi, local  # noqa: F401
 
 CLAUDE_USAGE_URL = claude.CLAUDE_USAGE_URL
 CODEX_USAGE_URL = codex.CODEX_USAGE_URL
@@ -40,6 +40,8 @@ parse_glm = glm.parse_glm
 parse_reset_credits = codex.parse_reset_credits
 
 # サービスを追加するときは、モジュールを 1 ファイル足してここに並べる。
+# local (providers.local.<名前> のローカル LLM サーバー) は名前ごとに台数分
+# 定義できるので REGISTRY に入れず、providers.local 経由で別途取得する。
 _MODULES = (claude, codex, glm, grok, gemini, openrouter, deepseek, kimi)
 REGISTRY: Dict[str, Provider] = {m.PROVIDER.id: m.PROVIDER for m in _MODULES}
 

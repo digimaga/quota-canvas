@@ -214,6 +214,28 @@ review: 使える 1（reviewer）。このモデルが実装した差分はレ�
 
 データの鮮度は既定 20 分（`stale_minutes`）。対象プロバイダの窓に古い `fetched_at` や `stale_error` がある場合も `unknown` になる。リセット権の数は表示されるが判定は変えない。
 
+#### ローカル LLM サーバー
+
+`[providers.local.<名前>]` は、ローカルの OpenAI 互換サーバーの並列枠の空きを Prometheus 形式の `/metrics` から取得する（tensorfold / vLLM / SGLang / llama.cpp の既定指標、または指標名の明示指定）。残量 % やリセット時刻の概念はなく、毎回 `running` / `waiting` と設定した `capacity` を比べ、「使用中 n/capacity・待ち n」のカードを表示する（空き = 緑、満杯 = 黄、待ちあり = 赤）。ワーカーには `local:<名前>` で束ねる:
+
+```toml
+[providers.local.myserver]
+base_url = "http://localhost:8000"   # 必須
+capacity = 4                          # 並列実行数（必須。/metrics では分からないため設定で指定）
+# label = "My Server"                 # 表示名
+# engine = "tensorfold"               # 指標名の既定: tensorfold / vllm / sglang / llamacpp / custom
+# metrics_path = "/metrics"
+# running_metric / waiting_metric = "..."   # 既定の上書き。engine = "custom" では必須
+# api_key_env = "MY_SERVER_API_KEY"   # または quota-canvas set-key local:myserver（未設定ならキー無しで取得）
+# timeout = 3                         # 秒
+# color = "#22D3EE"                   # 名前ドットの色（既定はシアン）
+
+[routing.workers]
+deepseek = ["local:myserver"]         # 空き = boost、待ちあり = stop、満杯 = reserve
+```
+
+`quota-canvas routing local-check myserver` は `/metrics` を直接読み直す（キャッシュなし）ラッパー起動前チェック: 空き / 満杯は exit 0、待ちあり・届かないは exit 3 で、理由が stderr に 1 行出る。
+
 #### コマンド
 
 ```bash

@@ -356,7 +356,8 @@ class WorkerResult:
     name: str
     verdict: str                     # stop | reserve | go | boost | unknown
     reason: str                      # exhausted / below_floor / over / tight / on_track /
-                                     # spare / fresh / unknown / burn / stale / missing / error
+                                     # spare / fresh / unknown / burn / stale / missing / error /
+                                     # free / full / queued / unreachable (local 枠)
     windows: List[str] = field(default_factory=list)  # 判定に使った窓 id
     remaining: Optional[float] = None   # 代表 (一番悪い) 窓の残り %
     status: Optional[str] = None        # 代表窓のペース判定
@@ -365,15 +366,20 @@ class WorkerResult:
     burn_until: Optional[str] = None    # 使い切りモードの期限 (ISO8601, 有効なときだけ)
     stale: bool = False
     provider: str = ""                  # リセット権表示用の provider 名 (一意でないとき "")
+    local: Optional[Dict[str, int]] = None  # local 枠のとき {running, waiting, capacity}
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out = {
             "name": self.name, "verdict": self.verdict, "reason": self.reason,
             "windows": list(self.windows), "remaining": self.remaining,
             "status": self.status, "resets_at": self.resets_at,
             "exhausts_at": self.exhausts_at, "burn_until": self.burn_until,
             "stale": self.stale, "provider": self.provider,
         }
+        if self.local:
+            # local 枠のときだけ載せる (ほかのワーカーの JSON 形状は変えない)
+            out["local"] = dict(self.local)
+        return out
 
 
 @dataclass
@@ -419,10 +425,53 @@ def _status_reset_credits(status: Optional[dict], now: datetime) -> Dict[str, in
     return out
 
 
+# ------------------------------------------------------------------ local 枠
+
+def _local_number(entry: dict, key: str) -> Optional[int]:
+    """local 枠の数値項目。bool や非数・壊れた値は None。"""
+    value = entry.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) \
+            or not math.isfinite(value):
+        return None
+    return int(value)
+
+
+def local_fields(entry: dict) -> Optional[Dict[str, int]]:
+    """local 枠 (kind="local") の窓なら {running, waiting, capacity} を返す。
+    値が壊れているときも 0 詰めで返す (表示を落とさない)。ほかの窓なら None。"""
+    if entry.get("kind") != "local":
+        return None
+    return {key: (_local_number(entry, key) or 0)
+            for key in ("running", "waiting", "capacity")}
+
+
+def judge_local(entry: dict) -> Tuple[str, str]:
+    """ローカル LLM サーバー (kind="local" の窓) 1 台の判定。
+
+    届かない・401・解析失敗 (error) → stop (unreachable)、待ちあり →
+    stop (queued)、running >= capacity → reserve (full)、それ以外 →
+    boost (free)。残量 % もリセットも無いのでペース判定は使わない。
+    """
+    if entry.get("error") or entry.get("stale_error"):
+        return "stop", "unreachable"
+    running = _local_number(entry, "running")
+    waiting = _local_number(entry, "waiting")
+    capacity = _local_number(entry, "capacity")
+    if running is None or waiting is None or capacity is None or capacity < 1:
+        return "stop", "unreachable"
+    if waiting > 0:
+        return "stop", "queued"
+    if running >= capacity:
+        return "reserve", "full"
+    return "boost", "free"
+
+
 def _judge(entry: dict, floor_percent: float, floor_hours: float, now: datetime, holds: dict,
            margin_minutes: Optional[float], long_margin_minutes: float,
            spare_holds: dict) -> Tuple[str, str]:
     """窓 1 枚の判定。前回の reserve / spare は同じリセットの間だけ保持する。"""
+    if entry.get("kind") == "local":
+        return judge_local(entry)
     st = norm_status(entry.get("status"))
     if st == "exhausted":
         return "stop", "exhausted"
@@ -497,18 +546,40 @@ def _match_windows(patterns: List[str], windows: List[dict]) -> List[dict]:
 def _worker_providers(name: str, patterns: List[str]) -> Set[str]:
     """ワーカーのデータ元 provider 名の集合 (窓 id の ':' 前で判断する)。
     gemini:argon は gemini provider のデータなので、gemini の取得失敗で
-    一緒に unknown になる (quota-gate の argon/agclaude 扱いと同じ)。"""
+    一緒に unknown になる (quota-gate の argon/agclaude 扱いと同じ)。
+    local 枠 ("local:myserver") だけは台ごとに別データなので、':' で切らずに
+    窓 id そのもの (= status.json の provider 名) を使う。"""
     if not patterns:
         return {name}
-    out = {p.split(":", 1)[0] for p in patterns if isinstance(p, str) and p}
+    out: Set[str] = set()
+    for p in patterns:
+        if not (isinstance(p, str) and p):
+            continue
+        out.add(p if p.startswith("local:") and not p.endswith("*")
+                else p.split(":", 1)[0])
     return out or {name}
 
 
 def routing_worker(name: str, patterns: List[str]) -> bool:
-    """evaluate と mode 一覧で共通の対象判定。"""
-    return (name not in NON_ROUTING_PROVIDERS
-            and (not patterns or any(p.split(":", 1)[0] not in NON_ROUTING_PROVIDERS
-                                     for p in patterns)))
+    """evaluate と mode 一覧で共通の対象判定。
+
+    残高専用プロバイダ (openrouter など) と同名のワーカーは、そのデータでは
+    判定できないので通常は対象外。ただし local 枠だけを束ねる場合
+    (例: deepseek = ["local:myserver"]、手元の deepseek 互換サーバー) は名前が
+    重なっても意味が明らかなので許す。"""
+    if name in NON_ROUTING_PROVIDERS:
+        return local_only_worker(patterns)
+    return (not patterns
+            or any(p.split(":", 1)[0] not in NON_ROUTING_PROVIDERS
+                   for p in patterns))
+
+
+def local_only_worker(patterns: List[str]) -> bool:
+    """窓指定が local 枠 ("local:<名前>") だけのワーカーか。
+    こういうワーカーは残量の概念が無いので、使い切りモード (burn) の
+    reserve/stop → boost の格上げ対象外 (evaluate と mode/burn の CLI 共通)。"""
+    return bool(patterns) and all(isinstance(p, str) and p.startswith("local:")
+                                  for p in patterns)
 
 
 def _one_provider(providers: Set[str]) -> str:
@@ -619,12 +690,16 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
         providers = _worker_providers(name, patterns) - NON_ROUTING_PROVIDERS
         mine = [w for w in windows if w.get("provider") in providers]
         matched = _match_windows(list(patterns or []), windows)
+        # stale 判定の対象は「provider 単位のデータ」に加えて、ワイルドカード指定
+        # ("local:*" など _worker_providers が provider 名に正規化できないもの) が
+        # 実際に拾った窓 (_match_windows の結果)も含む。
+        data_windows = mine + [w for w in matched if w not in mine]
         if name in off:
             # 表示に使えるデータは残す。hold の計算も通常どおり続ける。
             display_windows = matched or mine
             # 未指定の窓は表示だけに使い、通常の hold に影響させない。
             display_holds = (dict(holds) if not matched or providers & errors
-                             or any(_is_stale_window(w, stale_min, now) for w in mine) else holds)
+                             or any(_is_stale_window(w, stale_min, now) for w in data_windows) else holds)
             picked = _worst(display_windows, floor, floor_hours, now, previous_holds,
                             margin_minutes, display_holds, long_margin_minutes, previous_spare_holds,
                             dict(spare_holds) if display_holds is not holds else spare_holds)
@@ -633,13 +708,14 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
                 name=name, verdict="stop", reason="disabled",
                 windows=[w["id"] for w in display_windows if isinstance(w.get("id"), str)],
                 remaining=norm_remaining(entry.get("remaining")),
-                status=norm_status(entry.get("status")) if entry else None,
+                status=norm_status(entry.get("status")) if entry and entry.get("kind") != "local" else None,
                 resets_at=entry.get("resets_at") if isinstance(entry.get("resets_at"), str) else None,
                 exhausts_at=entry.get("exhausts_at") if isinstance(entry.get("exhausts_at"), str) else None,
-                stale=any(_is_stale_window(w, stale_min, now) for w in mine),
-                provider=_one_provider(providers)))
+                stale=any(_is_stale_window(w, stale_min, now) for w in data_windows),
+                provider=_one_provider(providers),
+                local=local_fields(entry) if entry else None))
             continue
-        if any(_is_stale_window(w, stale_min, now) for w in mine):
+        if any(_is_stale_window(w, stale_min, now) for w in data_windows):
             workers.append(WorkerResult(name=name, verdict="unknown", reason="stale",
                                         stale=True, provider=_one_provider(providers)))
             continue
@@ -657,7 +733,10 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
         assert picked is not None
         entry, verdict, reason = picked
         until = burn.get(name)
-        active = until is not None and to_local(until) > now
+        # local 枠だけのワーカーは「使い切りモードで reserve/stop を boost に格上げ」
+        # の対象外 (ローカルサーバーに残量の概念が無く、待ち・満杯は実測なので)。
+        active = (until is not None and to_local(until) > now
+                  and not local_only_worker(patterns))
         if active and verdict in ("reserve", "go", "boost"):
             if verdict != "boost":
                 reason = "burn"
@@ -666,11 +745,12 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             name=name, verdict=verdict, reason=reason,
             windows=[w.get("id") for w in matched if isinstance(w.get("id"), str)],
             remaining=norm_remaining(entry.get("remaining")),
-            status=norm_status(entry.get("status")),
+            status=norm_status(entry.get("status")) if entry.get("kind") != "local" else None,
             resets_at=entry.get("resets_at") if isinstance(entry.get("resets_at"), str) else None,
             exhausts_at=_exhausts_field(entry, reason),
             burn_until=to_local(until).isoformat() if active else None,
             provider=_one_provider(providers),
+            local=local_fields(entry),
         ))
     return RoutingResult(
         workers=workers,
@@ -755,7 +835,14 @@ def format_worker_segments(result: RoutingResult, now: datetime, lang: Optional[
         if w.verdict == "unknown":
             parts.append("%s=%s" % (w.name, "stale" if w.reason == "stale" else "?"))
             continue
-        text = "%s=%s(%s" % (w.name, w.verdict, pct_str(w.remaining))
+        if w.local is not None:
+            # local 枠: 残量 % の代わりに「n/容量,待ち n」(例 boost(1/4,待ち0))
+            summary = t("routing.local.slots", running=w.local.get("running", 0),
+                        capacity=w.local.get("capacity", 0)) \
+                + "," + t("routing.local.waiting", waiting=w.local.get("waiting", 0))
+            text = "%s=%s(%s" % (w.name, w.verdict, summary)
+        else:
+            text = "%s=%s(%s" % (w.name, w.verdict, pct_str(w.remaining))
         if w.reason == "disabled":
             text += "," + t("routing.gate.disabled")
         if w.status == "over" or w.reason == "over_rounding":
@@ -805,6 +892,21 @@ def check_message(worker: WorkerResult, now: datetime, lang: Optional[str] = Non
     _set_lang(lang)
     if worker.reason == "disabled":
         return t("routing.check.disabled", name=worker.name)
+    if worker.local is not None:
+        # local 枠: 残量 % が無いので「待ち n」「満杯 n/容量」「応答なし」で理由を出す
+        loc = worker.local
+        if worker.verdict == "stop":
+            detail = t("routing.local.unreachable") if worker.reason == "unreachable" \
+                else t("routing.local.waiting_detail", waiting=loc.get("waiting", 0))
+            return t("routing.check.stop", name=worker.name, detail=detail)
+        if worker.verdict == "reserve":
+            return t("routing.check.reserve", name=worker.name,
+                     detail=t("routing.local.full_detail",
+                              running=loc.get("running", 0),
+                              capacity=loc.get("capacity", 0)))
+        if worker.verdict == "unknown":
+            return t("routing.check.unknown", name=worker.name, reason=worker.reason)
+        return None
     if worker.verdict == "stop":
         if worker.remaining is not None:
             detail = t("routing.check.remains", pct=pct_str(worker.remaining))

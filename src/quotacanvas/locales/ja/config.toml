@@ -34,4 +34,16 @@ models_roles = "{path}: '{name}' は impl / review / consult の空でない配�
 models_text = "{path}: '{name}' は制御文字・改行を含まない {max} 文字以内の文字列で指定してください"
 models_order = "{path}: 'routing.model_order' は有効なモデル名の配列で指定してください"
 
+# [providers.local.<名前>] (ローカル LLM サーバー) の検証メッセージ
+local_table = "{path}: 'providers.local' は名前 → テーブル ([providers.local.<名前>]) で指定してください（現在: {value!r}）"
+local_name = "{path}: ローカルサーバー名 '{name}' は使えません（半角英数字と . _ - だけの 40 文字以内の名前にしてください）"
+local_label = "{path}: '{name}' は空でない 40 文字以内の文字列にしてください（現在: {value!r}）"
+local_url = "{path}: 'providers.local.{name}.base_url' は http(s) の URL にしてください（例: base_url = \"http://localhost:8000\"、現在: {value!r}）"
+local_required = "{path}: '{name}' は必須です"
+local_metrics_path = "{path}: 'providers.local.{name}.metrics_path' は \"/\" で始まる 200 文字以内のパスにしてください（現在: {value!r}）"
+local_metric_name = "{path}: '{name}' は空でない 200 文字以内の文字列にしてください（現在: {value!r}）"
+local_env_name = "{path}: 'providers.local.{name}.api_key_env' は環境変数名（英字で始まる英数字と _）にしてください（現在: {value!r}）"
+local_timeout = "{path}: 'providers.local.{name}.timeout' は 0 より大きい秒数にしてください（現在: {value!r}）"
+local_custom_metrics = "{path}: 'providers.local.{name}' は engine = \"custom\" のとき running_metric と waiting_metric を両方指定してください"
+
 tolerance_order = "{path}: pacing.end_tolerance は pacing.early_tolerance 以下にしてください"

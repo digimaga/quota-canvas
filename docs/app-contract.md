@@ -37,13 +37,17 @@ The app finds the CLI at the path stored in its settings (default
       "stale_error": "HTTP 429"         // optional; only while showing last good data
     }
   ],
-  "errors": [ { "provider": "glm", "name": "GLM", "error": "HTTP 401" } ],
+  "errors": [ { "provider": "glm", "name": "GLM", "error": "HTTP 401" },
+              { "provider": "local:myserver", "name": "My Server", "error": "network error" } ],
   "windows": [
     { "id": "codex:weekly", "provider": "codex", "key": "weekly", "part_of": null,
       "used": 80.0, "remaining": 20.0, "status": "over", "length": 604800.0,
       "resets_at": "2026-10-31T02:40:44+09:00",
       "exhausts_at": "2026-10-25T15:40:44+09:00",
       "projected_leftover": -15.0, "leftover_tolerance": 8.5,
+      "fetched_at": "2026-10-24T21:29:12+09:00" },
+    { "id": "local:myserver", "provider": "local:myserver", "key": "myserver", "part_of": null,
+      "kind": "local", "running": 2, "waiting": 1, "capacity": 4,
       "fetched_at": "2026-10-24T21:29:12+09:00" }
   ],
   "routing": {
@@ -56,7 +60,11 @@ The app finds the CLI at the path stored in its settings (default
         "remaining": 20.0, "status": "over",
         "resets_at": "2026-10-31T02:40:44+09:00",
         "exhausts_at": "2026-10-25T15:40:44+09:00",
-        "burn_until": "2026-10-24T23:59:00+09:00", "stale": false, "provider": "codex" }
+        "burn_until": "2026-10-24T23:59:00+09:00", "stale": false, "provider": "codex" },
+      { "name": "deepseek", "verdict": "stop", "reason": "queued", "windows": ["local:myserver"],
+        "remaining": null, "status": null, "resets_at": null, "exhausts_at": null,
+        "local": { "running": 2, "waiting": 1, "capacity": 4 },
+        "stale": false, "provider": "local:myserver" }
     ],
     "line": "quota: codex=boost(20%,ペース超過·~10/25 15:40枯渇見込み,リセット権1,使い切り~23:59,~10/31 02:40) (21:30時点)"
   },
@@ -132,6 +140,12 @@ The app finds the CLI at the path stored in its settings (default
   `part_of`, `used`, `remaining`, `status`, `resets_at`, `length` in seconds, plus the optional `projected_leftover`, `leftover_tolerance` (absent for fresh/unknown), `exhausts_at`,
   `fetched_at`, `stale_error`). Written always, also while `routing.enabled = false` and
   while paused.
+  Local LLM servers (`[providers.local.<name>]`) add entries with `kind: "local"` and
+  `provider`/`id` `"local:<name>"` (one per server): they carry `running` / `waiting` /
+  `capacity` (parallel slots) instead of `used` / `remaining` / `status` / `resets_at`
+  (no remaining-% or reset concept), `error` instead of the numbers while unreachable, and
+  the optional `fetched_at`. `errors` likewise reports `local:<name>` with the short reason.
+  Readers must not assume `remaining` on every window entry.
 
 - `routing` — optional top-level; present only while `[routing] enabled = true` in the
   config. The routing verdict per worker (a named group of windows, `[routing.workers]`),
@@ -155,6 +169,14 @@ The app finds the CLI at the path stored in its settings (default
   - `unknown` — cannot judge (`reason: "missing"` no matching window / `"error"` provider
     fetch error / `"stale"` stale `fetched_at` or `stale_error`), decided by the worst
     window of the worker. `stale: true` marks stale workers.
+  Workers bound to local servers (`[routing.workers]` entries whose ids are
+  `"local:<name>"`) instead judge parallel slots: `boost` (`reason: "free"`, slots left),
+  `reserve` (`"full"`, running = capacity), `stop` (`"queued"`, waiting > 0) or `stop`
+  (`"unreachable"`, fetch error). They carry `local: {running, waiting, capacity}` while
+  the quota keys `remaining` / `status` / `resets_at` / `exhausts_at` stay present but
+  `null` (the `local` key itself is absent for cloud workers), and workers whose ids are
+  all local are never lifted to boost by an active burn window (`burn_until` then stays
+  `null` too; the CLI also refuses to set burn on them).
   OpenRouter, DeepSeek and Kimi are excluded from routing verdicts even when their windows are specified explicitly. With no `[routing.workers]` in the config, each other fetched provider becomes a single worker
   judged by its worst independent window — Gemini's worker then also includes the Argon
   (`gemini:argon`) and Antigravity-Claude (`gemini:claude`, `gemini:claude_5h`) windows;
@@ -367,6 +389,7 @@ app may put into `providers.<p>.windows` (empty list = show every window).
 | `routing.short_over_margin_minutes` | number > 0 or `null`（既定 `null`） | 短い窓の終盤の猶予（分）。`null` は窓の長さの 10% |
 | `routing.stale_minutes` | 1 以上（既定 20） | 振り分け: 「古いとみなす（分）」Stepper。fetched_at がこれより古い窓を含むワーカーは stale |
 | `routing.workers` | ワーカー名 → 窓 id 配列（`config --set-json` は `[{"name", "windows"}]` の配列も可、`worker_order` でも順指定可）、空 = サービスごとの既定 | 振り分け: ワーカーエディタ（名前 + 窓 id のカンマ区切り、上下ボタンで並べ替え、「既定に戻す（サービスごと）」で空にする）。名前は `^[A-Za-z0-9._-]{1,40}$` |
+| `providers.local` | `{<名前>: {enabled, base_url, capacity, label?, engine, metrics_path?, running_metric?, waiting_metric?, api_key_env?, timeout?, color?}}`（TOML と同じ形。config JSON に載るがアプリの UI は持たない） | — (engine only)。ローカル LLM サーバー（OpenAI 互換、Prometheus `/metrics`）の並列枠。`local:<名前>` の窓 id で routing.workers に結べる。アプリの設定ドキュメントは未知のキーを保持するので `config --set-json` で消えない |
 
 Strings the engine returns or draws — `advice`, `status_label`, `label`, `error`
 (in status.json and CLI `{"error"}`), panel text — are in the language chosen by

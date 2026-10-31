@@ -87,6 +87,11 @@ def build_cards(usages: List[ProviderUsage], history: History, now: datetime,
     pos = {wid: i for i, wid in enumerate(order)} if order else None
     cards: List[Tuple[tuple, Card]] = []
     for u in usages:
+        if u.slots is not None:
+            # ローカル LLM サーバーは窓 (残量 %) ではなく並列枠 1 枚のカード。
+            # 失敗時は slots が None になり、下のエラーカードに渡る。
+            cards.append(((1, PROVIDER_ORDER.get(u.provider, 9), u.provider), (u, None)))
+            continue
         if u.error and not u.windows:
             if (u.error in translations("providers.no_credentials") or
                     (u.provider in gate.NON_ROUTING_PROVIDERS
@@ -134,9 +139,13 @@ def all_window_paces(usages: List[ProviderUsage], history: History, now: datetim
 
 class Poller:
     def __init__(self, history: History, enabled: Optional[Set[str]] = None,
-                 last_good_path: Optional[Path] = None, record: bool = True):
+                 last_good_path: Optional[Path] = None, record: bool = True,
+                 local: Optional[Dict[str, Any]] = None):
         self.history = history
         self.enabled = enabled  # None なら全部、集合ならその provider だけ取得
+        # ローカル LLM サーバー ([providers.local.<名前>] の {名前: 設定})。
+        # REGISTRY とは別経路で毎回 /metrics を読む (last-good を使わない)。
+        self.local: Dict[str, Any] = dict(local) if local else {}
         # record=False で読み取り専用にする (last-good.json / history.jsonl /
         # periods.jsonl に書かない。`pick` など、走行中の run と書き込みを
         # 重ねたくない 1 回きりの計算用)。
@@ -248,6 +257,10 @@ class Poller:
                     self.history.record([w for w in u.windows if w.part_of is None],
                                         now)
             result.append(u)
+        if self.local:
+            # ローカル LLM サーバーは last-good (通信失敗時の前回値) を使わず、
+            # 今の状態または失敗をそのまま返す。空きは分単位で変わるため。
+            result.extend(providers.local.fetch_all(self.local, now))
         return result
 
 
@@ -400,8 +413,14 @@ def _render_layout(cfg: Config, cards: Optional[List[Card]] = None):
 
 
 def _brand_colors(cfg: Config) -> Dict[str, str]:
-    """render に渡す色の上書き {provider: "#RRGGBB"}。指定のあるものだけ。"""
-    return {name: color for name, color in cfg.providers.colors.items() if color}
+    """render に渡す色の上書き {provider: "#RRGGBB"}。指定のあるものだけ。
+    ローカル LLM サーバーは [providers.local.<名前>].color を
+    "local:<名前>" キーで渡す (render._brand_color がここを見る)。"""
+    out = {name: color for name, color in cfg.providers.colors.items() if color}
+    for name, entry in cfg.providers.local.items():
+        if entry.color:
+            out["local:" + name] = entry.color
+    return out
 
 
 # ------------------------------------------------------------ config helpers
@@ -939,6 +958,14 @@ def _cmd_routing_burn_locked(args, cfg: Config) -> int:
         else:
             print(t("routing.usage"), file=sys.stderr)
         return 2
+    if action == "on" and gate.local_only_worker(cfg.routing.workers.get(args.name, [])):
+        # local 枠だけのワーカーは burn の格上げが効かないので、無効と同じ扱いで断る
+        message = t("routing.burn.local_no_effect", name=args.name)
+        if args.json:
+            print(json.dumps({"error": message}, ensure_ascii=False))
+        else:
+            print(message, file=sys.stderr)
+        return 2
     until = gate.parse_until("23:59", now)
     if action == "on" and args.until:
         parsed = gate.parse_until(args.until, now)
@@ -970,18 +997,30 @@ def _cmd_routing_mode_locked(args, cfg: Config) -> int:
     burn = gate.load_burn(gate.BURN_PATH, now)
     off = gate.load_off(gate.OFF_PATH)
     known = set(cfg.routing.workers) if cfg.routing.workers else set(gate.KNOWN_PROVIDERS)
-    excluded = {name for name, patterns in cfg.routing.workers.items()
+    workers_cfg = cfg.routing.workers or {}
+    excluded = {name for name, patterns in workers_cfg.items()
                 if not gate.routing_worker(name, patterns)}
     if args.name or args.mode or args.until:
+        # local 枠だけのワーカーに burn は効かない (残量の概念が無い) ので断る
+        local_only = gate.local_only_worker(workers_cfg.get(args.name) or [])
         valid = (args.name and gate.safe_worker_name(args.name)
                  and (args.name not in excluded or args.mode == "standard")
-                 and (args.name not in gate.NON_ROUTING_PROVIDERS or args.mode == "standard")
+                 and (args.name not in gate.NON_ROUTING_PROVIDERS
+                      or args.mode == "standard"
+                      # 残高専用プロバイダと同名でも local 枠だけ束ねるワーカーは可
+                      or gate.routing_worker(args.name, workers_cfg.get(args.name) or []))
                  and args.mode in ("standard", "burn", "off")
+                 and not (args.mode == "burn" and local_only)
                  and (args.name in known or (args.mode == "standard" and args.name in (set(burn) | off)))
                  and (not args.until or args.mode == "burn"))
         until = gate.parse_until(args.until or "23:59", now) if args.mode == "burn" else None
         if not valid or (args.mode == "burn" and until is None):
-            message = t("routing.burn.bad_until") if valid and args.mode == "burn" else t("routing.usage")
+            if valid and args.mode == "burn" and until is None:
+                message = t("routing.burn.bad_until")
+            elif args.mode == "burn" and local_only:
+                message = t("routing.burn.local_no_effect", name=args.name)
+            else:
+                message = t("routing.usage")
             if args.json:
                 _print_json({"error": message})
             else:
@@ -998,7 +1037,11 @@ def _cmd_routing_mode_locked(args, cfg: Config) -> int:
             gate.clear_off(gate.OFF_PATH, args.name)
         burn = gate.load_burn(gate.BURN_PATH, now)
         off = gate.load_off(gate.OFF_PATH)
-    names = (known | set(burn) | off) - gate.NON_ROUTING_PROVIDERS - excluded
+    names = {name for name in (known | set(burn) | off) - excluded
+             # 残高専用プロバイダ名は一覧から外す。ただし local 枠を束ねる
+             # ワーカーとして設定にあるものだけは残す (deepseek = ["local:myserver"])。
+             if name not in gate.NON_ROUTING_PROVIDERS
+             or gate.routing_worker(name, workers_cfg.get(name) or [])}
     modes = [{"name": name, "mode": "off" if name in off else "burn" if name in burn else "standard",
               "until": burn[name].isoformat() if name in burn and name not in off else None}
              for name in sorted(names) if gate.safe_worker_name(name)]
@@ -1006,7 +1049,11 @@ def _cmd_routing_mode_locked(args, cfg: Config) -> int:
         _print_json({"modes": modes})
     else:
         for item in modes:
-            print("%s: %s%s" % (item["name"], item["mode"], " (~%s)" % item["until"] if item["until"] else ""))
+            # local 枠だけのワーカーは burn が効かないので一覧でも分かるように
+            note = (" " + t("routing.burn.local_note")
+                    if gate.local_only_worker(workers_cfg.get(item["name"]) or []) else "")
+            print("%s: %s%s%s" % (item["name"], item["mode"],
+                                  " (~%s)" % item["until"] if item["until"] else "", note))
     return 0
 
 
@@ -1023,7 +1070,40 @@ def _cmd_routing_state(args, cfg: Config, operation) -> int:
         return 2
 
 
+def _cmd_routing_local_check(args, cfg: Config) -> int:
+    """routing local-check <名前>: ラッパーの起動直前チェック。
+
+    status.json を読まずに /metrics を取りに行き、gate.judge_local と同じ
+    判定を今この瞬間に対して行う。boost / reserve → exit 0、
+    stop (待ちあり・届かない) → exit 3。理由は stderr に 1 行。
+    routing mode (burn / off) には影響されない (起動可否のみを見る)。
+    """
+    entry = cfg.providers.local.get(args.name)
+    if entry is None or not entry.enabled:
+        print(t("cli.local_check.unknown", name=args.name), file=sys.stderr)
+        return 2
+    if os.environ.get("QUOTA_GATE_FORCE") == "1":
+        print("quota-canvas: local:%s=boost(%s)" % (args.name, t("routing.local.forced")),
+              file=sys.stderr)
+        return 0
+    now = datetime.now(timezone.utc)
+    usage = providers.local.fetch_one(args.name, entry, now)
+    if usage.error:
+        print("quota-canvas: local:%s=stop(%s)" % (args.name, t("routing.local.unreachable")),
+              file=sys.stderr)
+        return 3
+    verdict, _reason = gate.judge_local(providers.local.window_entry(usage))
+    slots = usage.slots
+    detail = "%s,%s" % (
+        t("routing.local.slots", running=slots.running, capacity=slots.capacity),
+        t("routing.local.waiting", waiting=slots.waiting))
+    print("quota-canvas: local:%s=%s(%s)" % (args.name, verdict, detail), file=sys.stderr)
+    return 3 if verdict == "stop" else 0
+
+
 def _cmd_routing(args, cfg: Config) -> int:
+    if args.routing_cmd == "local-check":
+        return _cmd_routing_local_check(args, cfg)
     if args.routing_cmd == "line":
         return _cmd_routing_line(args, cfg)
     if args.routing_cmd == "check":
@@ -1039,7 +1119,14 @@ def _cmd_routing(args, cfg: Config) -> int:
 
 
 def _cmd_set_key(args) -> int:
-    """set-key: API キーを login キーチェーンに保存 / --delete で削除する。"""
+    """set-key: API キーを login キーチェーンに保存 / --delete で削除する。
+
+    ローカル LLM サーバーは REGISTRY に無いが `local:<名前>` を受け付ける
+    (アカウント名は設定の [providers.local.<名前>] と同じ local:<名前>。
+    名前の規則も設定と同じ gate.WORKER_NAME_RE で検証する)。
+    """
+    if args.provider.startswith("local:"):
+        return _set_local_key(args.provider[len("local:"):], args)
     provider = providers.REGISTRY.get(args.provider)
     if provider is None:
         return _fail(t("cli.set_key.unknown_provider", provider=args.provider,
@@ -1068,6 +1155,42 @@ def _cmd_set_key(args) -> int:
     else:
         print(t("cli.set_key.stored", name=provider.shown_name,
                 service=keychain.SERVICE, account=provider.id))
+    return 0
+
+
+def _set_local_key(name: str, args) -> int:
+    """set-key local:<名前>: ローカル LLM サーバーのキーを保存 / --delete で削除。
+
+    名前は [providers.local.<名前>] と同じ規則 (gate.WORKER_NAME_RE) で検証する。
+    設定にまだ書いていない名前でも保存できる (先にキーを入れてから設定する)。
+    """
+    from .gate import WORKER_NAME_RE
+
+    account = "local:" + name
+    if not name or not WORKER_NAME_RE.fullmatch(name):
+        return _fail(t("cli.set_key.bad_local_name", name=account))
+    if args.delete:
+        try:
+            keychain.delete(account)
+        except keychain.KeychainError as exc:
+            return _fail(str(exc))
+        if args.json:
+            _print_json({"provider": account, "deleted": True})
+        else:
+            print(t("cli.set_key.deleted", name=account))
+        return 0
+    key = _read_secret(t("cli.set_key.prompt", name=account))
+    if not key:
+        return _fail(t("cli.set_key.empty_key"))
+    try:
+        keychain.write(account, key)
+    except keychain.KeychainError as exc:
+        return _fail(str(exc))
+    if args.json:
+        _print_json({"provider": account, "stored": True})
+    else:
+        print(t("cli.set_key.stored", name=account,
+                service=keychain.SERVICE, account=account))
     return 0
 
 
@@ -1177,6 +1300,12 @@ def main(argv=None) -> int:
                                      help=t("cli.help.routing_hook"))
     p_hook.add_argument("--event", default="SessionStart", metavar="NAME",
                         help="hookEventName to report (default: SessionStart)")
+    # local-check だけは status.json ではなくサーバー本体に取りに行くので
+    # routing_common (既定の status パス) を付けない。
+    p_local = routing_subs.add_parser("local-check",
+                                      help=t("cli.help.routing_local_check"))
+    p_local.add_argument("name", metavar="NAME",
+                         help="local server name, e.g. myserver")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
@@ -1220,7 +1349,7 @@ def main(argv=None) -> int:
         return _cmd_routing(args, cfg)
 
     history = History(args.history) if args.history else History()
-    poller = Poller(history, enabled=cfg.providers.enabled())
+    poller = Poller(history, enabled=cfg.providers.enabled(), local=cfg.providers.local)
     screen = None if args.no_screen else _open_screen()
     applied_brightness = _apply_brightness(screen, cfg, None)
 
@@ -1306,6 +1435,7 @@ def main(argv=None) -> int:
         cfg, reloaded, now_lang = _refresh_config(cfg)
         if reloaded:
             poller.enabled = cfg.providers.enabled()
+            poller.local = cfg.providers.local
             providers.claude.set_token_refresh(cfg.providers.claude_token_refresh)
             providers.codex.set_token_refresh(cfg.providers.codex_token_refresh)
             providers.grok.set_token_refresh(cfg.providers.grok_token_refresh)
@@ -1345,7 +1475,11 @@ def main(argv=None) -> int:
             last_fetch = time.monotonic()
             next_fetch = last_fetch + interval  # 取り直したら定期取得もそこから interval 後へ
             deferred_fetch = None
-        visible_usages = [u for u in usages if u.provider in cfg.providers.enabled()]
+        # local:<名前> は providers.<名前> の有効判定とは別 ([providers.local]
+        # 側の enabled で fetch_all が既に絞っている) のでそのまま通す。
+        visible_usages = [u for u in usages
+                          if u.provider in cfg.providers.enabled()
+                          or u.provider.startswith("local:")]
         cards = build_cards(visible_usages, history, now, order=_window_order(args, cfg),
                             early_tolerance=cfg.pacing.early_tolerance, end_tolerance=cfg.pacing.end_tolerance,
                             provider_windows={name: cfg.providers.windows_for(name)

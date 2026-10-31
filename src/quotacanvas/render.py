@@ -77,6 +77,11 @@ BRAND_COLORS = {
     "openrouter": "#8B5CF6",
     "deepseek": "#4D6BFE",
     "kimi": "#18A999",
+    # ローカル LLM サーバー (providers.local.<名前>、provider id "local:<名前>")
+    # は窓と違って状態色 (空き/満杯/待ち) が主体なので、名前のドットは落ち着いた
+    # シアン 1 色に寄せる。[providers.local.<名前>].color で台ごとに上書き可
+    # (cli._brand_colors が "local:<名前>" キーで渡してくる)。
+    "local": "#22D3EE",
 }
 _BRAND_DEFAULT = (154, 163, 175)  # #9CA3AF for unknown services
 
@@ -96,8 +101,11 @@ _PART_COLORS = [_hex_color(h) for h in ("#A78BFA", "#F59E0B", "#22D3EE")]
 def _brand_color(colors, provider):
     # type: (Optional[dict], str) -> tuple
     """Theme color for `provider`: caller override first, then BRAND_COLORS,
-    then the neutral gray default."""
+    then the neutral gray default. local:<名前> は個別指定が無ければ "local"
+    の色 (ローカルサーバーは名前が設定依存なので 1 色に統一)。"""
     c = (colors or {}).get(provider) or BRAND_COLORS.get(provider)
+    if c is None and provider.startswith("local:"):
+        c = BRAND_COLORS.get("local")
     if c is None:
         return _BRAND_DEFAULT
     if isinstance(c, str):
@@ -1612,6 +1620,84 @@ def _draw_balance_card(s, box, g, theme):
         _draw_stale_mark(s, x1 - 16, y1 - 25, g["stale"], x1 - x - 16)
 
 
+# ローカル LLM サーバーの状態: 待ちあり > 満杯 > 空き の順で優先。
+# gate.judge_local と同じ基準 (waiting > 0 → queued、running >= capacity → full)。
+_LOCAL_STATE_COLOR = {"free": GREEN, "full": YELLOW, "queued": RED}
+_LOCAL_STATE_KEY = {
+    "free": "render.local.state_free",
+    "full": "render.local.state_full",
+    "queued": "render.local.state_queued",
+}
+
+
+def _local_state(slots):
+    # type: (LocalSlots) -> str
+    if slots.waiting > 0:
+        return "queued"
+    if slots.running >= slots.capacity:
+        return "full"
+    return "free"
+
+
+def _draw_local_card(s, box, g, theme):
+    # type: (_S, Tuple[int, int, int, int], dict, tuple) -> None
+    """ローカル LLM サーバー (providers.local) の並列枠のカード。
+    「使用中 n/capacity・待ち n」を、空き (緑) / 満杯 (黄) / 待ちあり (赤) の
+    状態色で描く。大きい列にも小パネルにも使う (高さで切り替え)。
+    取得失敗中は呼び出し側がエラーカードに流すので、ここには成功時しか来ない。"""
+    x0, y0, x1, y1 = box
+    slots = g["items"][0][0].slots
+    state = _local_state(slots)
+    color = _LOCAL_STATE_COLOR[state]
+    compact = (y1 - y0) < 300            # 小パネルかどうか
+    s.rrect(box, radius=CARD_RADIUS, fill=CARD_BG)
+    s.rrect((x0, y0, x0 + 6, y1), radius=3, fill=color,
+            corners=(True, False, False, True))
+    pad = 16 if compact else 22
+    tx0 = x0 + 6 + pad + 2
+    tx1 = x1 - pad
+    cw = tx1 - tx0
+
+    # -- 1. header: theme dot + name, state badge on the right --
+    hy = y0 + (26 if compact else 30)
+    badge = t(_LOCAL_STATE_KEY[state])
+    bf = F("w6", 13)
+    bh = 22
+    bx1 = tx1
+    bx0 = bx1 - s.textlength(badge, font=bf) - 20
+    s.rrect((bx0, hy - bh / 2.0, bx1, hy + bh / 2.0), radius=bh / 2.0, fill=color)
+    s.text(((bx0 + bx1) / 2.0, hy + 1), badge, font=bf, fill=_on(color),
+           anchor="mm")
+    s.rrect((tx0, hy - 5, tx0 + 10, hy + 5), radius=5, fill=theme)
+    nf = _fit_font(s, g["name"], "w7", 20 if compact else 22,
+                   bx0 - 10 - (tx0 + 18), min_size=12)
+    s.text((tx0 + 18, hy), g["name"], font=nf, fill=TEXT, anchor="lm")
+
+    # -- 2. big "running/capacity" + waiting count --------------------------
+    frac = "%d/%d" % (slots.running, slots.capacity)
+    pf = F("w8", 44 if compact else 64)
+    cy = y0 + (100 if compact else 170)
+    s.text((tx0, cy), frac, font=pf, fill=color, anchor="ls")
+    wx = tx0 + s.textlength(frac, font=pf) + 10
+    s.text((wx, cy + 2), t("render.local.running_word"),
+           font=F("w5", 15 if compact else 17), fill=TEXT_DIM, anchor="ls")
+    wtxt = t("render.local.waiting", waiting=slots.waiting)
+    wf = _fit_font(s, wtxt, "w6", 16 if compact else 18, tx1 - wx, min_size=10)
+    s.text((tx1, cy + 2), wtxt, font=wf,
+           fill=RED if slots.waiting > 0 else TEXT_DIM, anchor="rs")
+
+    # -- 3. capacity bar (fill = running / capacity) -------------------------
+    bar_h = 12 if compact else 16
+    by1 = y1 - pad - 6
+    by0 = by1 - bar_h
+    s.rrect((tx0, by0, tx1, by1), radius=bar_h / 2.0, fill=DIVIDER)
+    ratio = slots.running / float(slots.capacity) if slots.capacity else 1.0
+    fill_w = _clamp(ratio, 0.0, 1.0) * (tx1 - tx0)
+    if fill_w > 0:
+        s.rrect((tx0, by0, tx0 + fill_w, by1),
+                radius=min(bar_h / 2.0, fill_w / 2.0), fill=color)
+
+
 def _draw_large_column(s, box, p, colors, gauge, now):
     # type: (_S, Tuple[int, int, int, int], dict, Optional[dict], str, datetime) -> None
     """One large column: a service card, or the gray error card when the
@@ -1620,6 +1706,9 @@ def _draw_large_column(s, box, p, colors, gauge, now):
     if p["main"] is None:
         if not p["g"]["error"] and p["g"]["items"][0][0].balances:
             _draw_balance_card(s, box, p["g"], theme)
+            return
+        if not p["g"]["error"] and p["g"]["items"][0][0].slots is not None:
+            _draw_local_card(s, box, p["g"], theme)
             return
         _draw_error_card(s, box, p["g"], theme)
         return
@@ -1694,6 +1783,9 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
             theme = _brand_color(colors, p["g"]["provider"])
             if p["main"] is None and not p["g"]["error"] and p["g"]["items"][0][0].balances:
                 _draw_balance_card(s, sbox, p["g"], theme)
+            elif p["main"] is None and not p["g"]["error"] \
+                    and p["g"]["items"][0][0].slots is not None:
+                _draw_local_card(s, sbox, p["g"], theme)
             elif p["main"] is None:
                 _draw_small_error(s, sbox, p["g"]["name"], p["g"]["error"],
                                   theme)

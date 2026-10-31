@@ -17,6 +17,7 @@ import re
 import tempfile
 import tomllib
 import unicodedata
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, time
 from pathlib import Path
@@ -150,6 +151,33 @@ ROUTING_WORKER_PREFIX = "*"  # routing.workers の値の末尾に付けると前
 
 
 @dataclass
+class LocalProvider:
+    """[providers.local.<名前>] 1 台ぶん: ローカル LLM サーバーの並列枠。
+
+    OpenAI 互換のローカルサーバーは Prometheus 形式の /metrics を出すので、
+    running / waiting の指標を読む。並列数の上限 (capacity) はサーバーが
+    返さないので設定で持つ。name は "local:<名前>" の窓 id になる
+    (routing.workers でワーカーに結べる)。
+    """
+
+    name: str
+    base_url: str
+    capacity: int
+    label: str = ""                    # 表示名。空なら name
+    engine: str = "tensorfold"         # tensorfold / vllm / sglang / llamacpp / custom
+    enabled: bool = True
+    metrics_path: str = "/metrics"
+    running_metric: Optional[str] = None   # None ならエンジンの既定 (custom は必須)
+    waiting_metric: Optional[str] = None
+    api_key_env: Optional[str] = None      # キーチェーン local:<名前> の次に見る環境変数
+    timeout: float = 3.0
+    color: str = ""                    # テーマ色 ("#RRGGBB"。空 = 既定のシアン)
+
+    def shown_name(self) -> str:
+        return self.label or self.name
+
+
+@dataclass
 class RoutingModel:
     workers: List[str]
     roles: List[str]
@@ -195,6 +223,7 @@ class Providers:
     gemini_token_refresh: str = "cli"  # (互換) 受け付けるが使わない。トークンの更新は agy 自身が行う
     windows: Dict[str, List[str]] = field(default_factory=dict)  # provider → 窓 key 一覧。空 = 全部
     colors: Dict[str, str] = field(default_factory=dict)  # provider → テーマ色 ("#RRGGBB")。省略可
+    local: Dict[str, LocalProvider] = field(default_factory=dict)  # [providers.local.<名前>] (台数分)
 
     def enabled(self) -> Set[str]:
         """取得する provider 名の集合。"""
@@ -334,6 +363,10 @@ def _build(data: Dict[str, Any], path: Path) -> Config:
     if providers is not None:
         _need_table(providers, "providers", path)
         for key, value in providers.items():
+            if key == "local":
+                # [providers.local.<名前>]: ローカル LLM サーバー (台数分)
+                cfg.providers.local = _local_providers(value, path)
+                continue
             if key not in PROVIDERS:
                 _unknown(path, "providers." + key)
                 continue
@@ -584,6 +617,99 @@ def _worker_map(value: Any, path: Path,
 
 
 # -------------------------------------------------------- value validators
+
+
+def _local_providers(value: Any, path: Path) -> Dict[str, LocalProvider]:
+    """[providers.local.<名前>] のテーブルを検証して LocalProvider の並びにする。
+
+    名前は "local:<名前>" の窓 id・キーチェーン account に使うので、
+    routing.workers のワーカー名 (gate.WORKER_NAME_RE) と同じ条件に限定する。
+    engine = "custom" のときは指標名の既定が無いので running_metric /
+    waiting_metric が必須。ほかのエンジンでも上書きできる。
+    """
+    from .providers.local import LOCAL_ENGINES, LOCAL_TIMEOUT_MAX
+    from .gate import WORKER_NAME_RE
+
+    if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
+        raise ConfigError(t("config.local_table", path=path, value=value))
+    out: Dict[str, LocalProvider] = {}
+    for raw_name, table in value.items():
+        # 前後に空白のある名前は、strip すると黙って上書し合うので拒否する。
+        name = raw_name
+        if not name or name != name.strip() or not WORKER_NAME_RE.fullmatch(name):
+            raise ConfigError(t("config.local_name", path=path, name=raw_name))
+        sub = "providers.local." + name
+        _need_table(table, sub, path)
+        entry = LocalProvider(name=name, base_url="", capacity=1)
+        seen: Set[str] = set()
+        for key, item in table.items():
+            if key == "enabled":
+                entry.enabled = _bool(item, sub + ".enabled", path)
+            elif key == "label":
+                if not isinstance(item, str) or not item.strip() or len(item) > 40:
+                    raise ConfigError(t("config.local_label", path=path,
+                                        name=sub + ".label", value=item))
+                entry.label = item.strip()
+            elif key == "base_url":
+                if not isinstance(item, str) or not _http_url(item.strip()):
+                    raise ConfigError(t("config.local_url", path=path, name=name,
+                                        value=item))
+                entry.base_url = item.strip()
+                seen.add("base_url")
+            elif key == "engine":
+                entry.engine = _choice(item, sub + ".engine", path, LOCAL_ENGINES)
+            elif key == "capacity":
+                entry.capacity = _int_in(item, sub + ".capacity", path, 1)
+                seen.add("capacity")
+            elif key == "metrics_path":
+                if not isinstance(item, str) or not item.startswith("/") or len(item) > 200:
+                    raise ConfigError(t("config.local_metrics_path", path=path,
+                                        name=name, value=item))
+                entry.metrics_path = item
+            elif key in ("running_metric", "waiting_metric"):
+                if not isinstance(item, str) or not item.strip() or len(item) > 200:
+                    raise ConfigError(t("config.local_metric_name", path=path,
+                                        name=sub + "." + key, value=item))
+                setattr(entry, key, item.strip())
+            elif key == "api_key_env":
+                if not isinstance(item, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", item):
+                    raise ConfigError(t("config.local_env_name", path=path,
+                                        name=name, value=item))
+                entry.api_key_env = item
+            elif key == "timeout":
+                seconds = _float_in(item, sub + ".timeout", path, 0, LOCAL_TIMEOUT_MAX)
+                if seconds <= 0:
+                    raise ConfigError(t("config.local_timeout", path=path, name=name,
+                                        value=item))
+                entry.timeout = seconds
+            elif key == "color":
+                # providers.<p>.color と同じ検証。status.json の colors は
+                # "local:<名前>" をキーにして render に渡される。
+                entry.color = _color(item, sub + ".color", path)
+            else:
+                _unknown(path, sub + "." + key)
+        for required in ("base_url", "capacity"):
+            if required not in seen:
+                raise ConfigError(t("config.local_required", path=path,
+                                    name="%s.%s" % (sub, required)))
+        if entry.engine == "custom" and (not entry.running_metric or not entry.waiting_metric):
+            raise ConfigError(t("config.local_custom_metrics", path=path, name=name))
+        out[name] = entry
+    return out
+
+
+def _http_url(value: str) -> bool:
+    """http(s) の URL として最低限の形を持つか (ホスト名は必須)。
+    userinfo (user:pass@)・query・fragment は認証情報の漏れ経路になり得るので拒否。
+    ポート番号として不正 (範囲外・非数値) なものも urlsplit と同じ判定で拒否。"""
+    try:
+        parts = urllib.parse.urlsplit(value)
+        parts.port  # 不正なポートはここで ValueError
+    except ValueError:
+        return False
+    return (parts.scheme in ("http", "https") and bool(parts.hostname)
+            and not parts.username and not parts.password
+            and not parts.query and not parts.fragment)
 
 def _model_map(value: Any, path: Path, order: Any = None) -> Dict[str, RoutingModel]:
     from .gate import safe_worker_name
@@ -962,6 +1088,39 @@ def format_toml(cfg: Config) -> str:
             ]
         else:
             lines += ["# テーマ色を既定から変えるなら例のように書く: color = \"#D97757\""]
+    for entry in cfg.providers.local.values():
+        lines += [
+            "",
+            "# ローカル LLM サーバー (OpenAI 互換) の並列枠。/metrics を読んで",
+            '# "local:%s" の窓 id で routing.workers に結べる。' % entry.name,
+            "[providers.local.%s]" % entry.name,
+            "enabled = %s" % ("true" if entry.enabled else "false"),
+        ]
+        if entry.label:
+            lines.append('label = %s' % json.dumps(entry.label, ensure_ascii=False))
+        lines += [
+            'base_url = %s' % json.dumps(entry.base_url),
+            '# engine = "tensorfold" | "vllm" | "sglang" | "llamacpp" | "custom"',
+            'engine = "%s"' % entry.engine,
+            "# 並列数の上限 (サーバーは /metrics で返さないので設定で持つ)",
+            "capacity = %d" % entry.capacity,
+        ]
+        if entry.color:
+            lines.append('color = "%s"' % entry.color)
+        if entry.metrics_path != "/metrics":
+            lines.append('metrics_path = %s' % json.dumps(entry.metrics_path))
+        if entry.running_metric or entry.waiting_metric:
+            lines.append("# 指標名の既定を上書きする (custom エンジンでは必須)")
+            if entry.running_metric:
+                lines.append('running_metric = %s' % json.dumps(entry.running_metric))
+            if entry.waiting_metric:
+                lines.append('waiting_metric = %s' % json.dumps(entry.waiting_metric))
+        if entry.api_key_env:
+            lines.append("# API キー: キーチェーン local:%s → この環境変数 (無ければヘッダーを送らない)"
+                         % entry.name)
+            lines.append('api_key_env = "%s"' % entry.api_key_env)
+        if entry.timeout != 3.0:
+            lines.append("timeout = %r" % entry.timeout)
     return "\n".join(lines) + "\n"
 
 
@@ -1014,7 +1173,7 @@ def config_to_dict(cfg: Config) -> Dict[str, Any]:
         "pacing": pacing,
         "providers": {
             name: _provider_entry(cfg, name) for name in PROVIDERS
-        },
+        } | ({"local": _local_entries(cfg)} if cfg.providers.local else {}),
         "routing": {
             "enabled": cfg.routing.enabled,
             "floor_percent": cfg.routing.floor_percent,
@@ -1047,6 +1206,30 @@ def _provider_entry(cfg: Config, name: str) -> Dict[str, Any]:
     if color:
         entry["color"] = color
     return entry
+
+
+def _local_entries(cfg: Config) -> Dict[str, Any]:
+    """providers.local 1 件ぶんの dict (config_to_dict 用。TOML と同じ形)。"""
+    out: Dict[str, Any] = {}
+    for name, e in cfg.providers.local.items():
+        entry: Dict[str, Any] = {
+            "enabled": e.enabled,
+            "base_url": e.base_url,
+            "engine": e.engine,
+            "capacity": e.capacity,
+            "metrics_path": e.metrics_path,
+            "timeout": e.timeout,
+        }
+        if e.label:
+            entry["label"] = e.label
+        if e.color:
+            entry["color"] = e.color
+        for key in ("running_metric", "waiting_metric", "api_key_env"):
+            value = getattr(e, key)
+            if value:
+                entry[key] = value
+        out[name] = entry
+    return out
 
 
 def config_from_dict(data: Any, source: str = JSON_SOURCE) -> Config:

@@ -16,8 +16,12 @@ routing_check = "ワーカー 1 件の判定: stop なら exit 3、reserve / unk
 routing_mode = "ワーカーのモード: 一覧 / <名前> standard|burn|off"
 routing_burn = "使い切りモード: 一覧 / <名前> on [--until HH:MM|ISO] / <名前> off"
 routing_hook = "セッション開始フック用: 判定 1 行と振り分けルールを additionalContext に入れた JSON を出す (常に exit 0)"
+routing_local_check = "ローカル LLM サーバー 1 台の今の空き: /metrics を直接読む (キャッシュなし)。空き/満杯は exit 0、待ちあり・届かないは exit 3"
 routing_status = "読む status.json (既定: {default}、環境変数 QUOTA_STATUS_PATH でも可)"
 routing_fallback = "主の status.json が無い・古いときに使う予備 (既定: 環境変数 {var})"
+
+[local_check]
+unknown = "ローカルサーバー '{name}' は設定にありません (無効化されている可能性もあります。[providers.local.{name}] を確認してください)"
 
 [init]
 exists = "{path} は既に存在するので上書きしません"
@@ -48,6 +52,7 @@ none = "いまおすすめのサービスはありません"
 
 [set_key]
 unknown_provider = "未知のサービスです: {provider}（{choices} のいずれか）"
+bad_local_name = "ローカルサーバー名が不正です: {name}（半角英数字と . _ - で 1〜40 文字）"
 no_key_needed = "{name} は API キーを使わないので set-key は不要です"
 deleted = "{name} の API キーをキーチェーンから削除しました"
 prompt = "{name} の API キーを入力 (1 行): "
