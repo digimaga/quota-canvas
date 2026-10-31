@@ -132,6 +132,23 @@ struct ConfigDocument {
         providerDict(provider)["token_refresh"] as? String
     }
 
+    // MARK: - providers.local（ローカル LLM サーバー）
+
+    /// [providers.local.<名前>] の一覧（名前 → エントリ）。config --json がそのまま
+    /// 載せる（コントラクト）。アプリは編集せず、配置タブの主枠候補に使う。
+    /// 1 件でも壊れた形（オブジェクトでない）ならその台だけ落とし、全体は落とさない。
+    var localProviders: [String: [String: Any]] {
+        guard let raw = (object["providers"] as? [String: Any])?["local"] as? [String: Any]
+        else { return [:] }
+        return raw.compactMapValues { $0 as? [String: Any] }
+    }
+
+    /// providers.local.<名前>.label。未設定（名前をそのまま表示）なら nil。
+    func localProviderLabel(_ name: String) -> String? {
+        let label = localProviders[name]?["label"] as? String
+        return (label?.isEmpty == false) ? label : nil
+    }
+
     /// token_refresh だけを設定・解除する（providers 配下の他のキーは壊さない）。
     mutating func setProviderTokenRefresh(_ provider: String, _ value: String?) {
         var providers = object["providers"] as? [String: Any] ?? [:]

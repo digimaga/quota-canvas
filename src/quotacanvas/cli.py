@@ -396,6 +396,8 @@ def _render_layout(cfg: Config, cards: Optional[List[Card]] = None):
             continue
         if p.subs is not None:
             subs = list(p.subs)[:3]  # 描画側も 3 件で切るので status.json もそろえる
+        elif p.main.startswith("local:"):
+            subs = []  # ローカル LLM は窓を持たないカード 1 枚: サブを付けない
         elif ":" not in p.main or p.size == "small":
             subs = []  # main がサービス全体 (エラーパネル) か small: 自動配置と同様サブなし
         else:

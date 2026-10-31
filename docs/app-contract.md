@@ -199,11 +199,15 @@ The app finds the CLI at the path stored in its settings (default
   filled bottom row (a trailing empty bottom slot may be reported too). An unresolvable
   `main` in a small slot renders empty the same way. A balance-only service can use its
   provider id as `main`: it renders a balance panel, with each amount prefixed by its
-  `label` or the localized default "Balance" when `label` is null. With no `[[layout.panels]]` in the
+  `label` or the localized default "Balance" when `label` is null. A local LLM server
+  uses `"local:<name>"` as `main` (small or large; it is one card with no sub windows,
+  so its `subs` is always empty). With no `[[layout.panels]]` in the
   config this is the engine's auto layout (`auto_layout`),
   so the app can prefill its placement screen with what is on screen right now.
 - `colors` — the effective theme color per provider (`#RRGGBB`): the engine defaults
-  (claude `#D97757`, codex `#10A37F`, glm `#3B82F6`, …) overridden by `providers.<p>.color`.
+  (claude `#D97757`, codex `#10A37F`, glm `#3B82F6`, local `#22D3EE`, …) overridden by
+  `providers.<p>.color`. Local LLM servers appear under their full id `local:<name>`
+  (from `[providers.local.<name>].color`).
 
 - `frame.png` — the last 1920×462 frame sent to the screen. While paused nothing is sent
   and the file is left as is.
@@ -378,7 +382,7 @@ app may put into `providers.<p>.windows` (empty list = show every window).
 | `display.brightness` | 0–100 | 表示: slider |
 | `display.night` | `{start, end, brightness}` or absent | 表示: 夜間は暗くする toggle + times + slider |
 | `display.sleep_with_mac` | bool, default `true` | — (engine only; UI なし). Mac がスリープしたら黒 1 枚 + 明るさ 0 で画面を消灯し、復帰したら明るさと表示を戻す |
-| `layout.panels` | array of `{main, subs, size}`, `[]` = auto placement | 表示: 配置エディタ (placement). `main` = window id (`"claude:weekly"`) or provider id (`"gemini"`, engine picks the service's best window / shows a balance-only or error slot) or `""` (small のみ可: その段は空き枠になり位置を保つ); `subs` = sub window ids (large panels only, ≤ 3). キー省略または `null` = 自動（主枠と同じサービスの残りの窓、最大 3、ほかのパネルで使った窓は除く。small パネルはサブなし）、`[]` = 明示的にサブなし。status.json の `layout[].subs` は解決後の配列; `size` = `"large"` \| `"small"`. Columns are assembled in panel order — 1 `large` or 2 consecutive `small`s per column, at most 4 columns (all-small = up to 8 panels); the engine rejects more with `config --set-json`. status.json の `layout[]` は同じ順序なので、同じ規則 (`render.group_columns`) で列構成を復元できる |
+| `layout.panels` | array of `{main, subs, size}`, `[]` = auto placement | 表示: 配置エディタ (placement). `main` = window id (`"claude:weekly"`) or provider id (`"gemini"`, engine picks the service's best window / shows a balance-only or error slot) or `"local:<name>"`（ローカル LLM サーバー 1 枚、small/large とも可・サブなし）or `""` (small のみ可: その段は空き枠になり位置を保つ); `subs` = sub window ids (large panels only, ≤ 3). キー省略または `null` = 自動（主枠と同じサービスの残りの窓、最大 3、ほかのパネルで使った窓は除く。small パネルとローカルはサブなし）、`[]` = 明示的にサブなし。status.json の `layout[].subs` は解決後の配列; `size` = `"large"` \| `"small"`. Columns are assembled in panel order — 1 `large` or 2 consecutive `small`s per column, at most 4 columns (all-small = up to 8 panels); the engine rejects more with `config --set-json`. status.json の `layout[]` は同じ順序なので、同じ規則 (`render.group_columns`) で列構成を復元できる |
 | `providers.<p>.enabled` | bool | サービス: toggle per detected service |
 | `providers.claude.token_refresh` | `"cli"` \| `"off"`, default `"cli"` | Claude の OAuth トークンの自動更新。`"cli"` = 期限切れ間近 / HTTP 401/403 で `claude -p` を軽く 1 回バックグラウンド実行し、Claude Code CLI 自身にキーチェーンへ書き戻させる（30 分に 1 回まで。成功したら反映要求を出して 1 秒以内に取り直す）。`"off"` = 自動更新しない（401/403 は「トークン期限切れ（claude を一度起動してください）」のエラー表示） |
 | `providers.<p>.windows` | list of window keys, `[]` = all | サービス: checkbox per window the service reports |
@@ -391,7 +395,7 @@ app may put into `providers.<p>.windows` (empty list = show every window).
 | `routing.short_over_margin_minutes` | number > 0 or `null`（既定 `null`） | 短い窓の終盤の猶予（分）。`null` は窓の長さの 10% |
 | `routing.stale_minutes` | 1 以上（既定 20） | 振り分け: 「古いとみなす（分）」Stepper。fetched_at がこれより古い窓を含むワーカーは stale |
 | `routing.workers` | ワーカー名 → 窓 id 配列（`config --set-json` は `[{"name", "windows"}]` の配列も可、`worker_order` でも順指定可）、空 = サービスごとの既定 | 振り分け: ワーカーエディタ（名前 + 窓 id のカンマ区切り、上下ボタンで並べ替え、「既定に戻す（サービスごと）」で空にする）。名前は `^[A-Za-z0-9._-]{1,40}$` |
-| `providers.local` | `{<名前>: {enabled, base_url, capacity, label?, engine, metrics_path?, running_metric?, waiting_metric?, api_key_env?, timeout?, color?}}`（TOML と同じ形。config JSON に載るがアプリの UI は持たない） | — (engine only)。ローカル LLM サーバー（OpenAI 互換、Prometheus `/metrics`）の並列枠。`local:<名前>` の窓 id で routing.workers に結べる。アプリの設定ドキュメントは未知のキーを保持するので `config --set-json` で消えない |
+| `providers.local` | `{<名前>: {enabled, base_url, capacity, label?, engine, metrics_path?, running_metric?, waiting_metric?, api_key_env?, timeout?, color?}}`（TOML と同じ形。config JSON に載る） | 配置: 主枠の候補に `local:<名前>`（表示名は `label`、無ければ名前）が出る。サブ窓の候補には出ない（窓を持たないカード 1 枚のため）。編集 UI は持たない。ローカル LLM サーバー（OpenAI 互換、Prometheus `/metrics`）の並列枠。`local:<名前>` の窓 id で routing.workers に結べる。アプリの設定ドキュメントは未知のキーを保持するので `config --set-json` で消えない |
 
 Strings the engine returns or draws — `advice`, `status_label`, `label`, `error`
 (in status.json and CLI `{"error"}`), panel text — are in the language chosen by

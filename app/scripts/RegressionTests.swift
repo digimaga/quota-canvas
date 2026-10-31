@@ -65,6 +65,20 @@ struct RegressionTests {
         let matching = LayoutSettingsView.restoreLayout(config: configPanels, status: matchingStatus)
         check(matching.resolvedSubs["alpha:week"] == ["alpha:resolved"], "matching status supplies resolved subs")
 
+        // ローカル LLM サーバー ([providers.local.<名前>]) は主枠の候補に出る。
+        // 表示名は label、無ければ名前。enabled = false と壊れた形の台は外す。
+        // サブ窓の候補には出さない。
+        let localConfig = try ConfigDocument(data: Data(#"{"providers":{"local":{"myserver":{"label":"My Server"},"tiny":{},"off":{"enabled":false},"broken":"oops"}}}"#.utf8))
+        let localChoices = LayoutSettingsView.localChoices(from: localConfig, existing: [])
+        check(localChoices.map(\.id) == ["local:myserver", "local:tiny"], "local servers offered as main slots in name order")
+        check(localChoices.map(\.label) == ["My Server", "tiny"], "local label falls back to the server name")
+        let deduped = LayoutSettingsView.localChoices(from: localConfig,
+            existing: [LayoutSettingsView.WindowChoice(id: "local:myserver", label: "My Server")])
+        check(deduped.map(\.id) == ["local:tiny"], "already offered local server is not duplicated")
+        check(LayoutSettingsView.localChoices(from: nil, existing: []).isEmpty, "no config adds no local choices")
+        check(LayoutSettingsView.isSubCandidate("claude:weekly") && !LayoutSettingsView.isSubCandidate("kimi")
+              && !LayoutSettingsView.isSubCandidate("local:myserver"), "local servers are not sub candidates")
+
         let statusJSON = #"{"updated_at":"2026-10-28T12:00:00Z","cards":[{"id":"one","fetched_at":"2026-10-28T10:00:00Z"},{"id":"two","fetched_at":42},{"id":"three"}]}"#
         let decoded = try JSONDecoder().decode(EngineStatus.self, from: Data(statusJSON.utf8))
         let reference = ISO8601Support.parse("2026-10-28T12:00:30Z")!

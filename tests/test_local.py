@@ -6,7 +6,9 @@
 - gate: local 枠 4 択の判定 (free / full / queued / unreachable)、stale、off、行表示
 - CLI: routing local-check の exit コード (0 / 2 / 3)
 - config: [providers.local.<名前>] の検証・保存・JSON 化
-- 描画: local カード (成功・失敗) がクラッシュしない
+- 描画: local カード (成功・失敗) がクラッシュしない。layout で main = "local:<名前>"
+  を small / large に指定したときと自動配置のとき、その枠に local カードが
+  描かれる (状態色のピクセルで確認)
 
 通信はすべて providers.local._http_get_text の差し替えで行い、
 キーチェーンも local: アカウントを読ませない (ダミーキーを使う)。
@@ -14,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import sys
@@ -27,9 +30,11 @@ from quotacanvas import cli, gate, i18n, providers
 from quotacanvas.config import (
     ConfigError,
     LocalProvider,
+    apply_config_changes,
     config_to_dict,
     format_toml,
     load_config,
+    merge_config_changes,
 )
 from quotacanvas.gate import evaluate, format_worker_segments
 from quotacanvas.history import History
@@ -1048,6 +1053,43 @@ def test_config_to_dict_includes_local(tmp_path):
     assert cfg2.providers.local["myserver"].color == "#AABBCC"
 
 
+def test_apply_config_changes_preserves_local_entries(tmp_path):
+    # アプリの保存経路 (config --apply-json): original/edited の両方に providers.local が
+    # あるとき、local 以外を 1 つ変えても local の各キー (label・color・api_key_env・
+    # timeout) は保存→再読み込みの往復できちんと残る。
+    p = tmp_path / "config.toml"
+    p.write_text(FULL_LOCAL, encoding="utf-8")
+    original = config_to_dict(load_config(p))
+    edited = copy.deepcopy(original)
+    edited["display"]["paused"] = True          # local 以外を 1 つ変える
+    result = config_to_dict(apply_config_changes(original, edited, p))
+    assert result["display"]["paused"] is True
+    local = result["providers"]["local"]["myserver"]
+    for key in ("label", "color", "api_key_env", "timeout"):
+        assert local[key] == original["providers"]["local"]["myserver"][key]
+
+
+def test_apply_config_changes_keeps_local_added_after_load(tmp_path):
+    # original/edited の両方に無くて latest にだけある providers.local は消えない:
+    # アプリが読んだあとに [providers.local.<名前>] が足されていても巻き戻さない。
+    p = tmp_path / "config.toml"
+    p.write_text('[display]\n', encoding="utf-8")
+    original = config_to_dict(load_config(p))
+    edited = copy.deepcopy(original)
+    edited["display"]["paused"] = True
+    # 読み込み後に対話的に local が足された (latest)
+    p.write_text(FULL_LOCAL, encoding="utf-8")
+    merged = merge_config_changes(original, edited, config_to_dict(load_config(p)))
+    assert "local" in merged["providers"]
+    result = config_to_dict(apply_config_changes(original, edited, p))
+    local = result["providers"]["local"]["myserver"]
+    assert local["label"] == "My Server"
+    assert local["color"] == "#AABBCC"
+    assert local["api_key_env"] == "MY_SERVER_API_KEY"
+    assert local["timeout"] == pytest.approx(2.5)
+    assert result["display"]["paused"] is True
+
+
 def test_local_color_reaches_render_and_status(tmp_path):
     from quotacanvas.cli import _brand_colors
     from quotacanvas.render import _brand_color
@@ -1139,6 +1181,89 @@ def test_render_local_states_dont_crash():
                   LocalSlots(9, 9, 4)):
         img = render([(_local_usage(slots=slots), None)], NOW)
         assert img.size == (1920, 462)
+
+
+def _color_pixels(img, rgb, tol=12):
+    """img 中の rgb (±tol) に近いピクセル数。カードの描画確認に使う。"""
+    buf = img.convert("RGB").tobytes()
+    r, g, b = rgb
+    return sum(1 for i in range(0, len(buf), 3)
+               if abs(buf[i] - r) <= tol and abs(buf[i + 1] - g) <= tol
+               and abs(buf[i + 2] - b) <= tol)
+
+
+def test_layout_small_panel_draws_local_card():
+    # layout で main = "local:<名前>" の small パネル → その枠に local カード。
+    # 空き (free) 状態のカードは状態色 (緑) の太い数字・バー・バッジを描く。
+    from quotacanvas.render import GREEN
+
+    img = render([(_local_usage(slots=LocalSlots(1, 0, 4)), None)], NOW,
+                 layout=[PanelSpec(main="local:test-server", size="small")])
+    assert _color_pixels(img, GREEN) > 300
+
+
+def test_layout_small_panel_unknown_local_id_stays_empty():
+    # cards にない id (例: [providers.local] 未設定のまま layout だけ書いた状態) は
+    # 空枠になる。状態色のピクセルは出ない (回帰: これが出ていてはならない)。
+    from quotacanvas.render import GREEN, RED, YELLOW
+
+    img = render([(_local_usage(slots=LocalSlots(1, 0, 4)), None)], NOW,
+                 layout=[PanelSpec(main="local:not-configured", size="small")])
+    assert _color_pixels(img, GREEN) == 0
+    assert _color_pixels(img, YELLOW) == 0
+    assert _color_pixels(img, RED) == 0
+
+
+def test_layout_large_panel_draws_local_card():
+    # large パネルでも local を main にできる (自動サブは付かない)。
+    from quotacanvas.render import GREEN, YELLOW
+
+    free = render([(_local_usage(slots=LocalSlots(1, 0, 4)), None)], NOW,
+                  layout=[PanelSpec(main="local:test-server", size="large")])
+    assert _color_pixels(free, GREEN) > 800   # 大きい数字 + バッジ + バー
+    full = render([(_local_usage(slots=LocalSlots(4, 0, 4)), None)], NOW,
+                  layout=[PanelSpec(main="local:test-server", size="large")])
+    assert _color_pixels(full, YELLOW) > 800  # 満杯は黄
+
+
+def test_auto_layout_draws_local_card():
+    # layout 未指定の自動配置でも local カードが出る (free = 緑)。
+    from quotacanvas.render import GREEN
+
+    img = render([(_local_usage(slots=LocalSlots(1, 0, 4)), None)], NOW)
+    assert _color_pixels(img, GREEN) > 300
+
+
+def test_render_layout_pipeline_local_main(tmp_path):
+    # 本番と同じ経路: config の [[layout.panels]] → cli._render_layout → render。
+    # main = "local:<名前>" が small / large とも解決されて local カードが描かれる。
+    # large は subs 省略でも自動サブが付かない (local は窓を持たない)。
+    from quotacanvas.cli import _render_layout
+    from quotacanvas.render import GREEN
+
+    p = tmp_path / "config.toml"
+    p.write_text(
+        '[providers.local.alpha]\nbase_url = "http://localhost:8000"\n'
+        'capacity = 4\n\n'
+        '[providers.local.beta]\nbase_url = "http://localhost:8001"\n'
+        'capacity = 2\n\n'
+        '[[layout.panels]]\nmain = "local:alpha"\nsize = "large"\n\n'
+        '[[layout.panels]]\nmain = "local:beta"\nsize = "small"\n',
+        encoding="utf-8")
+    cfg = load_config(p)
+
+    def usage(name, capacity):
+        return ProviderUsage("local:" + name, name, [], None, NOW,
+                             slots=LocalSlots(1, 0, capacity))
+
+    cards = [(usage("alpha", 4), None), (usage("beta", 2), None)]
+    specs = _render_layout(cfg, cards)
+    assert [(sp.main, sp.size, sp.subs) for sp in specs] == [
+        ("local:alpha", "large", []),
+        ("local:beta", "small", []),
+    ]
+    img = render(cards, NOW, layout=specs)
+    assert _color_pixels(img, GREEN) > 800
 
 
 def test_build_cards_makes_one_local_card(tmp_path):

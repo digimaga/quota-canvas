@@ -206,7 +206,7 @@ struct LayoutSettingsView: View {
                     LazyVGrid(columns: [GridItem(.flexible(minimum: 10, maximum: .infinity), alignment: .leading),
                                         GridItem(.flexible(minimum: 10, maximum: .infinity), alignment: .leading)],
                               alignment: .leading, spacing: 4) {
-                        ForEach(windows.filter { $0.id.contains(":") }) { window in
+                        ForEach(windows.filter { Self.isSubCandidate($0.id) }) { window in
                             Toggle(window.label, isOn: subBinding(slot, window.id))
                                 .toggleStyle(.checkbox)
                                 .lineLimit(1)
@@ -247,8 +247,33 @@ struct LayoutSettingsView: View {
 
     private func mainColor(_ slot: LayoutSlot) -> Color? {
         guard let main = slot.main, !main.isEmpty else { return nil }
+        // ローカル LLM サーバーは色のキーも id 全体 (status.json の colors が
+        // "local:<名前>" で載る)。台ごとの指定がなければ既定色 "local" を使う。
+        // クラウド側は従来どおりプロバイダー名。
+        if main.hasPrefix("local:") {
+            return HexColor.color(providerColors[main] ?? providerColors["local"])
+        }
         let provider = main.split(separator: ":", maxSplits: 1).first.map(String.init) ?? main
         return HexColor.color(providerColors[provider])
+    }
+
+    /// [providers.local.<名前>] を主枠の候補にする。id は "local:<名前>"、
+    /// 表示名は label、無ければ名前。名前順で、detect 側に同名があれば足さない。
+    /// enabled = false の台は出さない（キー無し = 有効、engine と同じ既定）。
+    static func localChoices(from doc: ConfigDocument?, existing: [WindowChoice]) -> [WindowChoice] {
+        let locals = doc?.localProviders ?? [:]
+        return locals.keys.sorted().compactMap { name in
+            let id = "local:\(name)"
+            guard !existing.contains(where: { $0.id == id }) else { return nil }
+            guard locals[name]?["enabled"] as? Bool != false else { return nil }
+            return WindowChoice(id: id, label: doc?.localProviderLabel(name) ?? name)
+        }
+    }
+
+    /// サブ窓の候補か。窓 id ("provider:key") で、ローカル LLM サーバー
+    /// (local:<名前>、窓を持たないカード 1 枚) は除外。
+    static func isSubCandidate(_ id: String) -> Bool {
+        id.contains(":") && !id.hasPrefix("local:")
     }
 
     /// チェックボックス等の表示に使う実効サブ: 明示リスト、nil（自動）なら status.json の解決済み subs
@@ -427,6 +452,9 @@ struct LayoutSettingsView: View {
             windows = []
             alertMessage = String(localized: "窓の一覧を取得できません: \(error.localizedDescription)")
         }
+        // ローカル LLM サーバー ([providers.local.<名前>]) も主枠に選べる
+        // (config --json の providers.local から。表示名は label、無ければ名前)。
+        windows.append(contentsOf: Self.localChoices(from: doc, existing: windows))
 
         providerColors = snapshot?.colors ?? [:]
         let restored = Self.restoreLayout(config: doc?.layoutPanels ?? [], status: snapshot?.layout ?? [])
