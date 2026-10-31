@@ -1202,6 +1202,136 @@ def test_layout_small_panel_draws_local_card():
     assert _color_pixels(img, GREEN) > 300
 
 
+def _meter_bits(img, lit_rgb, tol=14):
+    """local カード下端のメーター帯を探して、帯の左端からのビット列を返す。
+
+    True = 点灯色 (状態色)、False = 消灯 (TRACK) か区切り線かその境界。
+    メーター帯 = 画像の下 2/3 にある「TRACK か点灯色」の長い (≥150px) 水平連続帯
+    (区切り線の 1〜3px の切れ目は帯の続きとみなす。数字やバッジの文字はここ
+    まで連続しないので、カード 1 枚の描画なら一意)。
+    """
+    from quotacanvas.render import TRACK
+
+    px = img.convert("RGB")
+    w, h = px.size
+    data = px.tobytes()
+
+    def close(i, rgb):
+        return (abs(data[i] - rgb[0]) <= tol and abs(data[i + 1] - rgb[1]) <= tol
+                and abs(data[i + 2] - rgb[2]) <= tol)
+
+    def meter_at(i):
+        return close(i, TRACK) or close(i, lit_rgb)
+
+    def bar_span(y):
+        # その行のメーター帯 (始点, 終点)。区切り線の ≤3px の切れ目は橋渡しする
+        best = (0, 0, -1)                          # (幅, 始点, 終点)
+        x = 0
+        while x < w:
+            if meter_at((y * w + x) * 3):
+                s = x
+                gap = 0
+                while x < w and gap <= 3:
+                    if meter_at((y * w + x) * 3):
+                        gap = 0
+                    else:
+                        gap += 1
+                    x += 1
+                e = x - gap - 1
+                if e - s + 1 > best[0]:
+                    best = (e - s + 1, s, e)
+            else:
+                x += 1
+        return best[1], best[2]
+
+    rows = [y for y in range(h // 3, h) if bar_span(y)[1] - bar_span(y)[0] >= 150]
+    assert rows, "メーター帯が見つかりません"
+    y = rows[len(rows) // 2]                      # 帯の中央行
+    x0, x1 = bar_span(y)
+    return [close((y * w + x) * 3, lit_rgb) for x in range(x0, x1 + 1)]
+
+
+def _meter_profile(bits):
+    """(点灯率, 点灯域の中の区切り線位置)。区切り = 点灯域内の ≤3px の切れ目。"""
+    lit = [i for i, b in enumerate(bits) if b]
+    n = len(bits)
+    if not lit:
+        return 0.0, []
+    frac = len(lit) / float(n)
+    seps = []
+    i = lit[0]
+    while i < lit[-1]:
+        if not bits[i]:
+            j = i
+            while not bits[j]:
+                j += 1
+            if j - i <= 3:                      # 細い切れ目 = 区切り線
+                seps.append((i + j - 1) / 2.0 / n)
+            i = j
+        else:
+            i += 1
+    return frac, seps
+
+
+@pytest.mark.parametrize("running,capacity,lit_frac,seps", [
+    (0, 4, 0.99, [0.25, 0.5, 0.75]),   # 全空き: 端から端まで点灯 + 区切り 3 本
+    (1, 4, 0.75, [0.25, 0.5]),         # 右 1 マス消灯
+    (2, 4, 0.5, [0.25]),               # 左 2 マス点灯・右 2 マス消灯
+    (4, 4, 0.0, []),                   # 満杯: 全消灯
+    (6, 4, 0.0, []),                   # running > capacity: はみ出さず全消灯
+    (0, 3, 0.99, [1.0 / 3, 2.0 / 3]),  # capacity 3: 区切り 2 本
+    (2, 3, 1.0 / 3, []),               # 3 マス中 2 本使用 → 左 1 マス
+])
+def test_local_meter_cells(running, capacity, lit_frac, seps):
+    # メーターは「空き」: 使用中の本数ぶん右端から 1 マスずつ消える。
+    # 区切り線は capacity - 1 本で k/capacity の位置、点灯率は (capacity -
+    # running) / capacity。large カードで確認。
+    from quotacanvas.render import _LOCAL_STATE_COLOR, _local_state
+
+    slots = LocalSlots(running, 0, capacity)
+    lit_color = _LOCAL_STATE_COLOR[_local_state(slots)]
+    img = render([(_local_usage(slots=slots), None)], NOW,
+                 layout=[PanelSpec(main="local:test-server", size="large")])
+    frac, found = _meter_profile(_meter_bits(img, lit_color))
+    if lit_frac == 0.0:
+        assert frac == 0.0
+    else:
+        assert frac == pytest.approx(lit_frac, abs=0.04)
+    assert len(found) == len(seps)
+    for got, want in zip(found, seps):
+        assert got == pytest.approx(want, abs=0.03)
+
+
+def test_local_meter_skips_dividers_when_cells_are_thin():
+    # capacity 16 超でマスが細すぎるときは区切り線を省く (連続塗り)。
+    from quotacanvas.render import GREEN
+
+    slots = LocalSlots(0, 0, 20)
+    img = render([(_local_usage(slots=slots), None)], NOW,
+                 layout=[PanelSpec(main="local:test-server", size="large")])
+    frac, seps = _meter_profile(_meter_bits(img, GREEN))
+    assert frac > 0.95
+    assert seps == []
+    # 使用中 8 本 → 左 12/20 = 0.6 まで点灯
+    slots = LocalSlots(8, 0, 20)
+    img = render([(_local_usage(slots=slots), None)], NOW,
+                 layout=[PanelSpec(main="local:test-server", size="large")])
+    frac, seps = _meter_profile(_meter_bits(img, GREEN))
+    assert frac == pytest.approx(0.6, abs=0.04)
+    assert seps == []
+
+
+def test_local_meter_small_card():
+    # 小パネル (compact) でも同じメーター: 右から 2 マス消える。
+    from quotacanvas.render import GREEN
+
+    img = render([(_local_usage(slots=LocalSlots(2, 0, 4)), None)], NOW,
+                 layout=[PanelSpec(main="local:test-server", size="small")])
+    frac, seps = _meter_profile(_meter_bits(img, GREEN))
+    assert frac == pytest.approx(0.5, abs=0.04)
+    assert seps == [pytest.approx(0.25, abs=0.03)]
+
+
 def test_layout_small_panel_unknown_local_id_stays_empty():
     # cards にない id (例: [providers.local] 未設定のまま layout だけ書いた状態) は
     # 空枠になる。状態色のピクセルは出ない (回帰: これが出ていてはならない)。

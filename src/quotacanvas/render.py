@@ -1686,16 +1686,29 @@ def _draw_local_card(s, box, g, theme):
     s.text((tx1, cy + 2), wtxt, font=wf,
            fill=RED if slots.waiting > 0 else TEXT_DIM, anchor="rs")
 
-    # -- 3. capacity bar (fill = running / capacity) -------------------------
+    # -- 3. capacity meter: 空きマスを左から光らせる --------------------------
+    # メーターは「空き」を表す: capacity を等分したマスのうち、使用中の本数ぶん
+    # 右端から 1 マスずつ消える (running 0 = 端から端まで点灯、満杯で全消灯。
+    # running > capacity でもはみ出さない = 全消灯)。区切り線はサービスカードの
+    # ゲージの目盛りと同じ見た目 (点線マスの上は暗く、消灯マスの上は明るい 1px
+    # 縦線)。capacity が大きくマスが細すぎる (16 超) ときは区切り線を省く。
     bar_h = 12 if compact else 16
     by1 = y1 - pad - 6
     by0 = by1 - bar_h
-    s.rrect((tx0, by0, tx1, by1), radius=bar_h / 2.0, fill=DIVIDER)
-    ratio = slots.running / float(slots.capacity) if slots.capacity else 1.0
-    fill_w = _clamp(ratio, 0.0, 1.0) * (tx1 - tx0)
-    if fill_w > 0:
-        s.rrect((tx0, by0, tx0 + fill_w, by1),
-                radius=min(bar_h / 2.0, fill_w / 2.0), fill=color)
+    bw = tx1 - tx0
+    s.rrect((tx0, by0, tx1, by1), radius=bar_h / 2.0, fill=TRACK)
+    free = _clamp(slots.capacity - slots.running, 0, slots.capacity)
+    lit_w = free / float(slots.capacity) * bw if slots.capacity > 0 else 0.0
+    if lit_w > 0:
+        s.rrect((tx0, by0, tx0 + lit_w, by1),
+                radius=min(bar_h / 2.0, lit_w / 2.0), fill=color)
+    if 1 < slots.capacity <= 16:
+        div_dark = _mix(color, BLACK, 0.35)
+        div_light = _mix(TRACK, WHITE, 0.35)
+        for k in range(1, slots.capacity):
+            lx = tx0 + bw * k / float(slots.capacity)
+            s.line((lx, by0, lx, by1),
+                   fill=div_dark if k < free else div_light, width=1)
 
 
 def _draw_large_column(s, box, p, colors, gauge, now):
