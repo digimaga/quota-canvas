@@ -1,12 +1,15 @@
 """login キーチェーンへの API キー保存 (service "quota-canvas", account <provider>)。
 
-`security` コマンドだけを使う。値は argv に渡さない: 値なしの `-w` は
-「password / retype」として stdin から 2 行読むので、そこへ値を 2 回流す。
-(`security add-generic-password -a ACC -s SVC -U -w`)
+`security` コマンドだけを使う。値は argv に渡さない: `security -i` (コマンドを
+標準入力から 1 行ずつ読む対話モード) に add-generic-password の 1 行を渡す
+(値なしの `-w` は /dev/tty から読もうとして、tty があるとプロンプトで
+TIMEOUT するので使わない)。`security -i` は中のコマンドが失敗しても
+終了コード 0 を返すことがあるので、保存後の読み戻し確認は必須。
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import List, Optional
 
@@ -18,6 +21,13 @@ TIMEOUT = 15.0
 
 # security の終了コード: errSecItemNotFound
 _NOT_FOUND = 44
+
+# security -i の字句解析 (実機で確認): ダブルクオート内は 1 トークンで、空白や
+# #$;|<>()&'!% などの記号はそのまま渡る。ただし引用符内でも \ はエスケープ
+# 記号として解釈され (\", \\, \x.. など)、非 ASCII は化ける。エスケープの
+# 全容は確認しきれないので、" と \ を含む値と制御文字・非 ASCII は拒否する
+# (確実な方に倒す)。対象は API キーなので実用上の支障は無い。
+_QUOTABLE_RE = re.compile(r"[\x20-\x7e]*")
 
 
 class KeychainError(Exception):
@@ -44,15 +54,29 @@ def read(account: str, service: str = SERVICE) -> Optional[str]:
     return value or None
 
 
-def write(account: str, value: str, service: str = SERVICE) -> None:
-    """値を保存する (既にある項目は -U で更新)。"""
+def _quoted(token: str) -> str:
+    """security -i の 1 行に安全に載せられるトークン (ダブルクオートで囲む)。
 
+    囲みだけでは不十分な文字 (引用符・バックスラッシュ・制御文字・非 ASCII) を
+    含むときは KeychainError にする。エラーメッセージに値は載せない。
+    """
+    if (not _QUOTABLE_RE.fullmatch(token) or '"' in token or "\\" in token):
+        raise KeychainError(t("cli.keychain.bad_value"))
+    return '"' + token + '"'
+
+
+def write(account: str, value: str, service: str = SERVICE) -> None:
+    """値を保存する (既にある項目は -U で更新)。
+
+    `security -i` に 1 行を渡す。値がコマンドの argv に載らないのは従来どおり。
+    security -i は中のコマンドの失敗を終了コードに反映しないことがあるので、
+    最後に読み戻して同じ値か確認する (値はログ・例外に出さない)。
+    """
     if not value or value.strip() != value or "\n" in value or "\r" in value:
         raise KeychainError(t("cli.keychain.bad_value"))
-    proc = _run(
-        ["add-generic-password", "-a", account, "-s", service, "-U", "-w"],
-        input=value + "\n" + value + "\n",  # password と retype の 2 行
-    )
+    line = "add-generic-password -a %s -s %s -U -w %s" % (
+        _quoted(account), _quoted(service), _quoted(value))
+    proc = _run(["-i"], input=line + "\n")
     if proc.returncode != 0:
         raise KeychainError(t("cli.keychain.write_failed", rc=proc.returncode))
     if read(account, service) != value:  # 読み戻せたかだけ確認する (値はログに出さない)

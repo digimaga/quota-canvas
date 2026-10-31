@@ -63,7 +63,7 @@ stored = "Stored the {name} API key in the Keychain (service {service}, account 
 timeout = "security command timed out"
 cannot_run = "cannot run the security command"
 read_failed = "Could not read from the Keychain (security rc={rc})"
-bad_value = "Invalid value (must be non-empty, no surrounding whitespace, no newlines)"
+bad_value = "Invalid value (must be non-empty, no surrounding whitespace, no newlines; printable ASCII only, without \" or \\)"
 write_failed = "Could not save to the Keychain (security rc={rc})"
 verify_failed = "Could not verify the Keychain value"
 delete_failed = "Could not delete from the Keychain (security rc={rc})"

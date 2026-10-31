@@ -63,7 +63,7 @@ stored = "{name} の API キーをキーチェーン (service {service}, account
 timeout = "security コマンドがタイムアウトしました"
 cannot_run = "security コマンドを実行できません"
 read_failed = "キーチェーンから読めませんでした (security rc={rc})"
-bad_value = "保存する値が不正です (空・前後の空白・改行は使えません)"
+bad_value = "保存する値が不正です (空・前後の空白・改行は使えません。使えるのは半角の英数字と記号だけで、\" と \\ は使えません)"
 write_failed = "キーチェーンに保存できませんでした (security rc={rc})"
 verify_failed = "キーチェーンの値を確認できませんでした"
 delete_failed = "キーチェーンから削除できませんでした (security rc={rc})"

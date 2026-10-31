@@ -29,23 +29,33 @@ def _capture_run(monkeypatch, returncode=0, stdout="", stderr=""):
 
 # ------------------------------------------------------------------ write
 
-def test_write_passes_value_via_stdin_never_argv(monkeypatch):
-    # 書き込み後の読み戻し確認も成功させる
+def test_write_uses_security_i_single_stdin_line(monkeypatch):
+    """書き込みは `security -i` に 1 行を渡す (値は argv にも素の stdin にも
+    載せない。tty があると値なし -w が /dev/tty のプロンプトで TIMEOUT する
+    ので、対話モードのコマンド行で渡す)。"""
     monkeypatch.setattr(keychain, "read", lambda account, service=keychain.SERVICE: "secret")
     calls = _capture_run(monkeypatch)
     keychain.write("glm", "secret")
     assert len(calls) == 1
     args = calls[0]["args"]
-    assert args[0] == "security" and args[1] == "add-generic-password"
-    assert "-U" in args and args[-1] == "-w"
-    assert "-a" in args and "glm" in args
-    assert "-s" in args and keychain.SERVICE in args
-    # 値は argv に現れず、stdin の 2 行 (password + retype) で渡る
-    assert "secret" not in args
-    assert calls[0]["input"] == "secret\nsecret\n"
+    assert args == ["security", "-i"]           # 値も指標も argv に無い
+    assert calls[0]["input"] == \
+        'add-generic-password -a "glm" -s "quota-canvas" -U -w "secret"\n'
+    assert calls[0]["timeout"] == keychain.TIMEOUT
+
+
+def test_write_quotes_value_with_spaces_and_symbols(monkeypatch):
+    monkeypatch.setattr(keychain, "read",
+                        lambda account, service=keychain.SERVICE: "p@ss w0rd!#%+;")
+    calls = _capture_run(monkeypatch)
+    keychain.write("glm", "p@ss w0rd!#%+;")
+    # security -i の字句解析に合わせて 1 トークンとしてダブルクオートで囲む
+    assert calls[0]["input"].endswith('-w "p@ss w0rd!#%+;"\n')
 
 
 def test_write_readback_mismatch_raises(monkeypatch):
+    """security -i は中のコマンドの失敗を終了コードに反映しないことがある
+    ので、読み戻し確認は必須 (値が違えば verify_failed)。"""
     monkeypatch.setattr(keychain, "read", lambda account, service=keychain.SERVICE: "OTHER")
     _capture_run(monkeypatch)
     with pytest.raises(KeychainError):
@@ -58,7 +68,13 @@ def test_write_failure_returncode_raises(monkeypatch):
         keychain.write("glm", "secret", service="quota-canvas-test")
 
 
-@pytest.mark.parametrize("value", ["", "  x", "x ", "a\nb"])
+@pytest.mark.parametrize("value", [
+    "", "  x", "x ", "a\nb",      # 従来の検証 (空・前後空白・改行)
+    'quote"in',                   # 引用符: エスケープで渡せるが確実でないので拒否
+    "back\\slash",                # バックスラッシュ: \x.. などに解釈されるので拒否
+    "caf\xc3\xa9",                # 非 ASCII: security -i で化ける (実機確認済み)
+    "tab\tinside",                # 制御文字
+])
 def test_write_rejects_bad_values(monkeypatch, value):
     def boom(*a, **k):
         raise AssertionError("security を呼んではいけない")
@@ -115,4 +131,4 @@ def test_custom_service_is_passed(monkeypatch):
     monkeypatch.setattr(keychain, "read", lambda a, s: "v")
     calls = _capture_run(monkeypatch)
     keychain.write("glm", "v", service="quota-canvas-test")
-    assert "quota-canvas-test" in calls[0]["args"]
+    assert '"quota-canvas-test"' in calls[0]["input"]
