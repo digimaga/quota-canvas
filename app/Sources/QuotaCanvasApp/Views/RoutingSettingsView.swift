@@ -244,6 +244,7 @@ struct RoutingSettingsView: View {
         case "exhausted": reason = String(localized: "残り枠がない")
         case "below_floor": reason = String(localized: "残りが下限を切った")
         case "over": reason = String(localized: "ペース超過")
+        case "burst": reason = String(localized: "直近2時間の勢いだとリセット前に尽きる")
         case "over_near_reset": reason = String(localized: "リセット直前のペース超過（使い切ってよい）")
         case "over_rounding": reason = String(localized: "ペース超過の境界（使用率の端数を見込むと尽きる）")
         case "tight": reason = String(localized: "ギリギリ")

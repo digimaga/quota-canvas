@@ -55,6 +55,8 @@ The app finds the CLI at the path stored in its settings (default
     "reset_credits": { "codex": 1 },
     "holds": { "codex:weekly": "2026-10-31T02:40:44+09:00" },
     "spare_holds": {},
+    "burst_holds": {},
+    "burst_resets": {},
     "workers": [
       { "name": "codex", "verdict": "boost", "reason": "burn", "windows": ["codex:weekly"],
         "remaining": 20.0, "status": "over",
@@ -152,7 +154,7 @@ The app finds the CLI at the path stored in its settings (default
   computed by the same pure logic as `quota-canvas routing line`. `at` is the `updated_at`
   the judgment is based on, `reset_credits` maps provider → number of valid reset credits
   (display only, it never changes a verdict), `holds` maps window IDs to reset times for
-  reserve/over windows and preserves the short-window hysteresis across redraws. `spare_holds` maps window IDs to reset times for spare boosts, retaining boost until projected leftover is at most 75% of its tolerance for the same reset; stop and reserve take priority. `projected_leftover` is 100 minus projected use, and `leftover_tolerance` interpolates between end and early tolerances by the remaining active fraction of the window. A leftover above tolerance is spare, at or below half tolerance is tight, and otherwise on_track.
+  reserve/over windows and preserves the short-window hysteresis across redraws. `spare_holds` maps window IDs to reset times for spare boosts, retaining boost until projected leftover is at most 75% of its tolerance for the same reset; stop and reserve take priority. `burst_holds` maps window IDs to an expiry time and `burst_resets` to the reset time seen when a 24-hour-or-longer window became reserve with reason `burst` (its `burst_exhausts_at` at the last-2-hour pace falls more than `long_over_margin_minutes` before the reset); the reserve is kept until the expiry (30 minutes after the burst was last seen) for the same reset. `projected_leftover` is 100 minus projected use, and `leftover_tolerance` interpolates between end and early tolerances by the remaining active fraction of the window. A leftover above tolerance is spare, at or below half tolerance is tight, and otherwise on_track.
   `line` is the same one-line summary
   `routing line` prints (for Macs without quota-canvas that only read a copied
   status.json). When `[routing.models.*]` is configured, `model_lines` (array of strings)

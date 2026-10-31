@@ -355,7 +355,7 @@ class WorkerResult:
 
     name: str
     verdict: str                     # stop | reserve | go | boost | unknown
-    reason: str                      # exhausted / below_floor / over / tight / on_track /
+    reason: str                      # exhausted / below_floor / over / burst / tight / on_track /
                                      # spare / fresh / unknown / burn / stale / missing / error /
                                      # free / full / queued / unreachable (local 枠)
     windows: List[str] = field(default_factory=list)  # 判定に使った窓 id
@@ -391,6 +391,8 @@ class RoutingResult:
     reset_credits: Dict[str, int] = field(default_factory=dict)  # provider → 期限内の権数
     holds: Dict[str, str] = field(default_factory=dict)  # reserve(over) の窓 id → resets_at
     spare_holds: Dict[str, str] = field(default_factory=dict)  # spare boost の窓 id → resets_at
+    burst_holds: Dict[str, str] = field(default_factory=dict)  # burst の窓 id → 保持期限 (ISO8601)
+    burst_resets: Dict[str, str] = field(default_factory=dict)  # burst の窓 id → 判定時の resets_at
 
     def worker(self, name: str) -> Optional[WorkerResult]:
         for w in self.workers:
@@ -404,6 +406,8 @@ class RoutingResult:
             "reset_credits": dict(self.reset_credits),
             "holds": dict(self.holds),
             "spare_holds": dict(self.spare_holds),
+            "burst_holds": dict(self.burst_holds),
+            "burst_resets": dict(self.burst_resets),
             "workers": [w.to_dict() for w in self.workers],
         }
 
@@ -466,10 +470,45 @@ def judge_local(entry: dict) -> Tuple[str, str]:
     return "boost", "free"
 
 
+def _long_window(entry: dict) -> bool:
+    """24 時間以上の窓か (length が無い・壊れている窓は対象外)。"""
+    length = entry.get("length")
+    return (not isinstance(length, bool) and isinstance(length, (int, float))
+            and math.isfinite(length) and length >= 24 * 3600)
+
+
+def _burst_active(entry: dict, now: datetime, long_margin_minutes: float) -> bool:
+    """直近 2 時間の勢いでリセット前に尽きる (burst) か。
+
+    24 時間以上の窓だけを対象にし、fresh (リセット直後) は除く。
+    リセットまで long_margin_minutes 以内に尽きるだけなら burst にしない
+    (over_rounding と同じ形)。
+    """
+    if not _long_window(entry) or norm_status(entry.get("status")) in ("fresh", "exhausted"):
+        return False
+    reset = parse_dt(entry.get("resets_at"))
+    burst = parse_dt(entry.get("burst_exhausts_at"))
+    return (reset is not None and burst is not None and now < burst
+            and (reset - burst).total_seconds() > long_margin_minutes * 60)
+
+
+def _burst_held(entry: dict, wid: Any, now: datetime, reset: Optional[datetime],
+                burst_holds: dict, burst_resets: dict) -> bool:
+    """同じリセットの間、burst の reserve を保持期限まで保つ。"""
+    if not _long_window(entry) or norm_status(entry.get("status")) in ("fresh", "exhausted"):
+        return False
+    if not isinstance(wid, str) or reset is None:
+        return False
+    until = parse_dt(burst_holds.get(wid))
+    held_reset = parse_dt(burst_resets.get(wid))
+    return (until is not None and until > now
+            and held_reset is not None and held_reset == reset)
+
+
 def _judge(entry: dict, floor_percent: float, floor_hours: float, now: datetime, holds: dict,
            margin_minutes: Optional[float], long_margin_minutes: float,
-           spare_holds: dict) -> Tuple[str, str]:
-    """窓 1 枚の判定。前回の reserve / spare は同じリセットの間だけ保持する。"""
+           spare_holds: dict, burst_holds: dict, burst_resets: dict) -> Tuple[str, str]:
+    """窓 1 枚の判定。前回の reserve / spare / burst は同じリセットの間だけ保持する。"""
     if entry.get("kind") == "local":
         return judge_local(entry)
     st = norm_status(entry.get("status"))
@@ -485,26 +524,27 @@ def _judge(entry: dict, floor_percent: float, floor_hours: float, now: datetime,
         floor_seconds = margin if short else floor_hours * 3600
         if floor_hours == 0 or reset is None or (reset - now).total_seconds() >= floor_seconds:
             return "stop", "below_floor"
+    # burst は over の判定より先に見る (over_near_reset でも burst を優先する)。
+    wid = entry.get("id")
+    reset = parse_dt(entry.get("resets_at"))
+    if _burst_active(entry, now, long_margin_minutes) \
+            or _burst_held(entry, wid, now, reset, burst_holds, burst_resets):
+        return "reserve", "burst"
     if st == "over" and not short:
-        reset = parse_dt(entry.get("resets_at"))
         exhaust = parse_dt(entry.get("exhausts_at"))
-        long_window = (not isinstance(length, bool) and isinstance(length, (int, float))
-                       and math.isfinite(length) and length >= 24 * 3600)
-        if (long_window and reset is not None and exhaust is not None
+        if (_long_window(entry) and reset is not None and exhaust is not None
                 and 0 <= (reset - exhaust).total_seconds() <= long_margin_minutes * 60):
             return "go", "over_near_reset"
         return "reserve", "over"
     if st == "over":
-        reset = parse_dt(entry.get("resets_at"))
         exhaust = parse_dt(entry.get("exhausts_at"))
         if reset is None or exhaust is None:
             return "reserve", "over"
-        old_reset = parse_dt(holds.get(entry.get("id")))
+        old_reset = parse_dt(holds.get(wid))
         threshold = margin * 2 / 3 if old_reset == reset else margin
         if (reset - exhaust).total_seconds() < threshold:
             return "go", "over_near_reset"
         return "reserve", "over"
-    reset = parse_dt(entry.get("resets_at"))
     cautious = parse_dt(entry.get("cautious_exhausts_at"))
     if (not short and st in ("tight", "on_track", "spare") and reset is not None
             and cautious is not None and (reset - cautious).total_seconds() > long_margin_minutes * 60):
@@ -512,7 +552,7 @@ def _judge(entry: dict, floor_percent: float, floor_hours: float, now: datetime,
         return "reserve", "over_rounding"
     leftover, tolerance = entry.get("projected_leftover"), entry.get("leftover_tolerance")
     if (st in ("tight", "on_track") and reset is not None
-            and parse_dt(spare_holds.get(entry.get("id"))) == reset
+            and parse_dt(spare_holds.get(wid)) == reset
             and all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
                     for v in (leftover, tolerance))
             and leftover > 0.75 * tolerance):
@@ -611,12 +651,15 @@ def default_workers(status: Optional[dict]) -> Dict[str, List[str]]:
 def _worst(entries: List[dict], floor_percent: float, floor_hours: float, now: datetime, previous_holds: dict,
            margin_minutes: Optional[float], holds: Dict[str, str],
            long_margin_minutes: float, previous_spare_holds: dict,
-           spare_holds: Dict[str, str]) -> Optional[Tuple[dict, str, str]]:
+           spare_holds: Dict[str, str], previous_burst_holds: dict,
+           burst_holds: Dict[str, str], previous_burst_resets: dict,
+           burst_resets: Dict[str, str]) -> Optional[Tuple[dict, str, str]]:
     """代表窓 = 一番悪い判定の窓 (stop < reserve < go < boost、同順なら残量が少ない方)。"""
     best: Optional[Tuple[Tuple[int, float], dict, str, str]] = None
     for entry in entries:
         verdict, reason = _judge(entry, floor_percent, floor_hours, now, previous_holds, margin_minutes,
-                                 long_margin_minutes, previous_spare_holds)
+                                 long_margin_minutes, previous_spare_holds,
+                                 previous_burst_holds, previous_burst_resets)
         wid, reset = entry.get("id"), entry.get("resets_at")
         if isinstance(wid, str):
             holds.pop(wid, None)
@@ -626,6 +669,14 @@ def _worst(entries: List[dict], floor_percent: float, floor_hours: float, now: d
                 holds[wid] = reset
             if verdict == "boost" and reason == "spare" and reset_dt is not None and reset_dt > now:
                 spare_holds[wid] = reset
+            if verdict == "reserve" and reason == "burst" and reset_dt is not None and reset_dt > now:
+                # burst が出た周回は期限を now+30 分に更新する。保持由来なら前回の期限を保つ。
+                if _burst_active(entry, now, long_margin_minutes):
+                    burst_holds[wid] = (now + timedelta(minutes=30)).isoformat()
+                burst_resets[wid] = reset
+            else:
+                burst_holds.pop(wid, None)
+                burst_resets.pop(wid, None)
         rem = norm_remaining(entry.get("remaining"))
         rank = (VERDICT_RANK[verdict], rem if rem is not None else float("inf"))
         if best is None or rank < best[0]:
@@ -677,6 +728,19 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
                    if isinstance(wid, str) and wid.split(":", 1)[0] not in NON_ROUTING_PROVIDERS
                    and parse_dt(reset) is not None and parse_dt(reset) > now}
     previous_spare_holds = dict(spare_holds)
+    previous_burst_holds = previous.get("burst_holds") if isinstance(previous, dict) else None
+    if not isinstance(previous_burst_holds, dict):
+        previous_burst_holds = {}
+    burst_holds = {wid: until for wid, until in previous_burst_holds.items()
+                   if isinstance(wid, str) and wid.split(":", 1)[0] not in NON_ROUTING_PROVIDERS
+                   and parse_dt(until) is not None and parse_dt(until) > now}
+    previous_burst_resets = previous.get("burst_resets") if isinstance(previous, dict) else None
+    if not isinstance(previous_burst_resets, dict):
+        previous_burst_resets = {}
+    burst_resets = {wid: reset for wid, reset in previous_burst_resets.items()
+                    if wid in burst_holds and parse_dt(reset) is not None}
+    previous_burst_holds = dict(burst_holds)
+    previous_burst_resets = dict(burst_resets)
 
     workers: List[WorkerResult] = []
     for name, patterns in specs.items():
@@ -702,7 +766,11 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
                              or any(_is_stale_window(w, stale_min, now) for w in data_windows) else holds)
             picked = _worst(display_windows, floor, floor_hours, now, previous_holds,
                             margin_minutes, display_holds, long_margin_minutes, previous_spare_holds,
-                            dict(spare_holds) if display_holds is not holds else spare_holds)
+                            dict(spare_holds) if display_holds is not holds else spare_holds,
+                            previous_burst_holds,
+                            dict(burst_holds) if display_holds is not holds else burst_holds,
+                            previous_burst_resets,
+                            dict(burst_resets) if display_holds is not holds else burst_resets)
             entry = picked[0] if picked else {}
             workers.append(WorkerResult(
                 name=name, verdict="stop", reason="disabled",
@@ -729,7 +797,9 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
                                         provider=_one_provider(providers)))
             continue
         picked = _worst(matched, floor, floor_hours, now, previous_holds, margin_minutes, holds,
-                        long_margin_minutes, previous_spare_holds, spare_holds)
+                        long_margin_minutes, previous_spare_holds, spare_holds,
+                        previous_burst_holds, burst_holds,
+                        previous_burst_resets, burst_resets)
         assert picked is not None
         entry, verdict, reason = picked
         until = burn.get(name)
@@ -757,15 +827,20 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
         at=status.get("updated_at") if isinstance(status, dict) and isinstance(status.get("updated_at"), str) else None,
         reset_credits=_status_reset_credits(status, now),
         holds=holds, spare_holds=spare_holds,
+        burst_holds=burst_holds, burst_resets=burst_resets,
     )
 
 
 # ------------------------------------------------------------------ 表示 (line / check)
 
 def _exhausts_field(entry: dict, reason: str) -> Optional[str]:
-    """WorkerResult.exhausts_at: over_rounding のときは端数を見込んだ枯渇見込み時刻。"""
-    key = "cautious_exhausts_at" if reason == "over_rounding" else "exhausts_at"
+    """WorkerResult.exhausts_at: over_rounding のときは端数を見込んだ枯渇見込み時刻、
+    burst のときは直近 2 時間の勢いでの枯渇見込み時刻。"""
+    key = {"over_rounding": "cautious_exhausts_at",
+           "burst": "burst_exhausts_at"}.get(reason, "exhausts_at")
     value = entry.get(key)
+    if reason == "burst" and not isinstance(value, str):
+        value = entry.get("exhausts_at")  # 保持中で burst の時刻が消えたとき
     return value if isinstance(value, str) else None
 
 
@@ -790,7 +865,9 @@ def format_model_lines(models: Dict[str, Any], result: RoutingResult,
     for name, model in models.items():
         verdict = model_verdict(name, model, result).verdict
         if "review" in model.roles and verdict != "stop":
-            available.append(name)
+            # review 行は判定の良い順 (boost > go > reserve、unknown は go と同じ)。
+            # 同順位は台帳の順のまま (安定ソート)。
+            available.append((VERDICT_RANK.get(verdict, VERDICT_RANK["go"]), name))
         workers = []
         for worker_name in model.workers:
             worker = result.worker(worker_name)
@@ -805,8 +882,10 @@ def format_model_lines(models: Dict[str, Any], result: RoutingResult,
     if not available:
         lines.append(t("routing.models.review_none"))
     else:
-        key = "routing.models.review_one" if len(available) == 1 else "routing.models.review_many"
-        lines.append(t(key, n=len(available), names=", ".join(available)))
+        names = [name for _rank, name in sorted(available, key=lambda item: item[0],
+                                                 reverse=True)]
+        key = "routing.models.review_one" if len(names) == 1 else "routing.models.review_many"
+        lines.append(t(key, n=len(names), names=", ".join(names)))
     return lines
 
 def _set_lang(lang: Optional[str]) -> None:
@@ -845,8 +924,11 @@ def format_worker_segments(result: RoutingResult, now: datetime, lang: Optional[
             text = "%s=%s(%s" % (w.name, w.verdict, pct_str(w.remaining))
         if w.reason == "disabled":
             text += "," + t("routing.gate.disabled")
-        if w.status == "over" or w.reason == "over_rounding":
-            text += "," + t("routing.gate.over" if w.status == "over" else "routing.gate.over_rounding")
+        if w.status == "over" or w.reason in ("over_rounding", "burst"):
+            key = ("routing.gate.burst" if w.reason == "burst"
+                   else "routing.gate.over" if w.status == "over"
+                   else "routing.gate.over_rounding")
+            text += "," + t(key)
             ex = fmt_reset(w.exhausts_at, now)
             if ex:
                 text += t("routing.gate.exhausts", dt=ex)

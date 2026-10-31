@@ -210,6 +210,8 @@ review: 使える 1（reviewer）。このモデルが実装した差分はレ�
 | `boost` | 使い残しが見込まれる、リセット直後、24 時間未満の窓で順調、または使い切りモードが有効。積極的に使う候補。 |
 | `unknown` | 対象窓なし、プロバイダの取得エラー、古いデータなどで判定できない。fail-open のため起動は止めない。 |
 
+24 時間以上の窓（`length` が分かるもの）では、`burst_exhausts_at`（直近 2 時間の勢いでの枯渇見込み）が now より後かつリセットまで `long_over_margin_minutes` を超えて前なら、ペース判定が over でも（`over_near_reset` より優先して）`reserve`（理由 `burst`）にする。`fresh` は対象外。同じリセットの間は最大 30 分その判定を保つ（`routing.burst_holds`）。
+
 **24 時間未満の窓（5 時間枠など）** は繰り越しがなく、リセットでちょうど使い切るのが理想なので扱いを変える。猶予 margin を `short_over_margin_minutes`（省略時は窓長の 10%。5 時間なら 30 分）とし、ペース超過でも枯渇見込みがリセットの margin 未満前なら `go`、それより早ければ `reserve`。一度 `reserve` になった窓は、同じリセットまでの間は margin の 2/3 を切るまで `reserve` を保つ（判定が行き来しないように `status.json` の `routing.holds` に記録する）。残量による `stop` は、リセットまで margin 以上ある間だけ適用し、それより後は 0% まで使う。
 
 データの鮮度は既定 20 分（`stale_minutes`）。対象プロバイダの窓に古い `fetched_at` や `stale_error` がある場合も `unknown` になる。リセット権の数は表示されるが判定は変えない。

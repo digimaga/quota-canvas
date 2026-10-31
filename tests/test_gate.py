@@ -1266,3 +1266,158 @@ def test_fable_follows_overall_weekly_rounding():
         "fable": ["claude:weekly", "claude:weekly_fable"]}}}).routing
     result = evaluate(status(overall, fable), settings, {}, NOW).worker("fable")
     assert (result.verdict, result.reason) == ("reserve", "over_rounding")
+
+
+# --- burst (直近 2 時間の勢いでリセット前に尽きる) -------------------------------
+
+
+def test_burst_reserves_long_window_even_when_status_is_spare():
+    reset = NOW + timedelta(days=3)
+    entry = win("grok:weekly", "grok", "spare", 50.0, resets=reset)
+    entry["length"] = 7 * 86400
+    entry["burst_exhausts_at"] = (NOW + timedelta(hours=2)).isoformat(timespec="seconds")
+    result = evaluate(status(entry), cfg(), {}, NOW)
+    worker = result.workers[0]
+    assert (worker.verdict, worker.reason) == ("reserve", "burst")
+    assert worker.exhausts_at == entry["burst_exhausts_at"]
+    line = format_line(result, NOW, "ja")
+    assert "直近2時間の勢い" in line
+    assert "枯渇見込み" in line
+
+
+@pytest.mark.parametrize("burst", ["after_reset", "missing", "broken"])
+def test_burst_outside_reset_or_unparseable_keeps_pace_verdict(burst):
+    reset = NOW + timedelta(days=3)
+    entry = win("grok:weekly", "grok", "spare", 50.0, resets=reset)
+    entry["length"] = 7 * 86400
+    if burst == "after_reset":
+        entry["burst_exhausts_at"] = (reset + timedelta(hours=1)).isoformat(timespec="seconds")
+    elif burst == "broken":
+        entry["burst_exhausts_at"] = "not-a-date"
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("boost", "spare")
+
+
+def test_short_window_ignores_burst():
+    reset = NOW + timedelta(hours=4)
+    entry = win("glm:5h", "glm", "spare", 50.0, resets=reset)
+    entry["length"] = 5 * 3600
+    entry["burst_exhausts_at"] = (NOW + timedelta(hours=1)).isoformat(timespec="seconds")
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("boost", "spare")
+
+
+def test_burst_precedes_over_near_reset():
+    reset = NOW + timedelta(days=3)
+    entry = win("grok:weekly", "grok", "over", 50.0, resets=reset,
+                exhausts=reset - timedelta(minutes=30))
+    entry["length"] = 7 * 86400
+    entry["burst_exhausts_at"] = (NOW + timedelta(hours=2)).isoformat(timespec="seconds")
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("reserve", "burst")
+    assert worker.exhausts_at == entry["burst_exhausts_at"]
+
+
+@pytest.mark.parametrize("pace,expected", [
+    ("over", ("go", "over_near_reset")), ("spare", ("boost", "spare"))])
+def test_burst_near_reset_is_not_burst(pace, expected):
+    reset = NOW + timedelta(days=3)
+    entry = win("grok:weekly", "grok", pace, 50.0, resets=reset,
+                exhausts=reset - timedelta(minutes=30) if pace == "over" else None)
+    entry["length"] = 7 * 86400
+    entry["burst_exhausts_at"] = (reset - timedelta(minutes=30)).isoformat(timespec="seconds")
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == expected
+
+
+def test_burst_ignores_fresh_window():
+    reset = NOW + timedelta(days=3)
+    entry = win("grok:weekly", "grok", "fresh", 50.0, resets=reset)
+    entry["length"] = 7 * 86400
+    entry["burst_exhausts_at"] = (NOW + timedelta(hours=2)).isoformat(timespec="seconds")
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("boost", "fresh")
+
+
+def test_burst_ignores_window_without_length():
+    entry = win("grok:weekly", "grok", "spare", 50.0)
+    entry["burst_exhausts_at"] = (NOW + timedelta(hours=2)).isoformat(timespec="seconds")
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("boost", "spare")
+
+
+def test_burst_in_the_past_is_ignored():
+    reset = NOW + timedelta(days=3)
+    entry = win("grok:weekly", "grok", "spare", 50.0, resets=reset)
+    entry["length"] = 7 * 86400
+    entry["burst_exhausts_at"] = (NOW - timedelta(hours=1)).isoformat(timespec="seconds")
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("boost", "spare")
+
+
+def test_burst_hold_lasts_thirty_minutes_then_expires():
+    reset = NOW + timedelta(days=3)
+    entry = win("grok:weekly", "grok", "spare", 50.0, resets=reset)
+    entry["length"] = 7 * 86400
+    entry["burst_exhausts_at"] = (NOW + timedelta(hours=2)).isoformat(timespec="seconds")
+    first = evaluate(status(entry), cfg(stale_minutes=60), {}, NOW)
+    assert (first.workers[0].verdict, first.workers[0].reason) == ("reserve", "burst")
+    assert first.burst_holds == {"grok:weekly": (NOW + timedelta(minutes=30)).isoformat()}
+    assert first.burst_resets == {"grok:weekly": entry["resets_at"]}
+    entry.pop("burst_exhausts_at")
+    held = evaluate(status(entry), cfg(stale_minutes=60), {}, NOW + timedelta(minutes=29),
+                    previous=first.to_dict())
+    assert (held.workers[0].verdict, held.workers[0].reason) == ("reserve", "burst")
+    assert held.burst_holds == first.burst_holds  # 保持由来の周回では期限を延ばさない
+    expired = evaluate(status(entry), cfg(stale_minutes=60), {}, NOW + timedelta(minutes=31),
+                       previous=held.to_dict())
+    assert (expired.workers[0].verdict, expired.workers[0].reason) == ("boost", "spare")
+    assert expired.burst_holds == {}
+
+
+def test_burst_hold_is_dropped_when_reset_changes():
+    reset = NOW + timedelta(days=3)
+    entry = win("grok:weekly", "grok", "spare", 50.0, resets=reset)
+    entry["length"] = 7 * 86400
+    entry["burst_exhausts_at"] = (NOW + timedelta(hours=2)).isoformat(timespec="seconds")
+    first = evaluate(status(entry), cfg(), {}, NOW)
+    assert first.burst_holds
+    entry.pop("burst_exhausts_at")
+    entry["resets_at"] = (NOW + timedelta(days=5)).isoformat(timespec="seconds")
+    changed = evaluate(status(entry), cfg(), {}, NOW, previous=first.to_dict())
+    assert (changed.workers[0].verdict, changed.workers[0].reason) == ("boost", "spare")
+    assert changed.burst_holds == {}
+
+
+def test_burn_promotes_burst_to_boost():
+    reset = NOW + timedelta(days=3)
+    entry = win("grok:weekly", "grok", "spare", 50.0, resets=reset)
+    entry["length"] = 7 * 86400
+    entry["burst_exhausts_at"] = (NOW + timedelta(hours=2)).isoformat(timespec="seconds")
+    result = evaluate(status(entry), cfg(), {"grok": NOW + timedelta(hours=1)}, NOW)
+    worker = result.workers[0]
+    assert (worker.verdict, worker.reason) == ("boost", "burn")
+    assert worker.burn_until is not None
+
+
+def test_review_line_sorted_by_verdict_and_model_lines_unchanged():
+    from quotacanvas.config import RoutingModel
+
+    result = RoutingResult(workers=[
+        WorkerResult("glm", "reserve", "over"),
+        WorkerResult("grok", "boost", "spare"),
+        WorkerResult("codex", "go", "on_track"),
+        WorkerResult("gemini", "unknown", "missing"),
+    ])
+    models = {
+        "r1": RoutingModel(["glm"], ["review"]),
+        "r2": RoutingModel(["grok"], ["review"]),
+        "r3": RoutingModel(["codex"], ["review"]),
+        "r4": RoutingModel(["gemini"], ["review"]),
+    }
+    lines = gate.format_model_lines(models, result, "ja")
+    # モデルの各行は台帳の順のまま
+    assert [line.split(":", 1)[0] for line in lines[1:5]] == ["- r1", "- r2", "- r3", "- r4"]
+    review = next(line for line in lines if line.startswith("review:"))
+    # boost (r2) > go (r3) と unknown (r4) > reserve (r1)。同順位は台帳の順
+    assert review.index("r2") < review.index("r3") < review.index("r4") < review.index("r1")
