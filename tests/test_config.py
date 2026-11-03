@@ -490,10 +490,13 @@ def test_load_layout_panels(tmp_path):
 def test_layout_limits_ok(tmp_path):
     ok = [
         ["large"] * 4,                   # large 4 列
+        ["large"] * 5,                   # large 5 列 (上限)
         ["large"] * 3 + ["small"],       # large 3 列 + small 列 (下段は空き枠)
         ["large", "small", "small"],     # 2 列目が small 2 段
         ["small", "small", "large", "large"],  # 左の列を 2 段に: 4 列 6 枚
+        ["small", "small"] + ["large"] * 4,    # small 1 列 + large 4 列 = 5 列
         ["small"] * 8,                   # 4 列 × 2 段 = 8 枚
+        ["small"] * 10,                  # 5 列 × 2 段 = 10 枚 (上限)
         ["large", "small", "small", "large", "small", "small"],  # 交互でも 4 列
         ["small"],                       # 1 列 (下段は空き枠)
         ["large"],                       # 1 枚だけでもよい
@@ -508,20 +511,21 @@ def test_layout_limits_ok(tmp_path):
 @pytest.mark.parametrize(
     "sizes",
     [
-        ["large"] * 5,                          # large 5 列
-        ["small"] * 9,                          # small 9 枚 = 5 列
-        ["large", "large", "small", "small", "small", "large"],   # 5 列
-        ["small", "small", "small"] + ["large"] * 4,              # 6 列
+        ["large"] * 6,                          # large 6 列
+        ["small"] * 11,                         # small 11 枚 = 6 列
+        ["large", "large", "small", "small", "small", "large",
+         "small", "small"],                     # 6 列
+        ["small", "small", "small"] + ["large"] * 5,              # 6 列
     ],
 )
 def test_layout_over_limit_raises(tmp_path, sizes):
-    # 列は最大 4 (large 1 枚 / 連続する small 2 枚で 1 列)
+    # 列は最大 5 (large 1 枚 / 連続する small 2 枚で 1 列)
     text = "".join('[[layout.panels]]\nmain = "p%d:w"\nsize = "%s"\n\n'
                    % (i, s) for i, s in enumerate(sizes))
     with pytest.raises(ConfigError) as ei:
         load_config(write_cfg(tmp_path, text))
     assert "layout.panels" in str(ei.value)
-    assert "列は最大 4" in str(ei.value)
+    assert "列は最大 5" in str(ei.value)
 
 
 @pytest.mark.parametrize(

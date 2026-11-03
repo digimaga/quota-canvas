@@ -47,7 +47,7 @@ brightness = 20
 #   size = "large"（大きいパネル。1 枚で 1 列）か "small"（小さいパネル。続けて書いた
 #          2 枚が 1 列に上下 2 段で入る。どの列でも使える）。
 #          small に限り main = "" で空き段（位置だけ保つ）にできます。
-# 上限: 列は最大 4 つ（4 列すべて small にすれば最大 8 枚）。
+# 上限: 列は最大 5 つ（5 列すべて small にすれば最大 10 枚）。
 # [[layout.panels]]
 # main = "claude:weekly"
 # subs = ["claude:5h"]

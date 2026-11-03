@@ -194,7 +194,7 @@ The app finds the CLI at the path stored in its settings (default
   Columns are assembled by reading the panels in order (`render.group_columns`): a `large`
   panel fills one column; a `small` panel joins the bottom row of the previous column when
   that column is a small column holding only a top row, otherwise it starts a new column
-  (max 4 columns). A small entry with `main: ""` is an empty slot: it stays empty and keeps
+  (max 5 columns). A small entry with `main: ""` is an empty slot: it stays empty and keeps
   its position, so it is always reported when a small column has an empty top row and a
   filled bottom row (a trailing empty bottom slot may be reported too). An unresolvable
   `main` in a small slot renders empty the same way. A balance-only service can use its
@@ -382,7 +382,7 @@ app may put into `providers.<p>.windows` (empty list = show every window).
 | `display.brightness` | 0–100 | 表示: slider |
 | `display.night` | `{start, end, brightness}` or absent | 表示: 夜間は暗くする toggle + times + slider |
 | `display.sleep_with_mac` | bool, default `true` | — (engine only; UI なし). Mac がスリープしたら黒 1 枚 + 明るさ 0 で画面を消灯し、復帰したら明るさと表示を戻す |
-| `layout.panels` | array of `{main, subs, size}`, `[]` = auto placement | 表示: 配置エディタ (placement). `main` = window id (`"claude:weekly"`) or provider id (`"gemini"`, engine picks the service's best window / shows a balance-only or error slot) or `"local:<name>"`（ローカル LLM サーバー 1 枚、small/large とも可・サブなし）or `""` (small のみ可: その段は空き枠になり位置を保つ); `subs` = sub window ids (large panels only, ≤ 3). キー省略または `null` = 自動（主枠と同じサービスの残りの窓、最大 3、ほかのパネルで使った窓は除く。small パネルとローカルはサブなし）、`[]` = 明示的にサブなし。status.json の `layout[].subs` は解決後の配列; `size` = `"large"` \| `"small"`. Columns are assembled in panel order — 1 `large` or 2 consecutive `small`s per column, at most 4 columns (all-small = up to 8 panels); the engine rejects more with `config --set-json`. status.json の `layout[]` は同じ順序なので、同じ規則 (`render.group_columns`) で列構成を復元できる |
+| `layout.panels` | array of `{main, subs, size}`, `[]` = auto placement | 表示: 配置エディタ (placement). `main` = window id (`"claude:weekly"`) or provider id (`"gemini"`, engine picks the service's best window / shows a balance-only or error slot) or `"local:<name>"`（ローカル LLM サーバー 1 枚、small/large とも可・サブなし）or `""` (small のみ可: その段は空き枠になり位置を保つ); `subs` = sub window ids (large panels only, ≤ 3). キー省略または `null` = 自動（主枠と同じサービスの残りの窓、最大 3、ほかのパネルで使った窓は除く。small パネルとローカルはサブなし）、`[]` = 明示的にサブなし。status.json の `layout[].subs` は解決後の配列; `size` = `"large"` \| `"small"`. Columns are assembled in panel order — 1 `large` or 2 consecutive `small`s per column, at most 5 columns (all-small = up to 10 panels); the engine rejects more with `config --set-json`. status.json の `layout[]` は同じ順序なので、同じ規則 (`render.group_columns`) で列構成を復元できる |
 | `providers.<p>.enabled` | bool | サービス: toggle per detected service |
 | `providers.claude.token_refresh` | `"cli"` \| `"off"`, default `"cli"` | Claude の OAuth トークンの自動更新。`"cli"` = 期限切れ間近 / HTTP 401/403 で `claude -p` を軽く 1 回バックグラウンド実行し、Claude Code CLI 自身にキーチェーンへ書き戻させる（30 分に 1 回まで。成功したら反映要求を出して 1 秒以内に取り直す）。`"off"` = 自動更新しない（401/403 は「トークン期限切れ（claude を一度起動してください）」のエラー表示） |
 | `providers.<p>.windows` | list of window keys, `[]` = all | サービス: checkbox per window the service reports |

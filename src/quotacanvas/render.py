@@ -6,9 +6,11 @@ passes ``(ProviderUsage, Pace)`` pairs already sorted in display order.
 A provider whose fetch failed is passed with ``pace=None`` and is drawn as a
 compact gray error panel.
 
-Layout is slot based (``PanelSpec``): panels are assembled into at most 4
-equal-width columns (``group_columns`` -- the same rule the config validator
-uses). A large panel fills one column; a small panel goes into the bottom
+Layout is slot based (``PanelSpec``): panels are assembled into equal-width
+columns (``group_columns`` -- the same rule the config validator uses), at
+most 5 columns for manual placement (``MAX_COLUMNS``); ``auto_layout`` keeps
+its 4-column layout (``AUTO_COLUMNS``). A large panel fills one column; a
+small panel goes into the bottom
 row of the previous column when that column is a half-filled small column,
 otherwise it starts a new column as its top row. A small slot with
 ``main=""`` (or an id that cannot be resolved) stays empty and keeps its
@@ -725,7 +727,8 @@ AREA_BOTTOM = CANVAS_H - 8
 CARD_RADIUS = 14
 
 MAX_SERVICES = 8        # auto_layout keeps at most this many services
-MAX_COLUMNS = 4         # 列の上限 (large 1 枚 / small 2 枚で 1 列、small だけなら最大 8 枚)
+AUTO_COLUMNS = 4        # auto_layout が使う列数 (手動配置の上限とは別)
+MAX_COLUMNS = 5         # 列の上限 (large 1 枚 / small 2 枚で 1 列、small だけなら最大 10 枚)
 NARROW_W = 520          # below this a panel switches to the compact layout
 
 _STATUS_RANK = {
@@ -818,17 +821,17 @@ def auto_layout(cards):
     """Default placement: one panel per service (main = its best window,
     subs = the service's remaining windows, small panels have none). Up to 4
     services all get large panels; with 5-8 the right side becomes 2-row
-    small columns so everything fits in MAX_COLUMNS columns (n=5: large3+
+    small columns so everything fits in AUTO_COLUMNS columns (n=5: large3+
     small2, ..., n=8: small8). More than MAX_SERVICES services are dropped.
     An error service becomes a panel with main = provider id."""
     groups = _group_services(cards)[:MAX_SERVICES]
     n = len(groups)
-    n_large = n if n <= 4 else MAX_SERVICES - n   # n=5..8 -> 3, 2, 1, 0
+    n_large = n if n <= AUTO_COLUMNS else MAX_SERVICES - n   # n=5..8 -> 3, 2, 1, 0
     # Balance-only panels occupy small slots; retain the old layout otherwise.
     if any(g["best"] is None and not g["error"] for g in groups):
         groups.sort(key=lambda g: g["best"] is None and not g["error"])
         normal = sum(g["best"] is not None or bool(g["error"]) for g in groups)
-        n_large = min(normal, MAX_SERVICES - n, 4)
+        n_large = min(normal, MAX_SERVICES - n, AUTO_COLUMNS)
     specs = []  # type: List[PanelSpec]
     for i, g in enumerate(groups):
         size = "large" if i < n_large else "small"
@@ -1252,11 +1255,15 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
     s.text((wx, num_base + 2), word, font=wf, fill=TEXT_DIM, anchor="ls")
     block_end = wx + s.textlength(word, font=wf)
     if win.label:
-        lf = F("w5", 15)
         g = s.lead_gap(8)
-        s.text((block_end + g, num_base + 2), "· " + win.label, font=lf,
-               fill=TEXT_FAINT, anchor="ls")
-        block_end += g + s.textlength("· " + win.label, font=lf)
+        # 残り幅に合わせて縮小 → 省略 (5 列では固定 15px だと右端をはみ出す)。
+        avail = tx1 - (block_end + g)
+        lf, shown = _fit_text(s, "· " + win.label, "w5", 15,
+                              max(1, avail), min_size=10)
+        if avail > 0 and s.textlength(shown, font=lf) <= avail:
+            s.text((block_end + g, num_base + 2), shown, font=lf,
+                   fill=TEXT_FAINT, anchor="ls")
+            block_end += g + s.textlength(shown, font=lf)
     prev_txt = _prev_line(mp, gauge)          # F3: "前回 36% 余り" など
     if prev_txt:
         # 大きい % の横 ("残り · 週間" の後ろ) に同じ小ささで添え、経過など
@@ -1678,15 +1685,31 @@ def _draw_local_card(s, box, g, theme):
     # 残量カードと向きを揃え、使用中の本数ではなく空き本数を出す。
     free = _clamp(slots.capacity - slots.running, 0, slots.capacity)
     frac = "%d/%d" % (free, slots.capacity)
-    pf = F("w8", 44 if compact else 64)
+    free_word = t("render.local.free_word")
+    wtxt = t("render.local.waiting", waiting=slots.waiting)
+    # 行全体 (frac + 空き語 + 待ち) の必要幅から文字サイズを決める。
+    # 5 列 (列幅約 365px) で 64px のままだと「残り」と「待ち n」が重なる。
+    frac_sz = 44 if compact else 64
+    word_sz = 15 if compact else 17
+    wait_sz = 16 if compact else 18
+    gap1, gap2 = 10, 12
+    while frac_sz > 24 and (
+            s.textlength(frac, font=F("w8", frac_sz)) + gap1
+            + s.textlength(free_word, font=F("w5", word_sz)) + gap2
+            + s.textlength(wtxt, font=F("w6", wait_sz))) > cw:
+        frac_sz -= 2
+        word_sz = max(11, word_sz - 1)
+        wait_sz = max(10, wait_sz - 1)
+    pf = F("w8", frac_sz)
     cy = y0 + (100 if compact else 170)
     s.text((tx0, cy), frac, font=pf, fill=color, anchor="ls")
-    wx = tx0 + s.textlength(frac, font=pf) + 10
-    s.text((wx, cy + 2), t("render.local.free_word"),
-           font=F("w5", 15 if compact else 17), fill=TEXT_DIM, anchor="ls")
-    wtxt = t("render.local.waiting", waiting=slots.waiting)
-    wf = _fit_font(s, wtxt, "w6", 16 if compact else 18, tx1 - wx, min_size=10)
-    s.text((tx1, cy + 2), wtxt, font=wf,
+    wx = tx0 + s.textlength(frac, font=pf) + gap1
+    word_f = F("w5", word_sz)
+    s.text((wx, cy + 2), free_word, font=word_f, fill=TEXT_DIM, anchor="ls")
+    free_end = wx + s.textlength(free_word, font=word_f)
+    wf, shown_wait = _fit_text(s, wtxt, "w6", wait_sz,
+                               max(1, tx1 - free_end - gap2), min_size=10)
+    s.text((tx1, cy + 2), shown_wait, font=wf,
            fill=RED if slots.waiting > 0 else TEXT_DIM, anchor="rs")
 
     # -- 3. capacity meter: 空きマスを左から光らせる --------------------------

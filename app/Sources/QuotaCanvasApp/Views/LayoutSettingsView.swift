@@ -4,9 +4,9 @@ import UniformTypeIdentifiers
 
 /// 「配置」タブ: 画面の形を模した図で layout.panels（手動配置）を編集する。
 /// 手動配置は config、 自動配置は status.json の layout から復元。変更は即 config --set-json で保存。
-/// 4 列 ×（大 1 or 小 2）。各列の「2 段に分ける」で上下 2 枚の小スロット（全部 2 段なら最大 8 枚）。
+/// 5 列 ×（大 1 or 小 2）。各列の「2 段に分ける」で上下 2 枚の小スロット（全部 2 段なら最大 10 枚）。
 struct LayoutSettingsView: View {
-    static let columnCount = 4
+    static let columnCount = 5
     static let maxSubs = 3
 
     private let client = EngineClient()

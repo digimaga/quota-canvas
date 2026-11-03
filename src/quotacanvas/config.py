@@ -934,7 +934,7 @@ def format_toml(cfg: Config) -> str:
         '# subs = 大きいパネルの下に並べるサブの窓 ID (large のみ)',
         '# size = "large" (大きいパネル、1 枚で 1 列) | "small" (小さいパネル、'
         '連続する 2 枚で 1 列の上下 2 段)',
-        '# 上限: 列は最大 4 つ（全部 small なら最大 8 枚）。',
+        '# 上限: 列は最大 5 つ（全部 small なら最大 10 枚）。',
     ]
     if cfg.layout.panels:
         for p in cfg.layout.panels:

@@ -1,7 +1,7 @@
 """列の組み立て (render.group_columns) と auto_layout / 描画のテスト。
 
 新しい仕様: small 2 段の列は右端に限らずどの位置にも置ける
-(4 列すべて 2 段なら最大 8 枚)。main = "" の small は空き枠として
+(5 列すべて 2 段なら最大 10 枚)。main = "" の small は空き枠として
 位置を保ち、解決できない large 列と両段空の small 列だけが消える。
 """
 
@@ -180,11 +180,21 @@ def test_render_fully_empty_small_column_disappears(monkeypatch):
     assert [(b[0], b[2]) for b in boxes] == [(MARGIN, CANVAS_W - MARGIN)]
 
 
-def test_render_more_than_four_columns_is_capped(monkeypatch):
-    # 直接 render を呼んで 5 列以上を渡しても列は最大 4 に抑えられる
+def test_render_five_columns_is_allowed(monkeypatch):
+    # 手動配置は 5 列まで描ける
     boxes = _spy_draw(monkeypatch, "_draw_large_column")
     cards = _cards(5)
     layout = [_spec("p%d:weekly" % i) for i in range(5)]
     img = render(cards, NOW.astimezone(), layout=layout)
     assert img.size == (1920, 462)
-    assert len(boxes) == 4
+    assert len(boxes) == 5
+
+
+def test_render_more_than_five_columns_is_capped(monkeypatch):
+    # 直接 render を呼んで 6 列以上を渡しても列は最大 5 に抑えられる
+    boxes = _spy_draw(monkeypatch, "_draw_large_column")
+    cards = _cards(6)
+    layout = [_spec("p%d:weekly" % i) for i in range(6)]
+    img = render(cards, NOW.astimezone(), layout=layout)
+    assert img.size == (1920, 462)
+    assert len(boxes) == 5
