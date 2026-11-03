@@ -66,6 +66,8 @@ class Night:
 
 GAUGES = ("remaining", "used")  # display.gauge の値
 
+WEEK_STARTS = ("sunday", "monday")  # display.week_start の値 (カレンダーパネル)
+
 SEPARATOR_MAX = 5  # display.separator の最大文字数
 
 SLEEP_PROVIDERS = PROVIDERS  # pacing.sleep.skip に入れられる provider id
@@ -103,6 +105,8 @@ class Panel:
     main はメインの窓 ID ("claude:weekly") かサービス ID ("gemini")。
     サービス ID ならそのサービスの代表窓が自動で選ばれる。main = "" は
     size = "small" のときだけ可: その段は空き枠になり、位置は詰められない。
+    main = "calendar" は今日の属する月のカレンダーパネル (サブを持たない
+    1 枚。subs を書いても無視 = ローカル LLM サーバーと同じ扱い)。
     subs は下に並べるサブの窓 ID (large パネルのみ)。None (省略) なら自動:
     同じサービスの残りの窓のうち、ほかのパネルの main になっていないもの。
     """
@@ -130,6 +134,7 @@ class Display:
     percent_colors: bool = True                       # % の数字を利用状況の色にする (false で全部白)
     separator: str = ""                               # 文の区切り。"" なら言語の既定 (日本語「／」)
     language: str = "auto"                            # "auto" (macOS の言語設定) | "ja" | "en"
+    week_start: str = "sunday"                        # カレンダーパネルの週の始まり "sunday" | "monday"
 
 
 @dataclass
@@ -314,6 +319,8 @@ def _build(data: Dict[str, Any], path: Path) -> Config:
                 cfg.display.separator = _separator(value, "display.separator", path)
             elif key == "language":
                 cfg.display.language = _language(value, "display.language", path)
+            elif key == "week_start":
+                cfg.display.week_start = _week_start(value, "display.week_start", path)
             elif key == "night":
                 _need_table(value, "display.night", path)
                 cfg.display.night = _build_night(value, path)
@@ -834,6 +841,10 @@ def _language(value: Any, key: str, path: Path) -> str:
     return _choice(value, key, path, LANGUAGE_CHOICES)
 
 
+def _week_start(value: Any, key: str, path: Path) -> str:
+    return _choice(value, key, path, WEEK_STARTS)
+
+
 def _format_time(value: time) -> str:
     return value.isoformat(timespec="seconds" if value.second else "minutes")
 
@@ -903,6 +914,9 @@ def format_toml(cfg: Config) -> str:
         'separator = %s' % json.dumps(d.separator, ensure_ascii=False),
         '# 表示言語: "auto" = macOS の言語設定に従う / "ja" = 日本語 / "en" = 英語',
         'language = "%s"' % d.language,
+        '# カレンダーパネル（layout で main = "calendar" を置いたとき）の週の始まり:',
+        '# "sunday"（日曜始まり） / "monday"（月曜始まり）',
+        'week_start = "%s"' % d.week_start,
         "# true の間は画面への描画を止める（メニューバーアプリの「一時停止」）",
         "paused = %s" % ("true" if d.paused else "false"),
         "# true なら Mac のスリープ（ディスプレイ/システム）に合わせて画面を黒 1 枚と",
@@ -931,6 +945,8 @@ def format_toml(cfg: Config) -> str:
         "# 画面の配置 ([[layout.panels]])。未指定なら取得できたサービスを自動配置します。",
         '# main = メインの窓 ID ("claude:weekly") かサービス ID ("gemini")。'
         'main = "" は size = "small" のときだけ可（その段は空き枠になる）',
+        '#   "calendar" を書くと今日の属する月のカレンダーパネルになる（サブなし、',
+        '#   週の始まりは display.week_start）',
         '# subs = 大きいパネルの下に並べるサブの窓 ID (large のみ)',
         '# size = "large" (大きいパネル、1 枚で 1 列) | "small" (小さいパネル、'
         '連続する 2 枚で 1 列の上下 2 段)',
@@ -1141,6 +1157,7 @@ def config_to_dict(cfg: Config) -> Dict[str, Any]:
         "percent_colors": cfg.display.percent_colors,
         "separator": cfg.display.separator,
         "language": cfg.display.language,
+        "week_start": cfg.display.week_start,
         "windows": list(cfg.display.windows),
         "brightness": cfg.display.brightness,
     }

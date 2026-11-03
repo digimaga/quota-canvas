@@ -8,6 +8,9 @@ import UniformTypeIdentifiers
 struct LayoutSettingsView: View {
     static let columnCount = 5
     static let maxSubs = 3
+    /// カレンダーパネルの main 値 (engine 側の render.CALENDAR_MAIN と同じ)。
+    /// 窓を持たない特殊パネルで、大・小どちらにも置けてサブは持たない。
+    static let calendarMain = "calendar"
 
     private let client = EngineClient()
 
@@ -181,7 +184,7 @@ struct LayoutSettingsView: View {
             .pickerStyle(.menu)
             .frame(width: 300, alignment: .leading)
 
-            if slot.size == "large" {
+            if slot.size == "large" && !Self.isCalendar(slot.main) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Text("サブ窓（最大 \(Self.maxSubs)）")
@@ -274,6 +277,11 @@ struct LayoutSettingsView: View {
     /// (local:<名前>、窓を持たないカード 1 枚) は除外。
     static func isSubCandidate(_ id: String) -> Bool {
         id.contains(":") && !id.hasPrefix("local:")
+    }
+
+    /// カレンダーパネルか (サブを持たない特殊な主枠)。
+    static func isCalendar(_ main: String?) -> Bool {
+        main == calendarMain
     }
 
     /// チェックボックス等の表示に使う実効サブ: 明示リスト、nil（自動）なら status.json の解決済み subs
@@ -455,6 +463,12 @@ struct LayoutSettingsView: View {
         // ローカル LLM サーバー ([providers.local.<名前>]) も主枠に選べる
         // (config --json の providers.local から。表示名は label、無ければ名前)。
         windows.append(contentsOf: Self.localChoices(from: doc, existing: windows))
+        // カレンダーパネル (main = "calendar") も主枠に選べる。
+        // 大・小どちらにも置ける窓を持たないパネルなので、サブの選択は出さない。
+        if !windows.contains(where: { $0.id == Self.calendarMain }) {
+            windows.append(WindowChoice(id: Self.calendarMain,
+                                        label: String(localized: "カレンダー")))
+        }
 
         providerColors = snapshot?.colors ?? [:]
         let restored = Self.restoreLayout(config: doc?.layoutPanels ?? [], status: snapshot?.layout ?? [])
@@ -492,7 +506,9 @@ struct LayoutSettingsView: View {
                 }
             } else {
                 next[slotIndex(col, 0)].main = main.isEmpty ? nil : main
-                next[slotIndex(col, 0)].subs = panel.subs
+                // カレンダーは窓を持たない 1 枚: subs が config に残っていても捨てる
+                // (engine 側でも無視される。local: と同じ扱い)。
+                next[slotIndex(col, 0)].subs = main == calendarMain ? nil : panel.subs
                 if !main.isEmpty, i < status.count,
                    status[i].main == main, (status[i].size ?? "large") == panel.size {
                     resolvedSubs[main] = status[i].subs ?? []
@@ -527,7 +543,9 @@ struct LayoutSettingsView: View {
             } else {
                 let large = slots[Self.slotIndex(col, 0)]
                 if let main = large.main, !main.isEmpty {
-                    panels.append(ConfigDocument.PanelConfig(main: main, subs: large.subs, size: "large"))
+                    // カレンダーはサブを持たない (engine 側でも無視される): subs は保存しない
+                    let subs = main == Self.calendarMain ? nil : large.subs
+                    panels.append(ConfigDocument.PanelConfig(main: main, subs: subs, size: "large"))
                 }
             }
         }
@@ -582,7 +600,7 @@ private struct SlotCard: View {
             } else {
                 Text("クリックして設定").font(.callout).foregroundStyle(.tertiary)
             }
-            if slot.size == "large" {
+            if slot.size == "large" && slot.main != LayoutSettingsView.calendarMain {
                 Text(subSummary)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }

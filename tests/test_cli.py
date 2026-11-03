@@ -79,6 +79,7 @@ def test_config_json_matches_toml_shape(monkeypatch, capsys, tmp_path):
     assert data["display"] == {"paused": True, "sleep_with_mac": True,
                                "gauge": "used", "percent_colors": True,
                                "separator": "", "language": "auto",
+                               "week_start": "sunday",
                                "windows": ["claude:weekly"], "brightness": 70}
     assert "night" not in data["display"]
     assert data["providers"]["glm"] == {"enabled": False, "windows": ["5h"]}

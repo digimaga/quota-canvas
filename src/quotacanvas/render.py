@@ -15,15 +15,18 @@ row of the previous column when that column is a half-filled small column,
 otherwise it starts a new column as its top row. A small slot with
 ``main=""`` (or an id that cannot be resolved) stays empty and keeps its
 position. A panel is one main frame (a Window + its Pace) plus up to 3 sub
-frames (large panels only).
+frames (large panels only). ``main = "calendar"`` (manual placement only)
+draws the current month with per-service reset-day marks instead
+(``_draw_calendar``).
 """
 
 from __future__ import annotations
 
+import calendar as _cal
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import List, Optional, Sequence, Tuple
+from datetime import date, datetime, timedelta, timezone
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -33,20 +36,27 @@ from .models import Balance, Pace, PaceStatus, ProviderUsage, Window
 
 __all__ = ["render", "render_error", "advice_text", "auto_layout", "group_columns",
            "PanelSpec", "BRAND_COLORS", "CANVAS_W", "CANVAS_H",
-           "MAX_COLUMNS", "MAX_SERVICES"]
+           "MAX_COLUMNS", "MAX_SERVICES", "CALENDAR_MAIN", "WEEK_STARTS",
+           "weekday_column", "weekday_columns", "month_weeks", "calendar_marks"]
 
 
 @dataclass
 class PanelSpec:
     """Placement of one panel, as coming from the config."""
 
-    main: str               # window id ("claude:weekly") or provider id
-                            # ("gemini"; error display / auto main pick)
+    main: str               # window id ("claude:weekly"), provider id
+                            # ("gemini"; error display / auto main pick) or
+                            # CALENDAR_MAIN ("calendar"; 月間カレンダー 1 枚)
     subs: List[str] = field(default_factory=list)   # window ids, large only
     size: str = "large"     # "large" | "small"
 
 CANVAS_W = 1920
 CANVAS_H = 462
+
+#: layout.panels の main の特別値: 今日の属する月のカレンダーを描くパネル。
+#: 窓を持たない 1 枚なので subs は持たない (指定されても無視)。
+CALENDAR_MAIN = "calendar"
+WEEK_STARTS = ("sunday", "monday")   # display.week_start の値
 
 # --------------------------------------------------------------- palette ----
 
@@ -308,6 +318,14 @@ def _mix(c1, c2, t):
 def _dim(color, t=0.55):
     """Blend a state color toward the background."""
     return _mix(color, BG, t)
+
+
+# カレンダーパネルの土日 (日曜=赤系 / 土曜=青系)。控えめに: 状態色 (RED など)
+# そのものではなく通常の数字に近い色に少し乗せる。曜日見出しはさらに薄める。
+_CAL_SUN = _mix(RED, WHITE, 0.40)
+_CAL_SAT = _mix((74, 128, 240), WHITE, 0.30)
+_CAL_HEAD_SUN = _mix(_CAL_SUN, TEXT_FAINT, 0.30)
+_CAL_HEAD_SAT = _mix(_CAL_SAT, TEXT_FAINT, 0.30)
 
 
 def _on(color):
@@ -898,9 +916,14 @@ def _resolve_panel(lookups, spec):
     small slot stays empty). main = provider id auto-picks the service's
     best window; a failed service (provider id, or a window id whose group
     has an error and no usable window) becomes an error panel (main=None).
+    main = CALENDAR_MAIN は窓を持たないカレンダー 1 枚 (subs は無視、
+    local:<名前> と同じ扱い)。
     The panel dict also carries the main window's breakdown ("parts"):
     spec.subs が空 (自動) なら全内訳、明示ならその中の内訳だけ。"""
     by_prov, by_win = lookups
+    if spec.main == CALENDAR_MAIN:
+        return {"spec": spec, "g": None, "main": None, "subs": [], "parts": [],
+                "calendar": True}
     g = by_prov.get(spec.main)
     if g is not None:                       # provider id
         mi = g["best"]
@@ -942,6 +965,205 @@ def _layout_columns(cards, specs):
             if any(slot is not None for slot in slots):
                 cols.append(("small", slots))
     return cols
+
+
+# ----------------------------------------------------------- calendar panel --
+# main = "calendar" のパネル: 今日 (now のローカル日付) が属する月を 7 列の
+# マス目で描く。週の始まりは display.week_start ("sunday" | "monday")。
+# 1 日以上の窓はリセット日 (resets_at から length 間隔) にサービス色の点を
+# 打つ (1 日未満の 5 時間枠などには打たない)。
+
+def weekday_columns(week_start="sunday"):
+    # type: (str) -> Tuple[str, ...]
+    """週の始まりに合わせた 7 列の曜日キー (_WEEKDAYS と同じ "mon".."sun")。"""
+    if week_start == "monday":
+        return _WEEKDAYS                       # 月 火 水 木 金 土 日
+    return ("sun",) + _WEEKDAYS[:6]            # 日 月 火 水 木 金 土
+
+
+def weekday_column(day, week_start="sunday"):
+    # type: (Union[date, datetime], str) -> int
+    """`day` が week_start で始まる 7 列のカレンダーの何列目 (0-6) に来るか。
+    day.weekday() は 月=0 ... 日=6。"""
+    wd = day.weekday()
+    return wd if week_start == "monday" else (wd + 1) % 7
+
+
+def month_weeks(year, month, week_start="sunday"):
+    # type: (int, int, str) -> List[List[Optional[date]]]
+    """1 か月ぶんのカレンダー行。各行 7 マスで、マスは月内の日付または
+    None (前月・翌月の日は描かない)。行数は 4〜6。"""
+    n_days = _cal.monthrange(year, month)[1]
+    lead = weekday_column(date(year, month, 1), week_start)
+    cells = [None] * lead + [date(year, month, d) for d in range(1, n_days + 1)]
+    while len(cells) % 7:
+        cells.append(None)
+    return [cells[i:i + 7] for i in range(0, len(cells), 7)]
+
+
+def calendar_marks(cards, year, month):
+    # type: (Sequence[Tuple[ProviderUsage, Optional[Pace]]], int, int) -> List[Tuple[str, str, List[date]]]
+    """カレンダーに印を付けるリセット日。cards の各窓のうち長さ 1 日以上の
+    ものについて、resets_at を起点に length 間隔で前後に展開し、(year, month)
+    に入るローカル日付をすべて集める (リセット時刻不明・1 日未満の窓は対象外)。
+    同じサービスの複数窓・複数回のリセットは 1 つの印にまとめる。
+    間隔の加算は UTC で行う (ZoneInfo への timedelta 加算は壁時計基準なので
+    DST 境界で日付がずかる。実際のリセットは実時間間隔)。
+    戻り値はサービスの cards 内 初出順: (provider, 表示名, 日付昇順 の list)。"""
+    n_days = _cal.monthrange(year, month)[1]
+    order = []  # type: List[Tuple[str, str]]
+    found = {}  # type: Dict[str, set]
+    for pu, pace in cards:
+        if pace is None:
+            continue
+        win = pace.window
+        if win.resets_at is None or win.length < timedelta(days=1):
+            continue
+        if win.provider not in found:
+            found[win.provider] = set()
+            order.append((win.provider, pu.name or win.provider))
+        # 月の範囲 [1 日 0 時, 翌月 1 日 0 時) をカバーする k の範囲を求めて
+        # 開く。タイムゾーンのオフセット差 (DST など) は前後 1 回ぶんの余裕で吸収。
+        base = win.resets_at.astimezone(timezone.utc)
+        tz = win.resets_at.tzinfo
+        lo = datetime(year, month, 1, tzinfo=tz)
+        hi = datetime(year, month, n_days, tzinfo=tz) + timedelta(days=1)
+        k0 = int(math.floor((lo - win.resets_at) / win.length)) - 1
+        k1 = int(math.ceil((hi - win.resets_at) / win.length)) + 1
+        for k in range(k0, k1 + 1):
+            d = _local(base + k * win.length).date()
+            if d.year == year and d.month == month:
+                found[win.provider].add(d)
+    out = []
+    for prov, name in order:
+        days = sorted(found.get(prov) or ())
+        if days:
+            out.append((prov, name, days))
+    return out
+
+
+def _draw_calendar(s, box, cards, colors, now, week_start="sunday", small=False):
+    # type: (_S, Tuple[int, int, int, int], Sequence[Tuple[ProviderUsage, Optional[Pace]]], Optional[dict], datetime, str, bool) -> None
+    """カレンダーパネル本体。見出し (年月) + 曜日見出し行 + 7 列 × 週数の
+    マス目 + (large のみ) 印のあるサービスの凡例。今日のマスは枠線で強調、
+    土日の数字は控えめな赤系 / 青系。small では凡例を省き高さに合わせて
+    文字を縮める。"""
+    x0, y0, x1, y1 = box
+    s.rrect(box, radius=CARD_RADIUS, fill=CARD_BG)
+    s.rrect((x0, y0, x0 + 6, y1), radius=3, fill=TEXT_FAINT,
+            corners=(True, False, False, True))
+    pad = 10 if small else 16
+    tx0 = x0 + 6 + pad + 2
+    tx1 = x1 - pad
+    cw = tx1 - tx0
+    lnow = _local(now)
+    weeks = month_weeks(lnow.year, lnow.month, week_start)
+    today = lnow.date()
+
+    marks = calendar_marks(cards, lnow.year, lnow.month)
+    mark_color = {prov: _brand_color(colors, prov) for prov, _n, _d in marks}
+    day_marks = {}  # type: dict
+    for prov, _name, days in marks:
+        for d in days:
+            day_marks.setdefault(d.day, []).append(prov)
+
+    # -- 見出し (年月) と曜日見出し行 ---------------------------------------
+    # 見出しの下端を実測 (bbox) し、そこから余白を空けて曜日行を置く
+    # (文字サイズを変えても重ならない)。
+    title = t("render.calendar.title", year=lnow.year,
+              month=t("render.month." + _MONTHS[lnow.month - 1]))
+    tf = _fit_font(s, title, "w7", 17 if small else 20, cw, min_size=11)
+    head_cy = y0 + (19 if small else 24)
+    s.text((tx0, head_cy), title, font=tf, fill=TEXT, anchor="lm")
+    tb = _text_bbox(s, (tx0, head_cy), title, tf, "lm")
+    cols = weekday_columns(week_start)
+    wf = F("w6", 10 if small else 13)
+    # "mm" アンカーの上下オフセットはフォントが同じなら文字によらず一定
+    wd_off = _text_bbox(s, (0, 0), t("render.weekday.mon"), wf, "mm")
+    wd_cy = tb[3] + (5 if small else 7) - wd_off[1]
+    col_w = cw / 7.0
+    head_colors = {"sun": _CAL_HEAD_SUN, "sat": _CAL_HEAD_SAT}
+    for i, key in enumerate(cols):
+        s.text((tx0 + col_w * (i + 0.5), wd_cy), t("render.weekday." + key),
+               font=wf, fill=head_colors.get(key, TEXT_FAINT), anchor="mm")
+
+    # -- マス目 ---------------------------------------------------------------
+    legend = [(name, mark_color[prov]) for prov, name, days in marks if days] \
+        if not small else []
+    grid_top = wd_cy + wd_off[3] + (3 if small else 6)
+    grid_bottom = y1 - pad - (26 if legend else 4)
+    cell_h = (grid_bottom - grid_top) / float(len(weeks))
+    day_sz = max(8, min(12 if small else 20, int(cell_h * 0.46),
+                        int(col_w * 0.52)))
+    # リセット日の丸: large 直径 12 / small 直径 6 を目標に、数字の下端
+    # (今日の太字 w8 で実測) と重ならない範囲で縮める。同じ日に複数サービス
+    # あれば全サービスぶんを 1 行に並べ、入りきらなければ丸のほうを縮める
+    # (サービスを切り捨てない)。
+    num_off = _text_bbox(s, (0, 0), "8", F("w8", day_sz), "mm")
+    dot_gap = 3.0
+    bot_margin = 2.0 if small else 2.5
+    dot_r = min(3.0 if small else 6.0,
+                (cell_h - bot_margin - cell_h * 0.40 - num_off[3] - 1.0) / 2.0)
+    # n_max 個の丸の全幅 (n-1)*gap + n*直径 がマスに入る半径を直接決める。
+    # 描画件数もこの n_max のまま (収容数を半径から再計算すると浮動小数点
+    # 誤差で 4.0 が 3.999.. になり、末尾のサービスが全日欠けることがある)。
+    n_max = max([len(v) for v in day_marks.values()] or [1])
+    dot_want = dot_r
+    if n_max > 1:
+        dot_want = min(dot_want,
+                       (col_w - 2 - dot_gap * (n_max - 1)) / (2.0 * n_max))
+    dot_r = max(1.2, dot_want)
+    dot_step = dot_r * 2 + dot_gap
+    if dot_want >= 1.2:
+        max_dots = n_max          # 縮小後の半径で n_max 個が入る構成どおり描く
+    else:
+        # floor 半径でも入りきらない過多な場合だけ収容数を切り下げる (最終防衛)
+        max_dots = max(1, 1 + int((col_w - 2 - dot_r * 2) / dot_step))
+    for r, week in enumerate(weeks):
+        cy0 = grid_top + r * cell_h
+        for c, d in enumerate(week):
+            if d is None:
+                continue
+            cx = tx0 + col_w * (c + 0.5)
+            key = cols[c]
+            col = {"sun": _CAL_SUN, "sat": _CAL_SAT}.get(key, TEXT)
+            weight = "w6"
+            if d == today:
+                # 今日: 枠線で強調し、数字は白の太字
+                s.rrect((cx - col_w / 2.0 + 2, cy0 + 2,
+                         cx + col_w / 2.0 - 2, cy0 + cell_h - 2),
+                        radius=5, outline=TEXT, width=1 if small else 2)
+                col = WHITE
+                weight = "w8"
+            f = F(weight, day_sz)
+            s.text((cx, cy0 + cell_h * 0.40), "%d" % d.day, font=f, fill=col,
+                   anchor="mm")
+            provs = day_marks.get(d.day)
+            if provs:
+                # 丸は全サービスぶん縮小して 1 行に並べるので通常は全て入る。
+                # max_dots は floor サイズでも入らない過多な場合の最終防衛。
+                provs = provs[:max_dots]
+                dx = cx - (len(provs) * dot_step - dot_gap) / 2.0 + dot_r
+                dy = cy0 + cell_h - dot_r - bot_margin
+                for p in provs:
+                    s.rrect((dx - dot_r, dy - dot_r, dx + dot_r, dy + dot_r),
+                            radius=dot_r, fill=mark_color.get(p, _BRAND_DEFAULT))
+                    dx += dot_step
+
+    # -- 凡例: その月に印のあるサービスだけ、入る分だけ ------------------------
+    if legend:
+        lf = F("w5", 12)
+        dr = 4.0
+        ly = y1 - pad - 11
+        lx = tx0
+        for name, col in legend:
+            w = dr * 2 + 5 + s.textlength(name, font=lf)
+            if lx > tx0 and lx + w > tx1:
+                break
+            s.rrect((lx, ly - dr, lx + dr * 2, ly + dr), radius=dr, fill=col)
+            s.text((lx + dr * 2 + 5, ly), name, font=lf, fill=TEXT_DIM,
+                   anchor="lm")
+            lx += w + 8
 
 
 # -------------------------------------------------------------- card parts --
@@ -1767,8 +1989,8 @@ def _draw_large_column(s, box, p, colors, gauge, now):
 
 def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
            layout=None, recommendation=None, percent_colors=True,
-           separator=None, scale=1.0):
-    # type: (Sequence[Tuple[ProviderUsage, Optional[Pace]]], datetime, Tuple[int, int], str, Optional[dict], Optional[Sequence[PanelSpec]], Optional[str], bool, Optional[str], float) -> Image.Image
+           separator=None, scale=1.0, week_start="sunday"):
+    # type: (Sequence[Tuple[ProviderUsage, Optional[Pace]]], datetime, Tuple[int, int], str, Optional[dict], Optional[Sequence[PanelSpec]], Optional[str], bool, Optional[str], float, str) -> Image.Image
     """Render the 1920x462 canvas. `cards` are (provider, pace) pairs in
     display order; pace=None marks a provider whose fetch failed.
     gauge: "remaining" (fill = what is left, default) or "used"
@@ -1781,6 +2003,8 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
     にする。False なら全部白。
     separator: 文言の区切り " · " をこの文字列に置き換える (None なら置き換えない。
     設定の "" は呼び出し側が default_separator() にする)。
+    week_start: カレンダーパネル (main = "calendar") の週の始まり
+    ("sunday" 既定 | "monday")。
     group_columns() で
     最大 MAX_COLUMNS 列に組み立て、全列を等分幅で描く。large 列は大パネル 1 枚、
     small 列は上下 2 段の小パネル。main="" や解決できない id の small 段は
@@ -1788,6 +2012,8 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
     消える (残りの列が詰まる)。"""
     if gauge not in ("remaining", "used"):
         raise ValueError("gauge must be 'remaining' or 'used'")
+    if week_start not in WEEK_STARTS:
+        raise ValueError("week_start must be 'sunday' or 'monday'")
     img = Image.new("RGB", (round(CANVAS_W * scale), round(CANVAS_H * scale)), BG)
     s = _S(img, offset, scale)
     s.percent_colors = percent_colors
@@ -1810,7 +2036,10 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
     for i, (kind, slots) in enumerate(cols):
         box = col_box(i)
         if kind == "large":
-            _draw_large_column(s, box, slots[0], colors, gauge, now)
+            if slots[0].get("calendar"):
+                _draw_calendar(s, box, cards, colors, now, week_start)
+            else:
+                _draw_large_column(s, box, slots[0], colors, gauge, now)
             continue
         sboxes = [(box[0], area[1], box[2], int(round(area[1] + small_h))),
                   (box[0], int(round(area[1] + small_h + GAP)), box[2],
@@ -1818,6 +2047,10 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
         for p, sbox in zip(slots, sboxes):
             if p is None:
                 continue                # 空き段: 何も描かず位置だけ保つ
+            if p.get("calendar"):
+                _draw_calendar(s, sbox, cards, colors, now, week_start,
+                               small=True)
+                continue
             theme = _brand_color(colors, p["g"]["provider"])
             if p["main"] is None and not p["g"]["error"] and p["g"]["items"][0][0].balances:
                 _draw_balance_card(s, sbox, p["g"], theme)

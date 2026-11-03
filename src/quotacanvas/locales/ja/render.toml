@@ -91,6 +91,11 @@ state_free = "空きあり"
 state_full = "満杯"
 state_queued = "待ちあり"
 
+[calendar]
+# カレンダーパネル (layout.panels の main = "calendar") の見出し。
+# {month} には [month] の月名 (ja は数字) が入る
+title = "{year}年{month}月"
+
 [error]
 title = "取得エラー"
 reason = "取得失敗 ({reason})"

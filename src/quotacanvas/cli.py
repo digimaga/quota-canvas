@@ -364,14 +364,18 @@ def _write_app_files(cfg: Config, cards: List[Card], usages: List[ProviderUsage]
 
 def _render_frame(cards: List[Card], now: datetime, cfg: Config, layout,
                   recommendation: Optional[str] = None, offset=(0, 0), scale=1.0):
-    """1 フレームを描く。recommendation はヘッダに描く推奨 1 行 (F1)。"""
-    if not cards:
+    """1 フレームを描く。recommendation はヘッダに描く推奨 1 行 (F1)。
+    cards が空でも配置にカレンダーパネルがあれば通常描画する
+    (カレンダーは窓データを必要としない)。"""
+    if not cards and not (layout
+                          and any(p.main == "calendar" for p in layout)):
         return render_error(t("cli.no_usage"), now, scale=scale)
     return render(cards, now, offset=offset, gauge=cfg.display.gauge,
                   colors=_brand_colors(cfg), layout=layout,
                   recommendation=recommendation,
                   percent_colors=cfg.display.percent_colors,
-                  separator=cfg.display.separator or default_separator(), scale=scale)
+                  separator=cfg.display.separator or default_separator(),
+                  week_start=cfg.display.week_start, scale=scale)
 
 
 def _render_layout(cfg: Config, cards: Optional[List[Card]] = None):
@@ -382,7 +386,9 @@ def _render_layout(cfg: Config, cards: Optional[List[Card]] = None):
     subs を省略した large パネルには、自動配置 (render.auto_layout) と同じく
     同じサービスの表示中の窓を順に最大 3 件付ける。全パネルの main と明示
     subs の窓、先行パネルが自動サブに使った窓は重複しない。small パネルは
-    描画側に合わせてサブなし。main = "" の small パネル (空き枠) はそのまま
+    描画側に合わせてサブなし。main = "calendar" (カレンダー) もローカル LLM
+    と同じく窓を持たない 1 枚なのでサブなし (明示 subs は無視)。
+    main = "" の small パネル (空き枠) はそのまま
     PanelSpec(main="", subs=[], size="small") になり、status.json でも同じ
     形で報告されて列構成を復元できる。
     """
@@ -396,7 +402,9 @@ def _render_layout(cfg: Config, cards: Optional[List[Card]] = None):
     used: Set[str] = set()  # main と明示 subs は自動サブの対象から外す
     for p in cfg.layout.panels:
         used.add(p.main)
-        if p.subs is not None:
+        # カレンダーの subs は描画しない (下で捨てる) ので予約にも入れない:
+        # 入れると他パネルの自動サブからその窓が消えてしまう。
+        if p.subs is not None and p.main != "calendar":
             used.update(p.subs)
     shown = [pace.window.id for _, pace in (cards or []) if pace is not None]
     specs = []
@@ -404,7 +412,9 @@ def _render_layout(cfg: Config, cards: Optional[List[Card]] = None):
         if not p.main:  # 空き枠 (small のみ可、config 検証済み)
             specs.append(PanelSpec(main="", subs=[], size=p.size))
             continue
-        if p.subs is not None:
+        if p.main == "calendar":
+            subs = []  # カレンダーは窓を持たない 1 枚: サブを付けない (明示指定も無視)
+        elif p.subs is not None:
             subs = list(p.subs)[:3]  # 描画側も 3 件で切るので status.json もそろえる
         elif p.main.startswith("local:"):
             subs = []  # ローカル LLM は窓を持たないカード 1 枚: サブを付けない

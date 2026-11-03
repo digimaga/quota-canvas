@@ -14,6 +14,7 @@ Embedded in the desktop like wallpaper — your icons stay on top, and windows c
 - View recommendations, quota cards, and Codex reset credits in the menu bar.
 - Receive notifications about quota status.
 - See usage pace, projected exhaustion, and history.
+- Place a calendar panel in the manual layout (dots on reset days of windows ≥ 1 day; week starts Sunday or Monday).
 - Route AI workers using quota and pace information with Claude Code / Codex plugins (advanced).
 
 ## Supported services

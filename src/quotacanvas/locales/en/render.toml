@@ -90,6 +90,11 @@ state_free = "free"
 state_full = "full"
 state_queued = "queued"
 
+[calendar]
+# calendar panel heading (layout.panels main = "calendar").
+# {month} is the month name from [month]
+title = "{month} {year}"
+
 [error]
 title = "Fetch error"
 reason = "Fetch failed ({reason})"

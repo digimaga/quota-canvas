@@ -201,7 +201,10 @@ The app finds the CLI at the path stored in its settings (default
   provider id as `main`: it renders a balance panel, with each amount prefixed by its
   `label` or the localized default "Balance" when `label` is null. A local LLM server
   uses `"local:<name>"` as `main` (small or large; it is one card with no sub windows,
-  so its `subs` is always empty). With no `[[layout.panels]]` in the
+  so its `subs` is always empty). `main: "calendar"` renders the calendar panel: the
+  month of the engine's local "now" with reset-day dots for every window of ≥ 1 day
+  (per service color, legend on large panels only). It has no windows either, so its
+  `subs` is always empty (the engine drops a configured `subs`). With no `[[layout.panels]]` in the
   config this is the engine's auto layout (`auto_layout`),
   so the app can prefill its placement screen with what is on screen right now.
 - `colors` — the effective theme color per provider (`#RRGGBB`): the engine defaults
@@ -379,10 +382,11 @@ app may put into `providers.<p>.windows` (empty list = show every window).
 | `display.percent_colors` | bool（既定 `true`） | 表示: 利用状況に合わせて % の文字色を変える（オフで全部白） |
 | `display.separator` | string（5 文字まで、既定 `""`） | 表示: 区切り文字 picker。`""` = 表示言語の既定（日本語「／」、英語「 · 」）。TURZX 画面の文言の ` · ` を置き換える（status.json の文言は ` · ` のまま） |
 | `display.language` | `"auto"` \| `"ja"` \| `"en"`, default `"auto"` | 表示: language picker. `"auto"` follows the macOS language setting |
+| `display.week_start` | `"sunday"` \| `"monday"`, default `"sunday"` | 表示: 週の始まり picker（日曜 / 月曜）。カレンダーパネル (`layout.panels` の `main = "calendar"`) の週の先頭列 |
 | `display.brightness` | 0–100 | 表示: slider |
 | `display.night` | `{start, end, brightness}` or absent | 表示: 夜間は暗くする toggle + times + slider |
 | `display.sleep_with_mac` | bool, default `true` | — (engine only; UI なし). Mac がスリープしたら黒 1 枚 + 明るさ 0 で画面を消灯し、復帰したら明るさと表示を戻す |
-| `layout.panels` | array of `{main, subs, size}`, `[]` = auto placement | 表示: 配置エディタ (placement). `main` = window id (`"claude:weekly"`) or provider id (`"gemini"`, engine picks the service's best window / shows a balance-only or error slot) or `"local:<name>"`（ローカル LLM サーバー 1 枚、small/large とも可・サブなし）or `""` (small のみ可: その段は空き枠になり位置を保つ); `subs` = sub window ids (large panels only, ≤ 3). キー省略または `null` = 自動（主枠と同じサービスの残りの窓、最大 3、ほかのパネルで使った窓は除く。small パネルとローカルはサブなし）、`[]` = 明示的にサブなし。status.json の `layout[].subs` は解決後の配列; `size` = `"large"` \| `"small"`. Columns are assembled in panel order — 1 `large` or 2 consecutive `small`s per column, at most 5 columns (all-small = up to 10 panels); the engine rejects more with `config --set-json`. status.json の `layout[]` は同じ順序なので、同じ規則 (`render.group_columns`) で列構成を復元できる |
+| `layout.panels` | array of `{main, subs, size}`, `[]` = auto placement | 表示: 配置エディタ (placement). `main` = window id (`"claude:weekly"`) or provider id (`"gemini"`, engine picks the service's best window / shows a balance-only or error slot) or `"calendar"`（今日の属する月のカレンダーパネル。small/large とも可・サブなし（`subs` は無視）、印は ≥ 1 日の窓のリセット日、週の始まりは `display.week_start`）or `"local:<name>"`（ローカル LLM サーバー 1 枚、small/large とも可・サブなし）or `""` (small のみ可: その段は空き枠になり位置を保つ); `subs` = sub window ids (large panels only, ≤ 3). キー省略または `null` = 自動（主枠と同じサービスの残りの窓、最大 3、ほかのパネルで使った窓は除く。small パネルとローカル・カレンダーはサブなし）、`[]` = 明示的にサブなし。status.json の `layout[].subs` は解決後の配列; `size` = `"large"` \| `"small"`. Columns are assembled in panel order — 1 `large` or 2 consecutive `small`s per column, at most 5 columns (all-small = up to 10 panels); the engine rejects more with `config --set-json`. status.json の `layout[]` は同じ順序なので、同じ規則 (`render.group_columns`) で列構成を復元できる |
 | `providers.<p>.enabled` | bool | サービス: toggle per detected service |
 | `providers.claude.token_refresh` | `"cli"` \| `"off"`, default `"cli"` | Claude の OAuth トークンの自動更新。`"cli"` = 期限切れ間近 / HTTP 401/403 で `claude -p` を軽く 1 回バックグラウンド実行し、Claude Code CLI 自身にキーチェーンへ書き戻させる（30 分に 1 回まで。成功したら反映要求を出して 1 秒以内に取り直す）。`"off"` = 自動更新しない（401/403 は「トークン期限切れ（claude を一度起動してください）」のエラー表示） |
 | `providers.<p>.windows` | list of window keys, `[]` = all | サービス: checkbox per window the service reports |

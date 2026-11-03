@@ -54,6 +54,7 @@
 "このスロットを空にする" = "Clear slot";
 "窓の一覧を取得できません: %@" = "Could not list windows: %@";
 "クリックして設定" = "Click to set";
+"カレンダー" = "Calendar";
 "サブ: 自動（現在なし）" = "Subs: auto (none)";
 "サブ（自動）: %@" = "Subs (auto): %@";
 "サブなし" = "No subs";
@@ -95,6 +96,10 @@
 "メニューバーのポップオーバーの残り % にも同じ方式が使われます。" = "The same style is used for the remaining-% value in the menu bar popover.";
 "利用状況に合わせて % の文字色を変える" = "Color the % by usage status";
 "区切り文字" = "Separator";
+"週の始まり" = "First day of week";
+"日曜" = "Sunday";
+"月曜" = "Monday";
+"カレンダーパネルを置いたときの週の先頭列です。" = "The leading column of the calendar panel, when placed.";
 "言語に合わせる" = "Follow display language";
 "／（全角スラッシュ）" = "／ (full-width slash)";
 "·（中黒）" = "· (middle dot)";

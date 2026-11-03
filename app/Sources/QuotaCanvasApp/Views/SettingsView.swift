@@ -50,6 +50,7 @@ struct DisplaySettingsView: View {
     @State private var sleepWithMac = true
     @State private var percentColors = true
     @State private var separator = ""
+    @State private var weekStart = "sunday"
     @State private var loginOn = LoginItem.isEnabled
 
     private let client = EngineClient()
@@ -118,6 +119,15 @@ struct DisplaySettingsView: View {
                 }
             }
             Text("「言語に合わせる」では日本語表示のとき ／、英語表示のとき \" · \" になります。")
+                .font(.caption).foregroundStyle(.secondary)
+            Picker("週の始まり", selection: Binding(get: { weekStart }, set: { value in
+                weekStart = value
+                commit { $0.weekStart = value }
+            })) {
+                Text("日曜").tag("sunday")
+                Text("月曜").tag("monday")
+            }
+            Text("カレンダーパネルを置いたときの週の先頭列です。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -284,6 +294,7 @@ struct DisplaySettingsView: View {
             sleepWithMac = fetched.sleepWithMac ?? true
             percentColors = fetched.percentColors
             separator = fetched.separator
+            weekStart = fetched.weekStart
             if let night = fetched.night {
                 nightStart = Self.parseHHMM(night.start) ?? Self.parseHHMM("23:00")!
                 nightEnd = Self.parseHHMM(night.end) ?? Self.parseHHMM("07:00")!

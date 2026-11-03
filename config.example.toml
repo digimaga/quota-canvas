@@ -32,6 +32,10 @@ percent_colors = true
 # 既定（日本語は全角「／」、英語は「 · 」）。例: " · " / " / " / " | "（5 文字まで）
 # separator = ""
 
+# カレンダーパネル（layout.panels の main = "calendar"）の週の始まり。
+# "sunday"（日曜始まり、既定）か "monday"（月曜始まり）。
+# week_start = "sunday"
+
 # 夜間の減光。使わないならこの [display.night] 節ごと削除してください。
 # 時刻はローカル時刻。start > end なら日付をまたぎます（23:00 → 翌 07:00）。
 [display.night]
@@ -43,6 +47,8 @@ brightness = 20
 # 各パネルの項目:
 #   main = メインの窓 ID（例: "claude:weekly"）かサービス ID（例: "gemini"）。
 #          サービス ID なら代表窓が自動で選ばれ、取得できないときはエラー枠になります。
+#          "calendar" なら今日の属する月のカレンダーパネルになります（窓を持たず、
+#          large でも subs は無視。週の始まりは display.week_start）。
 #   subs = 大きいパネルの下に並べるサブの窓 ID（例: ["claude:5h"]）。large のみ。
 #   size = "large"（大きいパネル。1 枚で 1 列）か "small"（小さいパネル。続けて書いた
 #          2 枚が 1 列に上下 2 段で入る。どの列でも使える）。

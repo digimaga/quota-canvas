@@ -51,6 +51,12 @@ struct ConfigDocument {
         set { var d = display; d["language"] = newValue; display = d }
     }
 
+    /// カレンダーパネルの週の始まり。"sunday" / "monday"。既定 "sunday"。
+    var weekStart: String {
+        get { display["week_start"] as? String ?? "sunday" }
+        set { var d = display; d["week_start"] = newValue; display = d }
+    }
+
     var brightness: Double {
         get { (display["brightness"] as? NSNumber)?.doubleValue ?? 100 }
         set { var d = display; d["brightness"] = Int(newValue.rounded()); display = d }

@@ -647,6 +647,7 @@ def test_config_to_dict_defaults(tmp_path):
     assert d["display"] == {"paused": False, "sleep_with_mac": True,
                             "gauge": "remaining", "percent_colors": True,
                             "separator": "", "language": "auto",
+                            "week_start": "sunday",
                             "windows": [], "brightness": 100}
     assert "night" not in d["display"]
     assert d["layout"] == {"panels": []}  # 空 = 自動配置

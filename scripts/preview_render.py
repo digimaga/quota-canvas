@@ -163,6 +163,13 @@ def main():
          [PanelSpec("claude:weekly"), PanelSpec("codex:weekly"),
           PanelSpec("grok:weekly"), PanelSpec("codex:weekly", size="small"),
           PanelSpec("gemini", size="small")]),
+        # カレンダーパネル (main = "calendar"): large 1 列 + small 1 段を含む
+        # 5 列。週間窓 3 サービスのリセット日に印が付く (5 時間窓は印なし)
+        ("preview_calendar_%s.png" % lang,
+         cards_of(s, ("claude", "codex", "glm", "grok", "gemini")),
+         [PanelSpec("calendar"), PanelSpec("claude:weekly"),
+          PanelSpec("codex:weekly"), PanelSpec("grok:weekly"),
+          PanelSpec("calendar", size="small"), PanelSpec("gemini", size="small")]),
     ]
     for name, cards, layout in jobs:
         path = args.out / name
