@@ -2,7 +2,7 @@
 
 English | [日本語](README.ja.md)
 
-A macOS menu bar app that shows remaining quota and usage pace for Claude, Codex, GLM, Grok, Gemini, OpenRouter, DeepSeek, and Kimi on your desktop, in the menu bar, or on an optional TURZX 9.2" USB screen.
+A macOS menu bar app that shows remaining quota and usage pace for Claude, Codex, GLM, Grok, Gemini, OpenRouter, DeepSeek, Kimi, and OpenCode Go on your desktop, in the menu bar, or on an optional TURZX 9.2" USB screen.
 
 ![QuotaCanvas panel embedded in the macOS desktop](docs/images/desktop-ja.png)
 
@@ -29,6 +29,7 @@ Embedded in the desktop like wallpaper — your icons stay on top, and windows c
 | OpenRouter | API key quota window or usage / remaining limit, and account credits when available | API key in Keychain or `OPENROUTER_API_KEY` |
 | DeepSeek | Account balance | API key in Keychain or `DEEPSEEK_API_KEY` |
 | Kimi | Global USD account balance | Moonshot API key in Keychain or `MOONSHOT_API_KEY` |
+| OpenCode Go | 5-hour, weekly, and 30-day usage windows | API key in Keychain, `OPENCODE_API_KEY`, or the opencode CLI login (`~/.local/share/opencode/auth.json`) |
 
 OpenRouter, DeepSeek, and Kimi follow public API specifications and have not been verified with real accounts. See [Credentials](#credentials) for details.
 
@@ -110,6 +111,7 @@ QuotaCanvas fetches usage and shows whether the current pace will exhaust a quot
 .venv/bin/quota-canvas set-key openrouter       # OpenRouter API key
 .venv/bin/quota-canvas set-key deepseek         # DeepSeek API key
 .venv/bin/quota-canvas set-key kimi             # Moonshot API key
+.venv/bin/quota-canvas set-key opencode         # OpenCode Go API key
 .venv/bin/quota-canvas pick                     # show a recommendation (--json is also available)
 ./scripts/install-agent.sh                      # start at login; --uninstall removes it
 ./scripts/install-auto-update.sh                # pull new main commits every 10 minutes and restart; --uninstall removes it
@@ -138,6 +140,7 @@ The Routing settings tab enables routing, sets the remaining quota floor and dat
 - Claude reads Keychain `Claude Code-credentials`, Codex reads `~/.codex/auth.json`, and Grok reads `~/.grok/auth.json`. GLM reads Keychain `quota-canvas/glm` (saved with `set-key glm` or in the app's settings) or the `ZAI_API_KEY` environment variable; the Keychain key takes priority.
 - Token refresh is delegated to each CLI. With the default `providers.claude.token_refresh = "cli"`, Claude runs `claude -p` once in the background when the token is near expiry or on HTTP 401/403, at most once per 30 minutes. `"off"` disables this and prompts the user to launch Claude on 401/403. `providers.grok.token_refresh` runs `grok models` on expiry or HTTP 401/403 without consuming quota. `providers.codex.token_refresh` runs `codex exec … ok` on HTTP 401/403, at most once per 30 minutes; it consumes a little quota.
 - OpenRouter, DeepSeek, and Kimi read Keychain `quota-canvas/openrouter`, `quota-canvas/deepseek`, and `quota-canvas/kimi` first, then `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, and `MOONSHOT_API_KEY` respectively. These integrations follow public API specifications and have not been verified with real accounts. Kimi uses the global USD API.
+- OpenCode Go reads Keychain `quota-canvas/opencode` (saved with `set-key opencode`), then `OPENCODE_API_KEY`, then the `opencode-go` entry's `key` in the opencode CLI login at `~/.local/share/opencode/auth.json`. The usage endpoint reports `opencode:5h` (5-hour rolling), `opencode:weekly` (7 days), and `opencode:30d` (30 days). A 401/403 means the key is invalid or the account has no OpenCode Go subscription; check that the key is correct and that the account subscribes to OpenCode Go.
 - Gemini uses Antigravity CLI's `agy -p "/usage" --output-format json`. This does not invoke a model or consume quota, and agy refreshes its own token. `providers.gemini.token_refresh` is accepted for compatibility but is no longer used. The windows are `gemini:weekly`, Gemini 4 Argon's `gemini:argon`, `gemini:5h`, and `gemini:claude` / `gemini:claude_5h` for Claude / GPT through Antigravity. The plan name is shown if it can be obtained with the Keychain token for service `gemini` / account `antigravity`; otherwise it is shown as “Gemini”.
 
 #### History, pace and recommendations

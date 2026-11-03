@@ -319,7 +319,7 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `stop` → one stderr line, exit 3; `reserve` → one stderr note, exit 0; `unknown` → one
   stderr line (「判定できないためそのまま続行」), exit 0; `go`/`boost` → silent, exit 0.
   A name is valid when it is one of `KNOWN_PROVIDERS` (claude / codex / glm / grok /
-  gemini), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
+  gemini / opencode), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
   the worst of its workers; a worker name wins on collision) — anything else exits 2, regardless of what
   status.json contains. A valid name whose windows are absent from status.json (or when
   status.json is missing / too old / unreadable) is `unknown` with exit 0; with `--json`
@@ -372,6 +372,13 @@ Notes on `detect --json`: `detected: true` means the credentials exist. It then 
 usage request once; if that request fails, `plan`/`windows` stay empty and `error` carries
 the short reason (e.g. `"HTTP 429"`). The `key` values in `windows[]` are exactly what the
 app may put into `providers.<p>.windows` (empty list = show every window).
+
+OpenCode Go (`opencode`) reads Keychain `quota-canvas/opencode` (saved with
+`set-key opencode`), then `OPENCODE_API_KEY`, then the `opencode-go` entry's `key` in
+`~/.local/share/opencode/auth.json`. Its windows are `opencode:5h` (5-hour rolling),
+`opencode:weekly` (7 days), and `opencode:30d` (30 days); a 401/403 means the key is
+invalid or the account has no OpenCode Go subscription (check the key and the account's
+OpenCode Go subscription).
 
 ## Config keys the app edits
 

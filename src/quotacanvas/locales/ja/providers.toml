@@ -38,6 +38,7 @@ glm_env = "環境変数 ZAI_API_KEY"
 api_key = "{name} の API キー（{source}）"
 keychain = "キーチェーン quota-canvas/{provider}"
 env = "環境変数 {variable}"
+opencode_auth = "~/.local/share/opencode/auth.json"
 
 [claude]
 weekly_scoped = "週間 {model}"

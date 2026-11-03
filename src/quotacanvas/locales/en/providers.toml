@@ -38,6 +38,7 @@ glm_env = "env ZAI_API_KEY"
 api_key = "{name} API key ({source})"
 keychain = "keychain quota-canvas/{provider}"
 env = "env {variable}"
+opencode_auth = "~/.local/share/opencode/auth.json"
 
 [claude]
 weekly_scoped = "Weekly {model}"

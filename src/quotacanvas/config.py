@@ -33,7 +33,7 @@ log = logging.getLogger("quotacanvas")
 
 DEFAULT_PATH = config_path()
 
-PROVIDERS = ("claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek", "kimi")
+PROVIDERS = ("claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek", "kimi", "opencode")
 
 INTERVAL_MIN = 60  # poll.interval の最小値 (秒)
 REDRAW_MIN = 10    # poll.redraw の最小値 (秒)
@@ -222,6 +222,7 @@ class Providers:
     openrouter: bool = True
     deepseek: bool = True
     kimi: bool = True
+    opencode: bool = True
     claude_token_refresh: str = "cli"  # "cli" = 期限切れ時に `claude -p` で更新 / "off" = しない
     codex_token_refresh: str = "cli"   # "cli" = 401/403 時に `codex exec` で更新 / "off" = しない
     grok_token_refresh: str = "cli"    # "cli" = 期限切れ時に `grok models` で更新 / "off" = しない

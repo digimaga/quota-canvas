@@ -2,7 +2,7 @@
 
 [English](README.md) | 日本語
 
-Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi の利用枠の残量とペースを、Mac のデスクトップやメニューバー、または任意の TURZX 9.2" USB 画面に表示する macOS アプリ。
+Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi / OpenCode Go の利用枠の残量とペースを、Mac のデスクトップやメニューバー、または任意の TURZX 9.2" USB 画面に表示する macOS アプリ。
 
 ![macOS のデスクトップに埋め込んだ QuotaCanvas のパネル](docs/images/desktop-ja.png)
 
@@ -29,6 +29,7 @@ Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi の利用枠
 | OpenRouter | API キーの利用枠または利用額 / 上限残額、取得できる場合はアカウントのクレジット残高 | キーチェーンの API キーまたは `OPENROUTER_API_KEY` |
 | DeepSeek | アカウント残高 | キーチェーンの API キーまたは `DEEPSEEK_API_KEY` |
 | Kimi | グローバル版 USD アカウント残高 | キーチェーンの Moonshot API キーまたは `MOONSHOT_API_KEY` |
+| OpenCode Go | 5 時間・週間・30 日の利用枠 | キーチェーンの API キー、`OPENCODE_API_KEY`、または opencode CLI のログイン（`~/.local/share/opencode/auth.json`） |
 
 OpenRouter / DeepSeek / Kimi は公開 API 仕様に基づく実装で、実アカウントでは未検証。詳しくは[認証情報](#認証情報)を参照。
 
@@ -110,6 +111,7 @@ Screen().show(pil_image)   # 1920×462 の横長画像
 .venv/bin/quota-canvas set-key openrouter       # OpenRouter の API キー
 .venv/bin/quota-canvas set-key deepseek         # DeepSeek の API キー
 .venv/bin/quota-canvas set-key kimi             # Moonshot の API キー
+.venv/bin/quota-canvas set-key opencode         # OpenCode Go の API キー
 .venv/bin/quota-canvas pick                     # 今使う先を 1 行で表示（--json も可）
 ./scripts/install-agent.sh                      # ログイン時に自動起動（--uninstall で解除）
 ./scripts/install-auto-update.sh                # 10 分ごとに main の新しい commit を取り込み、常駐を再起動（--uninstall で解除）
@@ -138,6 +140,7 @@ Screen().show(pil_image)   # 1920×462 の横長画像
 - Claude はキーチェーン `Claude Code-credentials`、Codex は `~/.codex/auth.json`、Grok は `~/.grok/auth.json` を読む。GLM はキーチェーン `quota-canvas/glm`（`set-key glm` またはアプリの設定で保存）か環境変数 `ZAI_API_KEY` を読む。キーチェーンのキーが最優先。
 - トークンの更新は各 CLI に任せる。Claude は既定の `providers.claude.token_refresh = "cli"` で期限切れ間近または HTTP 401/403 のとき `claude -p` をバックグラウンドで 1 回実行し、CLI に更新させる（30 分に 1 回まで）。`"off"` なら自動更新せず、401/403 では Claude の起動を促す。Grok の `providers.grok.token_refresh` は期限切れまたは HTTP 401/403 のとき枠を使わない `grok models` を実行する。Codex の `providers.codex.token_refresh` は HTTP 401/403 のとき `codex exec … ok` を実行する（枠を少し使うため 30 分に 1 回まで）。
 - OpenRouter / DeepSeek / Kimi はそれぞれキーチェーン `quota-canvas/openrouter` / `quota-canvas/deepseek` / `quota-canvas/kimi` を優先し、次に環境変数 `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` / `MOONSHOT_API_KEY` を読む。公開仕様に基づく実装で、実アカウントでは未検証。Kimi はグローバル版 USD API を使う。
+- OpenCode Go はキーチェーン `quota-canvas/opencode`（`set-key opencode` で保存）を優先し、次に環境変数 `OPENCODE_API_KEY`、次に opencode CLI のログイン `~/.local/share/opencode/auth.json` の `opencode-go` エントリの `key` を読む。取得できる窓は `opencode:5h`（5 時間）、`opencode:weekly`（7 日）、`opencode:30d`（30 日）。401/403 はキーが無効か、アカウントに OpenCode Go の契約が無いことを示す。キーが正しいことと、アカウントが OpenCode Go を契約していることを確認する。
 - Gemini は Antigravity CLI の `agy -p "/usage" --output-format json` から取得する。モデルを呼ばず枠を消費せず、トークンも agy が更新する。`providers.gemini.token_refresh` は旧設定との互換用で現在は使われない。窓は `gemini:weekly`、Gemini 4 Argon の `gemini:argon`、`gemini:5h`、Antigravity 経由の Claude / GPT の `gemini:claude` と `gemini:claude_5h`。プラン名はキーチェーン service `gemini` / account `antigravity` のトークンで取得できれば表示し、取れなければ「Gemini」とする。
 
 #### 履歴・ペース・推薦

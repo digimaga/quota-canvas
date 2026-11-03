@@ -55,9 +55,20 @@ def _no_real_balance_credentials(monkeypatch):
     from quotacanvas import keychain
     original = keychain.read
     def read(provider):
-        if provider in {"openrouter", "deepseek", "kimi"}:
+        if provider in {"openrouter", "deepseek", "kimi", "opencode"}:
             return None
         return original(provider)
     monkeypatch.setattr(keychain, "read", read)
-    for variable in ("OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "MOONSHOT_API_KEY"):
+    for variable in ("OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "MOONSHOT_API_KEY",
+                     "OPENCODE_API_KEY"):
         monkeypatch.delenv(variable, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_opencode_login(tmp_path, monkeypatch):
+    """Point the OpenCode provider at a nonexistent auth.json so tests never
+    read the real opencode CLI login."""
+    from quotacanvas import providers
+
+    monkeypatch.setattr(providers.opencode, "_auth_file",
+                        lambda: tmp_path / "opencode-auth.json")
