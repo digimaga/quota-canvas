@@ -48,7 +48,7 @@ reinstall_package() {
         return 0
     fi
     uv_bin="$(command -v uv 2>/dev/null || true)"
-    for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+    for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv" /opt/homebrew/bin/uv /usr/local/bin/uv; do
         [[ -n "$uv_bin" ]] && break
         [[ -x "$candidate" ]] && uv_bin="$candidate"
     done
