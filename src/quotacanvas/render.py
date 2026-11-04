@@ -1884,8 +1884,9 @@ def _local_state(slots):
 def _draw_local_card(s, box, g, theme):
     # type: (_S, Tuple[int, int, int, int], dict, tuple) -> None
     """ローカル LLM サーバー (providers.local) の並列枠のカード。
-    「残り n/capacity・待ち n」(n は空き本数 = capacity - running。ほかの
-    カードの残量と同じく減っていく向き) を、空き (緑) / 満杯 (黄) / 待ちあり (赤) の
+    「残り n/capacity・待ち n」(n は空き本数 = capacity - running - waiting。
+    待ち行列の分も枠を埋めているので引く (deepseek-run の事前確認と同じ
+    実行中＋待ち)。ほかのカードの残量と同じく減っていく向き) を、空き (緑) / 満杯 (黄) / 待ちあり (赤) の
     状態色で描く。大きい列にも小パネルにも使う (高さで切り替え)。
     取得失敗中は呼び出し側がエラーカードに流すので、ここには成功時しか来ない。"""
     x0, y0, x1, y1 = box
@@ -1918,7 +1919,8 @@ def _draw_local_card(s, box, g, theme):
 
     # -- 2. big "free/capacity" + waiting count -----------------------------
     # 残量カードと向きを揃え、使用中の本数ではなく空き本数を出す。
-    free = _clamp(slots.capacity - slots.running, 0, slots.capacity)
+    # 待ちがあるのに「残り 3/4」と出ないよう、待ちの本数も埋まっている扱い。
+    free = _clamp(slots.capacity - slots.running - slots.waiting, 0, slots.capacity)
     frac = "%d/%d" % (free, slots.capacity)
     free_word = t("render.local.free_word")
     wtxt = t("render.local.waiting", waiting=slots.waiting)
@@ -1948,8 +1950,8 @@ def _draw_local_card(s, box, g, theme):
            fill=RED if slots.waiting > 0 else TEXT_DIM, anchor="rs")
 
     # -- 3. capacity meter: 空きマスを左から光らせる --------------------------
-    # メーターは「空き」を表す: capacity を等分したマスのうち、使用中の本数ぶん
-    # 右端から 1 マスずつ消える (running 0 = 端から端まで点灯、満杯で全消灯。
+    # メーターは「空き」を表す: capacity を等分したマスのうち、使用中＋待ちの本数ぶん
+    # 右端から 1 マスずつ消える (running + waiting 0 = 端から端まで点灯、満杯で全消灯。
     # running > capacity でもはみ出さない = 全消灯)。区切り線はサービスカードの
     # ゲージの目盛りと同じ見た目 (点線マスの上は暗く、消灯マスの上は明るい 1px
     # 縦線)。capacity が大きくマスが細すぎる (16 超) ときは区切り線を省く。

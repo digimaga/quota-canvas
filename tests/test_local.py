@@ -1410,6 +1410,17 @@ def test_local_meter_cells(running, capacity, lit_frac, seps):
         assert got == pytest.approx(want, abs=0.03)
 
 
+def test_local_meter_counts_waiting_as_used():
+    # 待ちありのとき: 実行中 1・待ち 2 / 4 → 点灯は左 1 マスだけ (赤)。
+    from quotacanvas.render import RED
+
+    slots = LocalSlots(1, 2, 4)
+    img = render([(_local_usage(slots=slots), None)], NOW,
+                 layout=[PanelSpec(main="local:test-server", size="large")])
+    frac, _seps = _meter_profile(_meter_bits(img, RED))
+    assert frac == pytest.approx(0.25, abs=0.04)
+
+
 def test_local_meter_skips_dividers_when_cells_are_thin():
     # capacity 16 超でマスが細すぎるときは区切り線を省く (連続塗り)。
     from quotacanvas.render import GREEN
@@ -1521,6 +1532,19 @@ def test_build_cards_makes_one_local_card(tmp_path):
     (6, 4, "0/4"),     # running > capacity でも負にしない
 ])
 def test_local_card_shows_free_slots(monkeypatch, running, capacity, want):
+    _assert_local_card_text(monkeypatch, LocalSlots(running, 0, capacity), want)
+
+
+@pytest.mark.parametrize("running,waiting,want", [
+    (1, 2, "1/4"),     # 待ちも枠を埋める: 実行中 1・待ち 2 → 残り 1 (3/4 ではない)
+    (0, 1, "3/4"),
+    (2, 3, "0/4"),     # 実行中＋待ちが容量超え → 0、負にしない
+])
+def test_local_card_free_slots_subtract_waiting(monkeypatch, running, waiting, want):
+    _assert_local_card_text(monkeypatch, LocalSlots(running, waiting, 4), want)
+
+
+def _assert_local_card_text(monkeypatch, slots, want):
     # 大きい数字は残量カードと同じ向き: 使用中ではなく空き本数 (残り n/capacity)。
     from quotacanvas import render as render_mod
 
@@ -1532,7 +1556,7 @@ def test_local_card_shows_free_slots(monkeypatch, running, capacity, want):
         return orig(self, xy, text, *args, **kwargs)
 
     monkeypatch.setattr(render_mod._S, "text", spy)
-    render([(_local_usage(slots=LocalSlots(running, 0, capacity)), None)], NOW,
+    render([(_local_usage(slots=slots), None)], NOW,
            layout=[PanelSpec(main="local:test-server", size="large")])
     assert want in drawn
     assert render_mod.t("render.local.free_word") in drawn
