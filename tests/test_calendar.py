@@ -172,6 +172,13 @@ def test_calendar_marks_excludes_short_windows():
     assert calendar_marks(cards, 2026, 10) == []
 
 
+def test_calendar_marks_excludes_daily_windows():
+    # 1 日ちょうどの窓は毎日に印が付いて意味が無いので対象外
+    resets = datetime(2026, 10, 5, 0, 0, 0, tzinfo=timezone.utc)
+    cards = [_card("devin", "Devin", "1d", timedelta(days=1), resets)]
+    assert calendar_marks(cards, 2026, 10) == []
+
+
 def test_calendar_marks_excludes_unknown_reset():
     resets = datetime(2026, 10, 5, 0, 0, 0, tzinfo=timezone.utc)
     win = Window("claude", "weekly", "週間", 10.0, None, timedelta(days=7))

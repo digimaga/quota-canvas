@@ -1004,9 +1004,9 @@ def month_weeks(year, month, week_start="sunday"):
 
 def calendar_marks(cards, year, month):
     # type: (Sequence[Tuple[ProviderUsage, Optional[Pace]]], int, int) -> List[Tuple[str, str, List[date]]]
-    """カレンダーに印を付けるリセット日。cards の各窓のうち長さ 1 日以上の
-    ものについて、resets_at を起点に length 間隔で前後に展開し、(year, month)
-    に入るローカル日付をすべて集める (リセット時刻不明・1 日未満の窓は対象外)。
+    """カレンダーに印を付けるリセット日。cards の各窓のうち長さ 1 日より
+    長いものについて、resets_at を起点に length 間隔で前後に展開し、(year, month)
+    に入るローカル日付をすべて集める (リセット時刻不明・1 日以下の窓は対象外)。
     同じサービスの複数窓・複数回のリセットは 1 つの印にまとめる。
     間隔の加算は UTC で行う (ZoneInfo への timedelta 加算は壁時計基準なので
     DST 境界で日付がずかる。実際のリセットは実時間間隔)。
@@ -1018,7 +1018,7 @@ def calendar_marks(cards, year, month):
         if pace is None:
             continue
         win = pace.window
-        if win.resets_at is None or win.length < timedelta(days=1):
+        if win.resets_at is None or win.length <= timedelta(days=1):
             continue
         if win.provider not in found:
             found[win.provider] = set()
