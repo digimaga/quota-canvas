@@ -151,6 +151,15 @@ def http_get_json(url: str, headers: Dict[str, str], timeout: float = TIMEOUT) -
         return json.loads(response.read().decode("utf-8"))
 
 
+def http_post_json(url: str, headers: Dict[str, str], body: Dict[str, Any],
+                   timeout: float = TIMEOUT) -> Any:
+    """POST url with a JSON body and return the decoded JSON response."""
+    data = json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(url, data=data, headers=dict(headers), method="POST")
+    with _open(request, timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 # ------------------------------------------------------------ error summary
 
 def _short_reason(exc: BaseException) -> str:

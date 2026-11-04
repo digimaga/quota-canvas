@@ -55,7 +55,7 @@ def _no_real_balance_credentials(monkeypatch):
     from quotacanvas import keychain
     original = keychain.read
     def read(provider):
-        if provider in {"openrouter", "deepseek", "kimi", "opencode"}:
+        if provider in {"openrouter", "deepseek", "kimi", "opencode", "devin"}:
             return None
         return original(provider)
     monkeypatch.setattr(keychain, "read", read)
@@ -72,3 +72,15 @@ def _no_real_opencode_login(tmp_path, monkeypatch):
 
     monkeypatch.setattr(providers.opencode, "_auth_file",
                         lambda: tmp_path / "opencode-auth.json")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_devin_login(tmp_path, monkeypatch):
+    """Point the Devin provider at nonexistent credential files so tests never
+    read the real Devin CLI login or desktop app state database."""
+    from quotacanvas import providers
+
+    monkeypatch.setattr(providers.devin, "_credentials_file",
+                        lambda: tmp_path / "devin-credentials.toml")
+    monkeypatch.setattr(providers.devin, "_desktop_state_db",
+                        lambda: tmp_path / "devin-state.vscdb")

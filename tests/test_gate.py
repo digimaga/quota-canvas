@@ -121,6 +121,14 @@ def test_floor_depends_on_time_until_reset(hours, pace, expected):
     assert (worker.verdict, worker.reason) == expected
 
 
+def test_daily_window_used_100_is_stop():
+    # 1 日窓 (length=86400) を使い切ったら stop (短窓の余裕扱いにしない)
+    entry = win("devin:1d", "devin", "spare", 0, resets=NOW + timedelta(days=3))
+    entry["length"] = 86400
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("stop", "below_floor")
+
+
 @pytest.mark.parametrize("reset", [None, "broken"])
 def test_floor_applies_when_reset_missing_or_invalid(reset):
     entry = win("glm:weekly", "glm", "spare", 4)

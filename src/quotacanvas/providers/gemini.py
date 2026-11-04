@@ -27,7 +27,6 @@ import shutil
 import subprocess
 import tempfile
 import time
-import urllib.request
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,7 +35,9 @@ from ..platform_support import process
 from ..platform_support.process import kill_group as _kill_process_group
 from ..i18n import t
 from ..models import ProviderUsage, Window
-from ._base import TIMEOUT, CredentialError, Detection, Provider, _open, _parse_iso
+from ._base import (
+    CredentialError, Detection, Provider, _parse_iso, http_post_json,
+)
 
 log = logging.getLogger("quotacanvas.gemini")
 
@@ -109,15 +110,6 @@ def _read_entry(now: Optional[datetime] = None) -> Tuple[str, Optional[datetime]
     if not isinstance(token, str) or not token:
         raise CredentialError(t("providers.malformed"))
     return token, _parse_iso(token_obj.get("expiry"))
-
-
-def http_post_json(url: str, headers: Dict[str, str], body: Dict[str, Any],
-                   timeout: float = TIMEOUT) -> Any:
-    """POST url with a JSON body and return the decoded JSON response."""
-    data = json.dumps(body).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers=dict(headers), method="POST")
-    with _open(request, timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def _api_headers(token: str) -> Dict[str, str]:

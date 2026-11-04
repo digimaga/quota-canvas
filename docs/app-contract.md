@@ -319,7 +319,7 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `stop` → one stderr line, exit 3; `reserve` → one stderr note, exit 0; `unknown` → one
   stderr line (「判定できないためそのまま続行」), exit 0; `go`/`boost` → silent, exit 0.
   A name is valid when it is one of `KNOWN_PROVIDERS` (claude / codex / glm / grok /
-  gemini / opencode), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
+  gemini / opencode / devin), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
   the worst of its workers; a worker name wins on collision) — anything else exits 2, regardless of what
   status.json contains. A valid name whose windows are absent from status.json (or when
   status.json is missing / too old / unreadable) is `unknown` with exit 0; with `--json`
@@ -379,6 +379,15 @@ OpenCode Go (`opencode`) reads Keychain `quota-canvas/opencode` (saved with
 `opencode:weekly` (7 days), and `opencode:30d` (30 days); a 401/403 means the key is
 invalid or the account has no OpenCode Go subscription (check the key and the account's
 OpenCode Go subscription).
+
+Devin (`devin`, the same quota as Windsurf) reads Keychain `quota-canvas/devin` (saved
+with `set-key devin`), then `windsurf_api_key` in the Devin CLI login at
+`~/.local/share/devin/credentials.toml` (using the host of its `api_server_url` only when it is
+`https://` on codeium.com, windsurf.com, or devin.ai or their subdomains), then the `windsurfAuthStatus` entry's `apiKey` in the Devin desktop app's
+`state.vscdb`. Its windows are `devin:1d` (daily) and `devin:weekly` (7 days);
+`hideDailyQuota` / `hideWeeklyQuota` hides the corresponding window, and an optional
+`overageBalanceMicros` is shown as the extra usage balance (USD). A 401/403 means the key
+is invalid (check that the key belongs to a Devin account).
 
 ## Config keys the app edits
 

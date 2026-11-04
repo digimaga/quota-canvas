@@ -14,6 +14,7 @@ reset_credit = "Reset credits"
 
 balance = "Balance"
 insufficient_balance = "Insufficient balance"
+extra_usage_balance = "Extra usage balance"
 
 limit_remaining = "Remaining to limit"
 monthly_usage = "Used this month"
@@ -39,6 +40,8 @@ api_key = "{name} API key ({source})"
 keychain = "keychain quota-canvas/{provider}"
 env = "env {variable}"
 opencode_auth = "~/.local/share/opencode/auth.json"
+devin_cli = "Devin CLI login (~/.local/share/devin/credentials.toml)"
+devin_desktop = "Devin desktop app login (state.vscdb)"
 
 [claude]
 weekly_scoped = "Weekly {model}"

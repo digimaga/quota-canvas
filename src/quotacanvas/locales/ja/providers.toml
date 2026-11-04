@@ -14,6 +14,7 @@ reset_credit = "リセット権"
 
 balance = "残高"
 insufficient_balance = "残高不足"
+extra_usage_balance = "追加利用残高"
 
 limit_remaining = "上限まで残り"
 monthly_usage = "今月の使用"
@@ -39,6 +40,8 @@ api_key = "{name} の API キー（{source}）"
 keychain = "キーチェーン quota-canvas/{provider}"
 env = "環境変数 {variable}"
 opencode_auth = "~/.local/share/opencode/auth.json"
+devin_cli = "Devin CLI のログイン（~/.local/share/devin/credentials.toml）"
+devin_desktop = "Devin デスクトップアプリのログイン（state.vscdb）"
 
 [claude]
 weekly_scoped = "週間 {model}"
