@@ -62,10 +62,8 @@
 "・" = ", ";
 
 /* MARK: ServiceSettingsView */
-"有効にできるサービスは最大 %lld つです" = "Up to %lld services can be enabled";
+"自動配置で画面に出るのは最大 %lld サービスです（「配置」タブの手動配置なら最大 %lld 枚）" = "Auto layout shows up to %lld services (up to %lld panels with manual placement in the Layout tab)";
 "再検出" = "Re-detect";
-"サービスの上限" = "Service limit";
-"有効にできるサービスは最大 %lld つです。不要なサービスをオフにしてから試してください。" = "Up to %lld services can be enabled. Turn off unused services and try again.";
 "サービスを検出中…（利用状況を 1 回取得するため時間がかかります）" = "Detecting services… (this fetches usage once and takes a while)";
 "サービスを検出できませんでした。「再検出」を試してください。" = "No services detected. Try \"Re-detect\".";
 "検出されたサービス" = "Detected services";

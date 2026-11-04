@@ -14,8 +14,8 @@ struct ServiceSettingsView: View {
 
     private let client = EngineClient()
 
-    /// 有効にできるサービスの上限
-    static let maxEnabled = 5
+    /// 自動配置で画面に出るサービスの上限（エンジンの render.MAX_SERVICES と同じ値）
+    static let maxAutoServices = 8
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,7 +32,7 @@ struct ServiceSettingsView: View {
         .task { await load(includeDetect: true) }
         .safeAreaInset(edge: .bottom) {
             HStack {
-                Text("有効にできるサービスは最大 \(Self.maxEnabled) つです")
+                Text("自動配置で画面に出るのは最大 \(Self.maxAutoServices) サービスです（「配置」タブの手動配置なら最大 \(LayoutSettingsView.columnCount * 2) 枚）")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button {
@@ -47,14 +47,6 @@ struct ServiceSettingsView: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 8)
         }
-        .alert("サービスの上限", isPresented: Binding(
-            get: { limitAlertVisible },
-            set: { if !$0 { limitAlertVisible = false } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("有効にできるサービスは最大 \(Self.maxEnabled) つです。不要なサービスをオフにしてから試してください。")
-        }
         .alert("エラー", isPresented: Binding(
             get: { alertMessage != nil },
             set: { if !$0 { alertMessage = nil } }
@@ -64,8 +56,6 @@ struct ServiceSettingsView: View {
             Text(alertMessage ?? "")
         }
     }
-
-    @State private var limitAlertVisible = false
 
     private var list: some View {
         Form {
@@ -134,22 +124,12 @@ struct ServiceSettingsView: View {
 
     // MARK: bindings
 
-    private func enabledCount() -> Int {
-        detect.filter { doc?.providerEnabled($0.provider) ?? false }.count
-    }
-
     private func enabledBinding(_ service: DetectService) -> Binding<Bool> {
         Binding<Bool>(
             get: { doc?.providerEnabled(service.provider) ?? false },
             set: { newValue in
                 guard let original = doc else { return }
                 var updated = original
-                if newValue && !updated.providerEnabled(service.provider) {
-                    if enabledCount() >= Self.maxEnabled {
-                        limitAlertVisible = true
-                        return // doc を触らないのでトグルは元に戻る
-                    }
-                }
                 updated.setProviderEnabled(service.provider, newValue)
                 doc = updated
                 Task { await save(original, updated) }
