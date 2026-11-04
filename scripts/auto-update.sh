@@ -3,7 +3,8 @@
 # Run periodically by ./scripts/install-auto-update.sh (com.digimaga.quota-canvas-autoupdate).
 # - fast-forward only; does nothing when the checkout is not on main, has
 #   uncommitted changes, or has commits the remote does not have
-# - reinstalls the package when pyproject.toml changed since the last application
+# - reinstalls the package when pyproject.toml changed since the last application;
+#   restarts anyway when that fails and retries the reinstall on later runs
 # - restarts only the quota-canvas agents that are loaded on this Mac
 set -euo pipefail
 
@@ -13,6 +14,7 @@ AGENTS=(com.digimaga.quota-canvas com.digimaga.quota-canvas-headless)
 STATE_DIR="$HOME/Library/Application Support/quota-canvas"
 repo_key="$(printf '%s' "$REPO" | shasum -a 256 | cut -d ' ' -f 1)"
 STATE_FILE="$STATE_DIR/auto-update-$repo_key.sha"
+PENDING_FILE="$STATE_DIR/auto-update-$repo_key.reinstall-pending"
 
 log() { echo "$(date '+%Y-%m-%dT%H:%M:%S') $*"; }
 
@@ -33,28 +35,85 @@ applied=""
 if [[ -f "$STATE_FILE" ]]; then
     applied="$(cat "$STATE_FILE")"
 fi
-[[ "$applied" != "$remote_head" ]] || exit 0
+
+# Reinstall the package into .venv. Returns 1 when no installer is found or the
+# install fails, so the caller can still restart the agents (an editable install
+# picks up source changes on restart) and retry the reinstall next time.
+# .venv made by uv has no pip, and launchd's PATH may not include uv.
+reinstall_package() {
+    local uv_bin=""
+    if [[ -x "$REPO/.venv/bin/pip" ]]; then
+        "$REPO/.venv/bin/pip" install -q -e "$REPO" || { log "warn: reinstall failed (pip)"; return 1; }
+        log "reinstalled package (pip)"
+        return 0
+    fi
+    uv_bin="$(command -v uv 2>/dev/null || true)"
+    for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+        [[ -n "$uv_bin" ]] && break
+        [[ -x "$candidate" ]] && uv_bin="$candidate"
+    done
+    if [[ -n "$uv_bin" ]]; then
+        "$uv_bin" pip install -q --python "$REPO/.venv/bin/python" -e "$REPO" ||
+            { log "warn: reinstall failed (uv)"; return 1; }
+        log "reinstalled package (uv)"
+        return 0
+    fi
+    if "$REPO/.venv/bin/python" -m pip --version >/dev/null 2>&1; then
+        "$REPO/.venv/bin/python" -m pip install -q -e "$REPO" ||
+            { log "warn: reinstall failed (python -m pip)"; return 1; }
+        log "reinstalled package (python -m pip)"
+        return 0
+    fi
+    log "warn: no pip or uv; skipped reinstall (run ./scripts/setup.sh)"
+    return 1
+}
+
+restart_agents() {
+    for label in "${AGENTS[@]}"; do
+        if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+            launchctl kickstart -k "gui/$(id -u)/$label"
+            log "restarted $label"
+        fi
+    done
+}
+
+if [[ "$applied" == "$remote_head" ]]; then
+    # Already applied. Retry only a reinstall that pyproject.toml needed but failed.
+    if [[ -f "$PENDING_FILE" ]] && reinstall_package; then
+        rm -f "$PENDING_FILE"
+        restart_agents
+    fi
+    exit 0
+fi
 
 # A missing or unavailable baseline cannot prove dependencies are current.
 reinstall=true
+deps_changed=false
 if [[ -n "$applied" ]] && git cat-file -e "$applied^{commit}" 2>/dev/null &&
    git merge-base --is-ancestor "$applied" "$remote_head"; then
     changed="$(git diff --name-only "$applied" "$remote_head")"
-    if ! grep -qx 'pyproject.toml' <<<"$changed"; then
+    if grep -qx 'pyproject.toml' <<<"$changed"; then
+        deps_changed=true
+    else
         reinstall=false
     fi
+elif [[ -n "$applied" ]]; then
+    deps_changed=true  # 基準が使えない (force push など) ので依存が変わったとみなす
+fi
+if [[ -f "$PENDING_FILE" ]]; then
+    reinstall=true  # 前回入れ直せなかった分をこの回でやり直す
+    deps_changed=true
 fi
 if "$reinstall"; then
-    "$REPO/.venv/bin/pip" install -q -e "$REPO"
-    log "reinstalled package"
+    if reinstall_package; then
+        rm -f "$PENDING_FILE"
+    elif "$deps_changed"; then
+        mkdir -p "$STATE_DIR"
+        touch "$PENDING_FILE"
+    fi
 fi
 
-for label in "${AGENTS[@]}"; do
-    if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
-        launchctl kickstart -k "gui/$(id -u)/$label"
-        log "restarted $label"
-    fi
-done
+restart_agents
 
 mkdir -p "$STATE_DIR"
 state_tmp="$(mktemp "$STATE_DIR/.auto-update.XXXXXX")"
