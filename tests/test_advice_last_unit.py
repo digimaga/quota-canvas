@@ -5,7 +5,7 @@
   (「1時間あたり 244%」など、残り時間より大きく意味をなさない数字) を
   出さず、リセットまでの残り時間を伝える。
 - 1 日未満の窓では 1 単位あたりの許容量をやめて、残量と締切までの時間を
-  そのまま出す (「余裕あり · 残り91% · あと4時間」)。1 日以上の窓 (週間
+  そのまま出す (「残り91% · あと4時間」)。1 日以上の窓 (週間
   など) は 1 日単位の許容量のまま変わらない。
 """
 
@@ -35,13 +35,13 @@ def test_5h_last_unit_spare_compact():
     pace = _pace(25.0, timedelta(minutes=18), timedelta(hours=5))
     assert pace.status is PaceStatus.SPARE
     text = advice_text(pace, compact=True, now=NOW)
-    assert text == "余裕あり · このままだと約73%余る · リセットまで18分"
+    assert text == "このままだと約73%余る · リセットまで18分"
 
 
 def test_5h_last_unit_spare_normal():
     pace = _pace(25.0, timedelta(minutes=18), timedelta(hours=5))
     text = advice_text(pace, compact=False, now=NOW)
-    assert text == "余裕あり · このままだと約73%余る · リセットまで18分、残り75%は自由に使える"
+    assert text == "このままだと約73%余る · リセットまで18分、残り75%は自由に使える"
 
 
 def test_5h_last_unit_never_shows_per_hour_allowance():
@@ -62,9 +62,9 @@ def test_5h_spare_shows_rest_and_time_to_reset():
     pace = _pace(9.0, timedelta(hours=4), timedelta(hours=5))
     assert pace.status is PaceStatus.SPARE
     assert advice_text(pace, compact=True, now=NOW) == \
-        "余裕あり · このままだと約55%余る · 残り91% · あと4時間"
+        "このままだと約55%余る · 残り91% · あと4時間"
     assert advice_text(pace, compact=False, now=NOW) == \
-        "余裕あり · このままだと約55%余る · 残り91% · あと4時間"
+        "このままだと約55%余る · 残り91% · あと4時間"
 
 
 def test_5h_over_full_keeps_slow_down_head():
@@ -83,7 +83,7 @@ def test_5h_tight_and_on_track_heads():
     on_track = advice_text(_pace(19.0, timedelta(hours=4), timedelta(hours=5)),
                            compact=False, now=NOW)
     assert tight == "ほぼ使い切れる見込み · 残り81% · あと4時間"
-    assert on_track == "順調 · 残り81% · あと4時間"
+    assert on_track == "残り81% · あと4時間"
 
 
 def test_5h_bedtime_deadline_shows_until_bed():
@@ -96,9 +96,9 @@ def test_5h_bedtime_deadline_shows_until_bed():
                 sustainable_per_day=None, adjust_percent=None, daily_used=[],
                 bedtime_at=NOW + timedelta(hours=3))
     assert advice_text(pace, compact=True, now=NOW) == \
-        "余裕あり · 残り91% · 寝るまで3時間"
+        "残り91% · 寝るまで3時間"
     assert advice_text(pace, compact=False, now=NOW) == \
-        "余裕あり · 残り91% · 寝るまで3時間"
+        "残り91% · 寝るまで3時間"
 
 
 # --- 1日以上の窓 (週間など) は 1日単位の許容量のまま変わらない ----------------
@@ -107,14 +107,14 @@ def test_5h_bedtime_deadline_shows_until_bed():
 def test_weekly_keeps_per_day_allowance_wording():
     pace = _pace(27.0, timedelta(days=5), timedelta(days=7))
     assert pace.status is PaceStatus.ON_TRACK
-    assert advice_text(pace, compact=True, now=NOW) == "順調 · 1日 約15%まで"
+    assert advice_text(pace, compact=True, now=NOW) == "1日 約15%まで"
     assert advice_text(pace, compact=False, now=NOW) == \
-        "順調 · 1日15%ペースで最後まで使える"
+        "1日15%ペースで最後まで使える"
     spare = _pace(19.0, timedelta(days=5), timedelta(days=7))
     assert spare.status is PaceStatus.SPARE
-    assert advice_text(spare, compact=True, now=NOW) == "余裕あり · このままだと約34%余る · 1日 約16%まで"
+    assert advice_text(spare, compact=True, now=NOW) == "このままだと約34%余る · 1日 約16%まで"
     assert advice_text(spare, compact=False, now=NOW) == \
-        "余裕あり · このままだと約34%余る · 1日 約16%まで使える"
+        "このままだと約34%余る · 1日 約16%まで使える"
 
 
 # --- 週間枠・リセットまで23時間 (1日未満 = last_unit) -----------------------
@@ -124,13 +124,13 @@ def test_weekly_last_unit_compact():
     pace = _pace(19.0, timedelta(hours=23), timedelta(days=7))
     assert pace.status is PaceStatus.SPARE
     text = advice_text(pace, compact=True, now=NOW)
-    assert text == "余裕あり · このままだと約78%余る · リセットまで23時間"
+    assert text == "このままだと約78%余る · リセットまで23時間"
 
 
 def test_weekly_last_unit_normal():
     pace = _pace(19.0, timedelta(hours=23), timedelta(days=7))
     text = advice_text(pace, compact=False, now=NOW)
-    assert text == "余裕あり · このままだと約78%余る · リセットまで23時間、残り81%は自由に使える"
+    assert text == "このままだと約78%余る · リセットまで23時間、残り81%は自由に使える"
 
 
 def test_weekly_last_unit_never_shows_per_day_allowance():
@@ -150,8 +150,8 @@ def test_weekly_last_unit_never_shows_per_day_allowance():
      "ペースを落とす · リセットまでの18分は残り3%で"),
     (93.5, "適正ペース · リセットまで18分",
      "ほぼ使い切れる見込み · リセットまで18分"),
-    (92.0, "順調 · リセットまで18分",
-     "順調 · リセットまで18分、残り8%は使い切ってよい"),
+    (92.0, "リセットまで18分",
+     "リセットまで18分、残り8%は使い切ってよい"),
 ], ids=["over", "tight", "on_track"])
 def test_5h_last_unit_wording_per_status(used, compact_expected, normal_expected):
     pace = _pace(used, timedelta(minutes=18), timedelta(hours=5))
@@ -166,6 +166,6 @@ def test_spare_forecast_in_english():
     try:
         i18n.set_language("en")
         pace = _pace(19.0, timedelta(days=5), timedelta(days=7))
-        assert advice_text(pace, now=NOW) == "Spare · about 34% will remain at this pace · up to 16%/day"
+        assert advice_text(pace, now=NOW) == "About 34% will remain at this pace · up to 16%/day"
     finally:
         i18n.set_language(old)

@@ -492,16 +492,16 @@ def test_advice_text_bedtime_display():
     pace = _bedtime_pace(True)
     assert pace.status is PaceStatus.SPARE
     # 大きいカード: 「リセットまで7時間」が「寝るまで3時間」に変わる
-    assert advice_text(pace, now=NOW) == "余裕あり · このままだと約21%余る · 寝るまで3時間、残り23%は自由に使える"
+    assert advice_text(pace, now=NOW) == "このままだと約21%余る · 寝るまで3時間、残り23%は自由に使える"
     # 小さいカードも同じく
-    assert advice_text(pace, compact=True, now=NOW) == "余裕あり · このままだと約21%余る · 寝るまで3時間"
+    assert advice_text(pace, compact=True, now=NOW) == "このままだと約21%余る · 寝るまで3時間"
 
 
 def test_advice_text_reset_display_without_bedtime():
     from quotacanvas.render import advice_text
     pace = _bedtime_pace(False)  # advice = "reset" (既定)
-    assert advice_text(pace, now=NOW) == "余裕あり · このままだと約21%余る · リセットまで7時間、残り23%は自由に使える"
-    assert advice_text(pace, compact=True, now=NOW) == "余裕あり · このままだと約21%余る · リセットまで7時間"
+    assert advice_text(pace, now=NOW) == "このままだと約21%余る · リセットまで7時間、残り23%は自由に使える"
+    assert advice_text(pace, compact=True, now=NOW) == "このままだと約21%余る · リセットまで7時間"
 
 
 def test_advice_text_exhausted_keeps_reset_wording():
