@@ -78,6 +78,18 @@ struct RegressionTests {
         check(LayoutSettingsView.localChoices(from: nil, existing: []).isEmpty, "no config adds no local choices")
         check(LayoutSettingsView.isSubCandidate("claude:weekly") && !LayoutSettingsView.isSubCandidate("kimi")
               && !LayoutSettingsView.isSubCandidate("local:myserver"), "local servers are not sub candidates")
+        let subWindows = ["claude:weekly", "claude:5h", "claude:weekly_fable", "codex:weekly", "local:gx10"]
+            .map { LayoutSettingsView.WindowChoice(id: $0, label: $0) }
+        check(LayoutSettingsView.subCandidates(main: "claude:weekly", windows: subWindows, selected: []).map(\.id)
+              == ["claude:5h", "claude:weekly_fable"], "sub candidates are the main service's other windows")
+        check(LayoutSettingsView.subCandidates(main: "claude:weekly", windows: subWindows, selected: ["codex:weekly"])
+              .map(\.id) == ["claude:5h", "claude:weekly_fable", "codex:weekly"],
+              "an already selected window of another service stays removable")
+        check(LayoutSettingsView.subCandidates(main: nil, windows: subWindows, selected: []).isEmpty
+              && !LayoutSettingsView.acceptsSubs(nil) && !LayoutSettingsView.acceptsSubs("")
+              && !LayoutSettingsView.acceptsSubs("calendar") && !LayoutSettingsView.acceptsSubs("local:gx10")
+              && !LayoutSettingsView.acceptsSubs("kimi") && LayoutSettingsView.acceptsSubs("claude:weekly"),
+              "subs need a main window")
 
         let statusJSON = #"{"updated_at":"2026-10-28T12:00:00Z","cards":[{"id":"one","fetched_at":"2026-10-28T10:00:00Z"},{"id":"two","fetched_at":42},{"id":"three"}]}"#
         let decoded = try JSONDecoder().decode(EngineStatus.self, from: Data(statusJSON.utf8))

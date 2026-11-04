@@ -184,7 +184,7 @@ struct LayoutSettingsView: View {
             .pickerStyle(.menu)
             .frame(width: 300, alignment: .leading)
 
-            if slot.size == "large" && !Self.isCalendar(slot.main) {
+            if slot.size == "large" && Self.acceptsSubs(slot.main) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Text("サブ窓（最大 \(Self.maxSubs)）")
@@ -209,7 +209,8 @@ struct LayoutSettingsView: View {
                     LazyVGrid(columns: [GridItem(.flexible(minimum: 10, maximum: .infinity), alignment: .leading),
                                         GridItem(.flexible(minimum: 10, maximum: .infinity), alignment: .leading)],
                               alignment: .leading, spacing: 4) {
-                        ForEach(windows.filter { Self.isSubCandidate($0.id) }) { window in
+                        ForEach(Self.subCandidates(main: slot.main, windows: windows,
+                                                   selected: effectiveSubs(slot))) { window in
                             Toggle(window.label, isOn: subBinding(slot, window.id))
                                 .toggleStyle(.checkbox)
                                 .lineLimit(1)
@@ -277,6 +278,25 @@ struct LayoutSettingsView: View {
     /// (local:<名前>、窓を持たないカード 1 枚) は除外。
     static func isSubCandidate(_ id: String) -> Bool {
         id.contains(":") && !id.hasPrefix("local:")
+    }
+
+    /// サブ窓を選べる主枠か。主枠が空のスロットは保存されずサブも消えるので選ばせない。
+    /// サービス全体 (エラーパネル)・ローカル LLM・カレンダーもサブを持たない。
+    static func acceptsSubs(_ main: String?) -> Bool {
+        guard let main, isSubCandidate(main) else { return false }
+        return !isCalendar(main)
+    }
+
+    /// サブ窓の候補: 主枠と同じサービスの窓（主枠自身を除く）。以前に別サービスの窓を
+    /// サブにしていた設定は、外せるように選択中のものだけ残す。
+    static func subCandidates(main: String?, windows: [WindowChoice], selected: [String]) -> [WindowChoice] {
+        guard let main, acceptsSubs(main) else { return [] }
+        let provider = main.split(separator: ":", maxSplits: 1)[0]
+        return windows.filter { window in
+            guard isSubCandidate(window.id), window.id != main else { return false }
+            return window.id.split(separator: ":", maxSplits: 1)[0] == provider
+                || selected.contains(window.id)
+        }
     }
 
     /// カレンダーパネルか (サブを持たない特殊な主枠)。
@@ -600,7 +620,7 @@ private struct SlotCard: View {
             } else {
                 Text("クリックして設定").font(.callout).foregroundStyle(.tertiary)
             }
-            if slot.size == "large" && slot.main != LayoutSettingsView.calendarMain {
+            if slot.size == "large" && LayoutSettingsView.acceptsSubs(slot.main) {
                 Text(subSummary)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
