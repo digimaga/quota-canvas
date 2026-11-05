@@ -644,7 +644,7 @@ def advice_text(pace, compact=False, now=None):
                  else "render.advice.burst", dt=dt)
 
     if st is PaceStatus.FRESH:
-        # F5: リセット直後で使用もまだ少ない。枠は開いている旨だけ伝える
+        # F5: リセット直後で使用もまだ少ない。枠は開いている旨だけ伝える (状態語はバッジにある)
         return t("render.advice.fresh_compact") if compact \
             else t("render.advice.fresh")
 

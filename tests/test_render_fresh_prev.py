@@ -82,8 +82,8 @@ def test_advice_fresh_wording():
                  timedelta(days=7))
     pace = compute_pace(win, [], NOW)
     assert pace.status is PaceStatus.FRESH
-    assert advice_text(pace, False, NOW) == "リセット直後 · 枠は開いています"
-    assert advice_text(pace, True, NOW) == "リセット直後 · 枠あり"
+    assert advice_text(pace, False, NOW) == "枠は開いています"
+    assert advice_text(pace, True, NOW) == "枠あり"
 
 
 def test_render_fresh_card_draws_badge_and_advice(text_calls):
@@ -94,7 +94,7 @@ def test_render_fresh_card_draws_badge_and_advice(text_calls):
     render(_cards(pace), NOW, layout=[PanelSpec("claude:weekly")])
     texts = _texts(text_calls)
     assert "リセット直後" in texts                       # バッジ
-    assert "リセット直後 · 枠は開いています" in texts      # advice 行
+    assert "枠は開いています" in texts      # advice 行
 
 
 def test_render_fresh_small_panel_smoke(text_calls):
@@ -106,7 +106,7 @@ def test_render_fresh_small_panel_smoke(text_calls):
     render(_cards(pace), NOW, layout=[PanelSpec("codex:5h", size="small")])
     texts = _texts(text_calls)
     assert "リセット直後" in texts
-    assert any("リセット直後 · 枠あり" in t for t in texts)
+    assert any("枠あり" in t for t in texts)
 
 
 # ------------------------------------------------------------ F2: burst 関係
