@@ -215,6 +215,29 @@ The app finds the CLI at the path stored in its settings (default
 - `frame.png` — the last 1920×462 frame sent to the screen. While paused nothing is sent
   and the file is left as is.
 
+- `detect-cache.json` — the cached result of `quota-canvas detect`, written atomically
+  as `{"cached_at": "2026-11-09T21:30:00+09:00", "fetched_from": "2026-11-09T21:29:55+09:00",
+  "services": [ ...same entries as detect --json... ]}`. `cached_at` (ISO 8601 with
+  offset) is when the cache was written; `fetched_from` is when the underlying fetch
+  started (the engine's last full `poller.fetch` round or the last `detect` run). `quota-canvas
+  detect` rewrites it on every run; the resident `run` loop also rewrites it after
+  each full fetch round from that round's usages only (no extra network
+  requests — providers absent from the round, e.g. disabled ones, keep their
+  previous `plan`/`windows`/`error`; a last-good usage shown while fetches fail
+  keeps its plan/windows but reports its `stale_error` as `error`). Each
+  `services` entry may carry its own `fetched_from` — when set, the per-provider
+  merge keeps whichever entry (old or new) has the newer value, so a late write
+  cannot roll back another fetch's newer entries and a resident round only
+  refreshes the providers it actually fetched (an unfetched provider keeps the
+  stored entry with its stored time; with no stored entry its time is
+  `"1970-01-01T00:00:00+00:00"`, i.e. "never fetched"). Entries without
+  `fetched_from` in old caches inherit the envelope's `fetched_from`/`cached_at`.
+  The read-compare-replace is serialized by a `detect-cache.json.lock` flock where
+  available. Readers must tolerate missing keys but the engine validates the
+  envelope and required service fields before serving it to `--cached`.
+  Read by `detect --json --cached`, which the
+  app's service and layout tabs use to show the service list instantly.
+
 - `periods.jsonl` — engine-internal log of closed window periods (one line =
   `{"window_id", "resets_at", "used", "closed_at"}`), the source of the cards'
   `previous_used`. Written by the engine when a window's `resets_at` changes; the app
@@ -250,6 +273,17 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   { "provider": "glm", "name": "GLM (Z.ai)", "detected": false,
     "source": null, "needs_key": true, "plan": null, "windows": [], "error": "API キーが未設定" }
 ]
+```
+
+Every `detect` run rewrites `detect-cache.json`. `quota-canvas detect --json
+--cached` answers from that cache when it exists and is valid (only then does it
+fall back to the same full detection, which writes the cache). The `--cached`
+output is the envelope so callers can judge freshness:
+
+```json
+{ "cached_at": "2026-11-09T21:30:00+09:00",
+  "fetched_from": "2026-11-09T21:29:55+09:00",
+  "services": [ ...same entries as above... ] }
 ```
 
 - `quota-canvas config --json` — effective config (defaults filled in), same shape as the

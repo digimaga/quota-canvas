@@ -463,7 +463,8 @@ struct LayoutSettingsView: View {
         }
 
         do {
-            let detected = try await client.detect()
+            // 常駐エンジンの detect-cache.json で即表示する (無ければエンジン側で全取得)。
+            let detected = try await client.detectCached().services
             windows = detected.flatMap { service in
                 service.windowList.map { window in
                     WindowChoice(id: "\(service.provider):\(window.key)",

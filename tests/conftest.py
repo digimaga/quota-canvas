@@ -88,6 +88,16 @@ def _no_real_devin_login(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_detect_cache(tmp_path, monkeypatch):
+    """detect-cache.json を実データディレクトリではなく tmp_path に向ける。
+    detect コマンドや常駐側の更新を試すテストが実キャッシュを上書きしない。"""
+    from quotacanvas import detect_cache
+
+    monkeypatch.setattr(detect_cache, "DETECT_CACHE_PATH",
+                        tmp_path / "detect-cache.json")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_muse_cache(tmp_path, monkeypatch):
     """Point the Muse provider at a nonexistent action-id cache so tests never
     read or write the real cache file."""

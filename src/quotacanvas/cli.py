@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PIL import Image
 
-from . import desktop_frame, gate, keychain, macpower, providers
+from . import desktop_frame, detect_cache, gate, keychain, macpower, providers
 from .i18n import LANGUAGE_CHOICES, current_language, set_language, t, translations
 from .config import (
     DEFAULT_PATH, PROVIDERS, Sleep, Config, ConfigError, apply_config_changes, brightness_for, config_from_dict,
@@ -612,11 +612,40 @@ def _fail(message: str) -> int:
     return 1
 
 
+def _update_detect_cache(usages: List[ProviderUsage], now: datetime) -> None:
+    """全体取得した周回に detect-cache.json を更新する (detect --json --cached
+    とアプリのサービス/配置タブの材料)。usages に無い provider (無効化中など)
+    は前回キャッシュの plan / windows を残す (providers.detect_merge)。
+    サービスへの追加の取得はしない。失敗しても常駐ループは止めない (ログだけ)。"""
+    try:
+        detect_cache.write_cache(
+            None, now,
+            merge=lambda previous: providers.detect_merge(usages, previous=previous))
+    except Exception as exc:  # noqa: BLE001 - キャッシュ失敗で常駐を止めない
+        log.warning("detect-cache.json を更新できません: %s", exc)
+
+
 def _cmd_detect(args) -> int:
-    """detect: この Mac で使えるサービスと、そのプラン/窓の一覧。"""
-    results = providers.detect_all(datetime.now(timezone.utc))
+    """detect: この Mac で使えるサービスと、そのプラン/窓の一覧。
+
+    実行のたびに全取得して detect-cache.json を書き直す (--cached でない実行)。
+    --cached ならそのキャッシュがあれば即返し、無い・壊れているときだけ従来
+    どおり全取得してキャッシュを書く。--json --cached の出力は鮮度が分かる
+    {"cached_at": ..., "services": [...]} の形 (docs/app-contract.md)。"""
+    now = datetime.now(timezone.utc)
+    use_cached = getattr(args, "cached", False)
+    cached = detect_cache.read_cache() if use_cached else None
+    if cached is not None:
+        payload = cached
+    else:
+        payload = detect_cache.payload_for(providers.detect_all(now), now)
+        try:
+            detect_cache.write_cache(payload["services"], now)
+        except OSError as exc:  # キャッシュを書けなくても detect 自体は成功
+            log.warning("detect-cache.json を書けません: %s", exc)
+    results = payload["services"]
     if getattr(args, "json", False):
-        _print_json(results)
+        _print_json(payload if use_cached else results)
         return 0
     for r in results:
         head = "%-7s %s" % (r["provider"], r["name"])
@@ -1330,6 +1359,9 @@ def main(argv=None) -> int:
     sub.add_parser("notifications-plan", help="read notification snapshot JSON from stdin")
     p_detect = sub.add_parser("detect", help=t("cli.help.detect"))
     p_detect.add_argument("--json", action="store_true", help="print the result as JSON")
+    p_detect.add_argument("--cached", action="store_true",
+                          help='answer from detect-cache.json when present '
+                               '(with --json, prints {"cached_at", "services"})')
     p_key = sub.add_parser("set-key", help=t("cli.help.set_key"))
     p_key.add_argument("provider", metavar="PROVIDER", help="service id, e.g. glm")
     p_key.add_argument("--delete", action="store_true", help="remove the stored key")
@@ -1569,6 +1601,7 @@ def main(argv=None) -> int:
             next_fetch = last_fetch + interval  # 取り直したら定期取得もそこから interval 後へ
             deferred_fetch = None
             fetched = True
+            _update_detect_cache(usages, now)  # この周回の usages だけで更新 (追加取得なし)
         # ローカル LLM サーバーの並列枠だけは LOCAL_REFRESH 秒ごとに取り直す。
         # 他のサービスは poll.interval のまま。眠っている間は取りに行かない。
         local_changed = False

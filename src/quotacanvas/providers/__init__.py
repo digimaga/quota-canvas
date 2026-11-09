@@ -100,6 +100,53 @@ def fetch_all(now: Optional[datetime] = None,
     return results
 
 
+def _detect_entry(provider: Provider, detection: Detection,
+                  usage: Optional[ProviderUsage]) -> Dict[str, Any]:
+    """detect --json の 1 サービスぶん。usage は provider.fetch / 常駐ループの
+    周回の利用枠 (None = 未取得: 検出されたら plan 不明・窓無しのまま返す)。
+    内訳窓 (part_of 付き) と重複 key は windows から除く。"""
+    entry: Dict[str, Any] = {
+        "provider": provider.id,
+        "name": provider.shown_name,
+        "detected": detection.detected,
+        "source": detection.source,
+        "needs_key": provider.needs_key,
+        "plan": None,
+        "windows": [],
+        "error": None,
+    }
+    if not detection.detected:
+        entry["error"] = detection.error or t("providers.no_credentials")
+        return entry
+    if usage is None:
+        return entry
+    if usage.error:
+        entry["error"] = usage.error
+        return entry
+    entry["plan"] = _plan_name(provider, usage.name)
+    seen = set()
+    for window in usage.windows:
+        if window.part_of is not None:
+            continue  # 内訳窓: 窓ピッカー・窓チェックには出さない
+        if window.key in seen:
+            continue
+        seen.add(window.key)
+        entry["windows"].append({"key": window.key, "label": window.label})
+    if usage.stale_error:
+        # 取得失敗中の前回成功値 (Poller の last-good): plan/windows は残し、
+        # 失敗理由だけ error に入れる (正常値としてキャッシュしない)
+        entry["error"] = usage.stale_error
+    return entry
+
+
+def _detection(provider: Provider) -> Detection:
+    """provider.detect() を呼び、例外も未検出の Detection に変換する。"""
+    try:
+        return provider.detect()
+    except Exception as exc:  # noqa: BLE001
+        return Detection(False, None, _short_reason(exc))
+
+
 def detect_all(now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """detect --json の中身: 各サービスの認証情報の有無と、使えるならプラン/窓。
 
@@ -109,47 +156,51 @@ def detect_all(now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     moment = now if now is not None else _utc_now()
     out: List[Dict[str, Any]] = []
     for pid, provider in REGISTRY.items():
-        entry: Dict[str, Any] = {
-            "provider": pid,
-            "name": provider.shown_name,
-            "detected": False,
-            "source": None,
-            "needs_key": provider.needs_key,
-            "plan": None,
-            "windows": [],
-            "error": None,
-        }
-        try:
-            detection = provider.detect()
-        except Exception as exc:  # noqa: BLE001
-            entry["error"] = _short_reason(exc)
-            out.append(entry)
-            continue
-        entry["detected"] = detection.detected
-        entry["source"] = detection.source
-        if not detection.detected:
-            entry["error"] = detection.error or t("providers.no_credentials")
-            out.append(entry)
-            continue
-        try:
-            usage = provider.fetch(moment)
-        except Exception as exc:  # noqa: BLE001
-            entry["error"] = _short_reason(exc)
-            out.append(entry)
-            continue
-        if usage.error:
-            entry["error"] = usage.error
-            out.append(entry)
-            continue
-        entry["plan"] = _plan_name(provider, usage.name)
-        seen = set()
-        for window in usage.windows:
-            if window.part_of is not None:
-                continue  # 内訳窓: 窓ピッカー・窓チェックには出さない
-            if window.key in seen:
-                continue
-            seen.add(window.key)
-            entry["windows"].append({"key": window.key, "label": window.label})
+        detection = _detection(provider)
+        usage: Optional[ProviderUsage] = None
+        if detection.detected:
+            try:
+                usage = provider.fetch(moment)
+            except Exception as exc:  # noqa: BLE001
+                usage = ProviderUsage(pid, provider.name, [],
+                                      _short_reason(exc), moment)
+        out.append(_detect_entry(provider, detection, usage))
+    return out
+
+
+# 常駐周回で取得していない provider の仮の取得時刻。どの実取得より古い扱いにして、
+# 手動 detect などの実取得エントリが常駐側の未更新エントリに負けないようにする
+# (detect_cache が provider 単位で「新しい方」を採る際の比較値)。
+_NEVER_FETCHED = "1970-01-01T00:00:00+00:00"
+
+
+def detect_merge(usages: List[ProviderUsage],
+                 previous: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """常駐ループの周回の usages から detect --json と同じ形の配列を作る。
+
+    サービスへの新たな取得はしない (provider.detect() による資格情報の有無の
+    ローカル確認だけ)。usages に結果がある provider は plan / windows / error
+    をその usage から作る (fetched_from は書き込み側が周回の開始時刻で刻む)。
+    usages に無い provider (無効化中など) は前回キャッシュ previous の
+    plan / windows / error / fetched_from を残す (無ければ detect() の結果だけ、
+    時刻は _NEVER_FETCHED)。
+    """
+    by_pid = {u.provider: u for u in usages}
+    cached = {e.get("provider"): e for e in previous or [] if isinstance(e, dict)}
+    out: List[Dict[str, Any]] = []
+    for pid, provider in REGISTRY.items():
+        detection = _detection(provider)
+        usage = by_pid.get(pid)
+        entry = _detect_entry(provider, detection, usage)
+        if usage is None and detection.detected:
+            old = cached.get(pid)
+            if old is not None:
+                entry["plan"] = old.get("plan")
+                entry["windows"] = list(old.get("windows") or [])
+                entry["error"] = old.get("error")
+            # この周回は取得していない: 時刻は前回値か「未取得」(最古) として、
+            # 手動 detect などの新しい実取得エントリに負けるようにする
+            entry["fetched_from"] = (old or {}).get("fetched_from") or _NEVER_FETCHED
         out.append(entry)
     return out
 

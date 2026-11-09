@@ -370,6 +370,15 @@ struct DetectWindow: Decodable, Identifiable {
     var displayLabel: String { label ?? key }
 }
 
+/// `quota-canvas detect --json --cached` の返り値（detect-cache.json と同じ形）。
+struct DetectCacheReply: Decodable {
+    var cached_at: String?
+    var services: [DetectService]
+
+    /// キャッシュが書かれた時刻（常駐エンジンの最後の全体取得、または前回の detect）。
+    var cachedAt: Date? { cached_at.flatMap(ISO8601Support.parse) }
+}
+
 // MARK: - routing mode (CLI reply)
 
 /// `quota-canvas routing mode --json` の 1 エントリ。

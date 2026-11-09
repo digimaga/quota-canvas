@@ -221,6 +221,12 @@ final class EngineClient: @unchecked Sendable {
         try decode([DetectService].self, from: try await run(["detect", "--json"]))
     }
 
+    /// `quota-canvas detect --json --cached`（常駐エンジン/前回 detect が書いた
+    /// detect-cache.json を即返す。キャッシュが無い・壊れているときだけエンジン側で全取得する）
+    func detectCached() async throws -> DetectCacheReply {
+        try decode(DetectCacheReply.self, from: try await run(["detect", "--json", "--cached"]))
+    }
+
     /// `quota-canvas config --json`
     func getConfig() async throws -> ConfigDocument {
         try ConfigDocument(data: try await run(["config", "--json"]))

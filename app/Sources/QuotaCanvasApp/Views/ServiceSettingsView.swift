@@ -189,13 +189,28 @@ struct ServiceSettingsView: View {
             doc = try await client.getConfig()
             loadFailed = false
             statusColors = StatusStore.loadStatusSnapshot()?.colors ?? [:]
-            if includeDetect { await reloadDetect() }
+            if includeDetect { await loadCachedDetect() }
         } catch {
             loadFailed = true
             alertMessage = error.localizedDescription
         }
     }
 
+    /// 開いたときの即表示: 常駐エンジンが書いた detect-cache.json を使う
+    /// (キャッシュが無い・壊れている初回だけエンジン側で全取得する)。
+    private func loadCachedDetect() async {
+        loadingDetect = true
+        defer { loadingDetect = false }
+        do {
+            detect = try await client.detectCached().services
+        } catch {
+            detect = []
+            alertMessage = error.localizedDescription
+        }
+    }
+
+    /// 「再検出」や API キー保存/削除・Muse ログイン後の最新化: 全サービスを
+    /// その場で取得する従来の detect() を使う (エンジンがキャッシュも更新する)。
     private func reloadDetect() async {
         loadingDetect = true
         defer { loadingDetect = false }
