@@ -402,6 +402,13 @@ def test_default_worker_order_follows_known_providers():
                   win("claude:weekly", "claude", "spare", 50.0))
     result = evaluate(data, cfg(), {}, NOW)
     assert [w.name for w in result.workers] == ["claude", "glm"]
+    # 辞書順 (gemini < grok) と KNOWN_PROVIDERS 順 (grok → gemini) が分かれる
+    # 既知2種 + 未知 provider (acme) は末尾。入力順・辞書順のどちらの退行も検出する
+    data = status(win("acme:daily", "acme", "spare", 50.0),
+                  win("gemini:5h", "gemini", "spare", 50.0),
+                  win("grok:weekly", "grok", "spare", 50.0))
+    result = evaluate(data, cfg(), {}, NOW)
+    assert [w.name for w in result.workers] == ["grok", "gemini", "acme"]
 
 
 # --- burn (使い切りモード) -------------------------------------------------------
@@ -644,7 +651,10 @@ def test_burn_store_clear_and_purge(tmp_path):
     assert set(active) == {"glm"}
     gate.store_burn(path, "codex", NOW + timedelta(days=1), NOW)
     assert set(gate.load_burn(path, NOW)) == {"glm", "codex"}
-    assert not path.with_name(path.name + ".tmp").exists()  # 原子的な書き込み
+    # 書き込み時に期限切れを物理掃除: grok はファイルからも消えている
+    assert set(json.loads(path.read_text(encoding="utf-8"))) == {"glm", "codex"}
+    # 原子的な書き込み: 実一時名 .<name>.<random>.tmp (atomic.py) の残留なし
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
     gate.clear_burn(path, "glm", NOW)
     assert set(gate.load_burn(path, NOW)) == {"codex"}
     gate.clear_burn(path, "glm", NOW)  # 無い名前でもエラーにならない
@@ -659,8 +669,13 @@ def test_parse_until():
     assert until is not None and (until.hour, until.minute) == (23, 0)
     until = gate.parse_until("09:00", base)  # 過ぎているので翌日
     assert until is not None and until > base + timedelta(hours=12)
+    # HH:MM でちょうど今 (until <= now) も翌日
+    assert gate.parse_until("10:00", base) == base + timedelta(days=1)
     assert gate.parse_until("2026-10-27T09:00:00+00:00", base) \
         == datetime(2026, 10, 27, 9, 0, tzinfo=timezone.utc)
+    # ISO は厳密に未来だけ: ちょうど今・過去は拒否 (dt > now)
+    assert gate.parse_until(base.isoformat(), base) is None
+    assert gate.parse_until((base - timedelta(seconds=1)).isoformat(), base) is None
     assert gate.parse_until("25:00", base) is None
     assert gate.parse_until("nope", base) is None
     assert gate.parse_until("", base) is None
@@ -1072,11 +1087,6 @@ def test_english_credit_singular_and_plural():
     assert "1 reset credit)" in format_line(result, NOW, "en")
     result.reset_credits["codex"] = 2
     assert "2 reset credits)" in format_line(result, NOW, "en")
-
-
-def test_parse_until_rejects_past_and_equal_iso():
-    assert gate.parse_until(NOW.isoformat(), NOW) is None
-    assert gate.parse_until((NOW - timedelta(seconds=1)).isoformat(), NOW) is None
 
 
 @pytest.mark.parametrize("case", ["boost", "burn", "stale", "error", "missing"])

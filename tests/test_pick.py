@@ -118,11 +118,11 @@ def test_pick_refetches_when_status_is_stale(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(cli, "STATUS_PATH", path)
     calls = []
     _mock_fetch(monkeypatch, calls)
+    before = path.read_text(encoding="utf-8")
     rc, out = _run(monkeypatch, capsys, _argv(tmp_path))
     assert rc == 0
     assert calls == [True]
     assert "Claude Max" in out  # status.json の text ではなく計算し直した結果
-    before = path.read_text(encoding="utf-8")
     assert path.read_text(encoding="utf-8") == before  # 書き換えない
 
 
@@ -142,11 +142,8 @@ def test_pick_json_none_when_nothing_usable(monkeypatch, capsys, tmp_path):
     # 新しい status.json に推奨が無ければ取得せず {"recommendation": null}
     path = _status_file(tmp_path, NOW, recommendation=None)
     monkeypatch.setattr(cli, "STATUS_PATH", path)
-
-    def fake(now=None, enabled=None):
-        return [ProviderUsage(pid, pid.title(), [], "HTTP 500", NOW)
-                for pid in ("claude", "codex", "glm", "grok")]
-    monkeypatch.setattr(providers, "fetch_all", fake)
+    monkeypatch.setattr(providers, "fetch_all",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("取得しない")))
     rc, out = _run(monkeypatch, capsys, _argv(tmp_path, "--json"))
     assert rc == 0
     assert json.loads(out) == {"recommendation": None}
