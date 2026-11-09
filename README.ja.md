@@ -31,7 +31,7 @@ Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi / OpenCode G
 | Kimi | グローバル版 USD アカウント残高 | キーチェーンの Moonshot API キーまたは `MOONSHOT_API_KEY` |
 | OpenCode Go | 5 時間・週間・30 日の利用枠 | キーチェーンの API キー、`OPENCODE_API_KEY`、または opencode CLI のログイン（`~/.local/share/opencode/auth.json`） |
 | Devin | 日次・週間の利用枠と、取得できる場合は追加利用残高 | キーチェーンの API キー、Devin CLI のログイン（`~/.local/share/devin/credentials.toml`）、または Devin デスクトップアプリのログイン（`state.vscdb`） |
-| Muse | 週間の利用枠と追加トークン残量 | キーチェーンの muse.ai ログイン Cookie（ブラウザの Cookie ヘッダー）または `MUSE_COOKIE` |
+| Muse | 週間の利用枠と追加トークン残量 | メニューバーアプリ内の muse.ai ログイン（WebKit セッション。アプリが 5 分ごとに取得） |
 
 OpenRouter / DeepSeek / Kimi は公開 API 仕様に基づく実装で、実アカウントでは未検証。詳しくは[認証情報](#認証情報)を参照。
 
@@ -146,7 +146,7 @@ Screen().show(pil_image)   # 1920×462 の横長画像
 - OpenRouter / DeepSeek / Kimi はそれぞれキーチェーン `quota-canvas/openrouter` / `quota-canvas/deepseek` / `quota-canvas/kimi` を優先し、次に環境変数 `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` / `MOONSHOT_API_KEY` を読む。公開仕様に基づく実装で、実アカウントでは未検証。Kimi はグローバル版 USD API を使う。
 - OpenCode Go はキーチェーン `quota-canvas/opencode`（`set-key opencode` で保存）を優先し、次に環境変数 `OPENCODE_API_KEY`、次に opencode CLI のログイン `~/.local/share/opencode/auth.json` の `opencode-go` エントリの `key` を読む。取得できる窓は `opencode:5h`（5 時間）、`opencode:weekly`（7 日）、`opencode:30d`（30 日）。401/403 はキーが無効か、アカウントに OpenCode Go の契約が無いことを示す。キーが正しいことと、アカウントが OpenCode Go を契約していることを確認する。
 - Devin はキーチェーン `quota-canvas/devin`（`set-key devin` で保存）を優先し、次に Devin CLI のログイン `~/.local/share/devin/credentials.toml` の `windsurf_api_key`（`api_server_url` が codeium.com・windsurf.com・devin.ai とそのサブドメインの `https://` のときだけ、そのホストを使う）、次に Devin デスクトップアプリの `state.vscdb` の `windsurfAuthStatus` エントリの `apiKey` を読む。取得できる窓は `devin:1d`（日次）と `devin:weekly`（7 日）。`hideDailyQuota` / `hideWeeklyQuota` が true なら対応する窓を出さず、`overageBalanceMicros` があれば追加利用残高（USD）として表示する。401/403 はキーが無効であることを示す。キーが Devin のアカウントのものか確認する。
-- Muse はキーチェーン `quota-canvas/muse`（`set-key muse` で保存）を優先し、次に環境変数 `MUSE_COOKIE` を読む。値は muse.ai にログインしたブラウザの Cookie リクエストヘッダーの文字列をそのまま使う。利用枠は muse.ai の `fetchSubscriptionAction`（Next.js Server Action）から取得し、Action ID はページが参照する JS チャンクから解決してキャッシュする。窓は `muse:weekly`（7 日）。追加トークンは窓ではなく残高行（`追加のトークン 残り NN%`、`currency` は `TOKENS` で金額としては表示しない）として出す。401/403、または `success: true` を持たない応答は Cookie の期限切れを示す。`set-key muse` で入れ直す。メニューバーアプリでは開発者ツールを使わずに登録できる。設定 → サービス → Muse の「muse.ai にログイン」でアプリ内 WebKit ウィンドウが開き、ログイン後の「保存」で muse.ai の Cookie が同じ `set-key muse` に渡される。
+- Muse はメニューバーアプリが必須。エンジンから muse.ai の `fetchSubscriptionAction` への POST は 403 で拒否されるため、アプリが専用 WebKit セッション（設定 → サービス → Muse の「muse.ai にログイン」）で同じ fetch を 5 分ごとに実行し、応答を `quota-canvas muse-ingest` に渡して `muse-usage.json` に書く（本文・Cookie は残さない）。fetch はそのファイルを読むだけ。ファイル無し・`logged_out`・20 分超で取得失敗。Action ID は `quota-canvas muse-action-id`（キャッシュ、404 なら `--refresh`）。窓は `muse:weekly`（7 日）。追加トークンは残高行（`追加のトークン 残り NN%`、`currency` は `TOKENS`）。
 - Gemini は Antigravity CLI の `agy -p "/usage" --output-format json` から取得する。モデルを呼ばず枠を消費せず、トークンも agy が更新する。`providers.gemini.token_refresh` は旧設定との互換用で現在は使われない。窓は `gemini:weekly`、Gemini 4 Argon の `gemini:argon`、`gemini:5h`、Antigravity 経由の Claude / GPT の `gemini:claude` と `gemini:claude_5h`。プラン名はキーチェーン service `gemini` / account `antigravity` のトークンで取得できれば表示し、取れなければ「Gemini」とする。
 
 #### 履歴・ペース・推薦

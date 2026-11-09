@@ -15,19 +15,23 @@ struct MuseLoginView: View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("muse.ai にログインしたら「保存」を押してください")
+                    Text("muse.ai にログインしたら「完了」を押してください")
                     Text("このログインは Safari などのブラウザとは別の、アプリ専用の領域に保存されます。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if model.saving { ProgressView().controlSize(.small) }
+                if model.busy { ProgressView().controlSize(.small) }
                 Button("キャンセル", role: .cancel) { close() }
                     .keyboardShortcut(.cancelAction)
-                Button("保存") {
-                    Task { if await model.save() { close() } }
+                Button("完了") {
+                    Task {
+                        guard await model.canFinish() else { return }
+                        close()
+                        await MuseUsagePoller.shared.poll() // 保存後は即時に取得する
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(model.saving || coordinator.deleting) // 削除中は保存できない
+                .disabled(model.busy || coordinator.deleting) // 削除中は完了できない
             }
             .padding(10)
             Divider()
@@ -54,35 +58,40 @@ final class MuseCredentialCoordinator: ObservableObject {
     static let shared = MuseCredentialCoordinator()
     private init() {}
 
-    @Published private(set) var saving = false
+    /// ポーリング実行中（設定側の「削除」を無効化する目印）。
+    @Published private(set) var polling = false
     @Published private(set) var deleting = false
     private(set) var generation = 0
 
-    /// 保存開始。削除中は nil（保存しない）。返した世代を setKey 直前に isCurrent で確認する。
-    func beginSave() -> Int? {
-        guard !deleting else { return nil }
-        saving = true
+    /// ポーリング開始。削除中・実行中は nil（重複して走らない）。
+    /// 返した世代を ingest 直前に isCurrent で確認する。
+    func beginPoll() -> Int? {
+        guard !deleting, !polling else { return nil }
+        polling = true
         return generation
     }
 
-    func endSave() { saving = false }
+    func endPoll() { polling = false }
 
-    /// setKey の直前に呼ぶ。世代が進んでいれば（途中で削除された）false。
+    /// muse-ingest の直前に呼ぶ。世代が進んでいれば（途中で削除された）false。
     func isCurrent(_ generation: Int) -> Bool {
         generation == self.generation && !deleting
     }
 
-    /// 設定側の「削除」。世代を進めてから、キーと専用 WebKit 領域を消す。
+    /// 設定側の「削除」。世代を進めてから、残ったキー・専用 WebKit 領域・
+    /// muse-usage.json（muse-ingest --clear）を消す。
     func deleteCredential(client: EngineClient) async throws {
         deleting = true
         generation += 1
         defer { deleting = false }
-        try await client.deleteKey(provider: "muse")
+        try await client.deleteKey(provider: "muse") // 旧 Cookie 版の残りを掃除
         await MuseLoginModel.clearMuseWebsiteData()
+        try await client.museIngestClear()
+        NotificationCenter.default.post(name: .museUsageUpdated, object: nil)
     }
 }
 
-/// Cookie の収集と set-key 呼び出し。
+/// ログインウィンドウの状態（ページ確認と Cookie の有無）。
 @MainActor
 final class MuseLoginModel: ObservableObject {
     /// 固定 UUID の専用永続ストア（macOS 14 の forIdentifier）。
@@ -91,13 +100,11 @@ final class MuseLoginModel: ObservableObject {
     static let dataStore = WKWebsiteDataStore(
         forIdentifier: UUID(uuidString: "3F6E0A1B-9C2D-4E5F-A6B7-C8D9E0F1A2B3")!)
 
-    @Published var saving = false
+    @Published var busy = false
     @Published var message: String?
 
     /// ログイン中の WKWebView（MuseWebView がセットする）。未ログイン判定に使う。
     weak var webView: WKWebView?
-
-    private let client = EngineClient()
 
     /// 表示されているログイン入力欄を探す JS。1 つでも見つかれば true を返す。
     private static let loginFieldProbe = """
@@ -138,40 +145,19 @@ final class MuseLoginModel: ObservableObject {
         return (result as? Bool) == false
     }
 
-    /// Cookie ヘッダー文字列を組み立て、エンジンで実取得を試してから `set-key muse` に渡す。
-    /// 保存に成功したときだけ true を返す（呼び出し側がウィンドウを閉じる）。
-    func save() async -> Bool {
-        let coordinator = MuseCredentialCoordinator.shared
-        guard let generation = coordinator.beginSave() else { return false }
-        saving = true
+    /// 「完了」で閉じてよい状態か。明らかに未ログインなら false（注意表示）。
+    /// 判定本体は MuseUsagePoller 側（Cookie が無ければ何もしない）なので、
+    /// ここではページ状態と Cookie の有無の緩い確認だけにする。
+    func canFinish() async -> Bool {
+        busy = true
         message = nil
-        defer {
-            saving = false
-            coordinator.endSave()
-        }
-        let museCookies = Self.museCookies(from: await Self.dataStore.httpCookieStore.allCookies())
-        guard await looksLoggedIn(), !museCookies.isEmpty else {
-            message = String(localized: "まだログインしていないようです")
-            return false
-        }
-        let header = museCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-        do {
-            // 保存の前にエンジンで実際に取得を試し、成功したときだけ保存する。
-            // 失敗時の EngineError.message がエンジンの短い理由（Cookie 期限切れ等）。
-            try await client.verifyKey(provider: "muse", key: header)
-            // verify の間に設定側で削除されたら保存しない（消したキーの復活を防ぐ）。
-            guard coordinator.isCurrent(generation) else {
-                message = String(localized: "キーが削除されたため保存を中止しました")
-                return false
-            }
-            try await client.setKey(provider: "muse", key: header)
-        } catch {
-            message = error.localizedDescription
-            return false
-        }
-        // 既存のキー登録後と同じ後処理: サービス一覧の再検出を依頼する。
-        NotificationCenter.default.post(name: .museKeySaved, object: nil)
-        return true
+        defer { busy = false }
+        if await looksLoggedIn() { return true }
+        let cookies = Self.museCookies(
+            from: await Self.dataStore.httpCookieStore.allCookies())
+        if !cookies.isEmpty { return true }
+        message = String(localized: "まだログインしていないようです")
+        return false
     }
 
     /// キーの「削除」に合わせて、専用データストアの muse.ai のデータも消す

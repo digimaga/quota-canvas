@@ -631,69 +631,116 @@ def test_set_json_roundtrips_quoted_values(monkeypatch, capsys, tmp_path):
     assert cfg.layout.panels[0].main == 'glm:"quoted"'
 
 
-# ------------------------------------------------------------ verify-key
+# ----------------------------------------------------------- muse-ingest
 
-def test_verify_key_muse_success(monkeypatch, capsys):
+def _usage_path(monkeypatch, tmp_path):
     from quotacanvas.providers import muse
+    path = tmp_path / "muse-usage.json"
+    monkeypatch.setattr(muse, "_usage_file", lambda: path)
+    return path
 
-    usage = ProviderUsage(
-        "muse", "Muse ダミープラン",
-        [Window("muse", "weekly", "週間", 42.0, None, timedelta(days=7))],
-        None, NOW)
-    monkeypatch.setattr(muse, "fetch_with_cookie",
-                        lambda cookie, now, ignore_backoff=False: usage)
-    rc, out = _run(monkeypatch, capsys, ["verify-key", "muse", "--json"],
-                   stdin="c=d\n")
+
+_MUSE_RSC = ('0:{"a":"$@1"}\n1:' + json.dumps({
+    "success": True,
+    "subscription": {
+        "tier": {"name": "ダミープラン"},
+        "usage": {"state": "METERED", "percentUsed": 42,
+                  "resetsAt": 1830000000},
+        "topupBalance": 300, "topupTotal": 1000,
+    }}))
+
+
+def test_muse_ingest_200_writes_file(monkeypatch, capsys, tmp_path):
+    path = _usage_path(monkeypatch, tmp_path)
+    rc, out = _run(monkeypatch, capsys,
+                   ["muse-ingest", "--status", "200"], stdin=_MUSE_RSC)
     assert rc == 0
-    payload = json.loads(out)
-    assert payload["ok"] is True
-    assert payload["plan"] == "Muse ダミープラン"
-    assert payload["used_percent"] == 42.0
-    assert "c=d" not in out  # 値が出力に現れない
+    assert json.loads(out)["result"] == "parsed"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["result"]["used_percent"] == 42.0
 
 
-def test_verify_key_reads_stdin_not_keychain(monkeypatch, capsys):
-    """verify-key はキーチェーン・環境変数を読まず stdin の値で取得する。"""
+def test_muse_ingest_401_is_logged_out(monkeypatch, capsys, tmp_path):
+    path = _usage_path(monkeypatch, tmp_path)
+    rc, out = _run(monkeypatch, capsys,
+                   ["muse-ingest", "--status", "401"], stdin="{}")
+    assert rc == 0
+    assert json.loads(out)["result"] == "logged_out"
+    assert json.loads(path.read_text())["result"] == "logged_out"
+
+
+def test_muse_ingest_too_large(monkeypatch, capsys, tmp_path):
+    path = _usage_path(monkeypatch, tmp_path)
+    big = "x" * (1024 * 1024 + 1)
+    rc, out = _run(monkeypatch, capsys,
+                   ["muse-ingest", "--status", "200"], stdin=big)
+    assert rc != 0
+    assert json.loads(out)["error"]
+    assert not path.exists()
+
+
+def test_muse_ingest_clear(monkeypatch, capsys, tmp_path):
+    path = _usage_path(monkeypatch, tmp_path)
+    path.write_text("{}", encoding="utf-8")
+    rc, out = _run(monkeypatch, capsys, ["muse-ingest", "--clear"])
+    assert rc == 0
+    assert not path.exists()
+
+
+def test_muse_ingest_requires_status_or_clear(monkeypatch, capsys, tmp_path):
+    rc, out = _run(monkeypatch, capsys, ["muse-ingest"], stdin="x")
+    assert rc != 0
+    assert json.loads(out)["error"]
+
+
+# ---------------------------------------------------------- muse-action-id
+
+def test_muse_action_id_prints_cached_id(monkeypatch, capsys, tmp_path):
     from quotacanvas.providers import muse
-
-    seen = []
-
-    def fake_fetch(cookie, now, ignore_backoff=False):
-        seen.append(cookie)
-        return ProviderUsage("muse", "Muse", [], None, NOW)
-
-    monkeypatch.setattr(muse, "fetch_with_cookie", fake_fetch)
-    monkeypatch.setattr(muse.keychain, "read",
-                        lambda account: "should-not-be-used")
-    rc, out = _run(monkeypatch, capsys, ["verify-key", "muse", "--json"],
-                   stdin="x=y\n")
+    cache = tmp_path / "muse-action.json"
+    cache.write_text(json.dumps({"action_id": "f" * 40}), encoding="utf-8")
+    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
+    rc, out = _run(monkeypatch, capsys, ["muse-action-id"])
     assert rc == 0
-    assert seen == ["x=y"]
+    assert out.strip() == "f" * 40
 
 
-def test_verify_key_muse_bad_cookie(monkeypatch, capsys):
-    from quotacanvas.providers import CredentialError, muse
+def test_muse_action_id_failure_is_error_json(monkeypatch, capsys, tmp_path):
+    from quotacanvas.providers import muse
+    monkeypatch.setattr(muse, "_action_cache_file",
+                        lambda: tmp_path / "muse-action.json")
 
-    def fail(cookie, now, ignore_backoff=False):
-        raise CredentialError("Cookie の期限切れ")
-
-    monkeypatch.setattr(muse, "fetch_with_cookie", fail)
-    rc, out = _run(monkeypatch, capsys, ["verify-key", "muse", "--json"],
-                   stdin="c=d\n")
-    assert rc == 1
-    assert json.loads(out)["error"] == "Cookie の期限切れ"
-
-
-def test_verify_key_unsupported_provider(monkeypatch, capsys):
     def boom(*a, **k):
-        raise AssertionError("未対応プロバイダで取得してはいけない")
+        raise ValueError("muse action id not found")
 
-    monkeypatch.setattr(providers, "fetch_all", boom)
-    rc, out = _run(monkeypatch, capsys, ["verify-key", "glm"], stdin="k\n")
-    assert rc == 2
+    monkeypatch.setattr(muse, "_resolve_and_cache", boom)
+    rc, out = _run(monkeypatch, capsys, ["muse-action-id"])
+    assert rc != 0
+    assert json.loads(out)["error"]
 
 
-def test_verify_key_empty_input(monkeypatch, capsys):
-    rc, out = _run(monkeypatch, capsys, ["verify-key", "muse"], stdin="\n")
+def test_muse_action_id_chunks_stdin(monkeypatch, capsys, tmp_path):
+    from quotacanvas.providers import muse
+    monkeypatch.setattr(muse, "_action_cache_file",
+                        lambda: tmp_path / "muse-action.json")
+    seen = {}
+
+    def fake_action_id(refresh=False, chunks=None):
+        seen["chunks"] = chunks
+        return "e" * 40
+
+    monkeypatch.setattr(muse, "action_id", fake_action_id)
+    rc, out = _run(monkeypatch, capsys,
+                   ["muse-action-id", "--chunks-stdin"],
+                   stdin="/_next/static/chunks/app.js\n")
+    assert rc == 0
+    assert out.strip() == "e" * 40
+    assert seen["chunks"] == ["/_next/static/chunks/app.js"]
+
+
+def test_muse_ingest_clear_delete_error(monkeypatch, capsys, tmp_path):
+    path = _usage_path(monkeypatch, tmp_path)
+    path.mkdir()  # unlink は IsADirectoryError
+    rc, out = _run(monkeypatch, capsys, ["muse-ingest", "--clear"])
     assert rc != 0
     assert json.loads(out)["error"]

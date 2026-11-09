@@ -10,7 +10,6 @@ token_expired_run_claude = "Token expired (run claude once)"
 token_expired_refreshing = "Token expired (auto-refreshing)"
 login_expired_run_grok = "Login expired (run grok once)"
 login_expired_refreshing = "Login expired (auto-refreshing)"
-muse_cookie_expired = "Cookie expired (save a fresh one with set-key muse)"
 muse_resolve_unavailable = "Cannot resolve Muse endpoint (retrying in a few hours)"
 reset_credit = "Reset credits"
 
@@ -51,6 +50,11 @@ weekly_scoped = "Weekly {model}"
 [muse]
 topup = "Top-up tokens"
 topup_left = "{pct}% left"
+source_app = "menu bar app login"
+login_required = "Log in to muse.ai in the menu bar app's settings"
+logged_out = "muse.ai login expired (log in again in the app settings)"
+app_stale = "The menu bar app has not refreshed Muse"
+ingest_error = "Could not parse the Muse usage response ({detail})"
 
 [gemini]
 claude_window = "Claude"

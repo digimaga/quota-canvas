@@ -1169,9 +1169,9 @@ def _cmd_set_key(args) -> int:
     if provider is None:
         return _fail(t("cli.set_key.unknown_provider", provider=args.provider,
                        choices=" / ".join(providers.REGISTRY)))
-    if not provider.needs_key:
-        return _fail(t("cli.set_key.no_key_needed", name=provider.shown_name))
     if args.delete:
+        # --delete は needs_key に関わらず受け付ける（要らなくなったキーを
+        # 掃除できるように。項目が無ければ no-op）
         try:
             keychain.delete(provider.id)
         except keychain.KeychainError as exc:
@@ -1181,6 +1181,8 @@ def _cmd_set_key(args) -> int:
         else:
             print(t("cli.set_key.deleted", name=provider.shown_name))
         return 0
+    if not provider.needs_key:
+        return _fail(t("cli.set_key.no_key_needed", name=provider.shown_name))
     key = _read_secret(t("cli.set_key.prompt", name=provider.shown_name))
     if not key:
         return _fail(t("cli.set_key.empty_key"))
@@ -1196,37 +1198,37 @@ def _cmd_set_key(args) -> int:
     return 0
 
 
-def _cmd_verify_key(args) -> int:
-    """verify-key: 保存前の検証。stdin のキーで利用枠を 1 回取得してみる。
-
-    キーチェーン・環境変数は使わず、書き込みもしない。対応は muse だけ。
-    成功 0 / 取得失敗 1 ({"error": ...}) / 未対応プロバイダ 2。
-    出力にキーの値は出さない。"""
-    if args.provider != "muse":
-        print(t("cli.verify_key.unsupported", provider=args.provider),
-              file=sys.stderr)
-        return 2
-    key = _read_secret(t("cli.set_key.prompt", name="Muse"))
-    if not key:
-        return _fail(t("cli.set_key.empty_key"))
-    import urllib.error
-    from .providers import CredentialError, muse
+def _cmd_muse_action_id(args) -> int:
+    """muse-action-id: 解決済みの Action ID を 1 行で出す (app 連携)。"""
+    from .providers import muse
     try:
-        usage = muse.fetch_with_cookie(key, datetime.now(timezone.utc),
-                                       ignore_backoff=True)
-    except CredentialError as exc:
+        chunks = sys.stdin.read().splitlines() if args.chunks_stdin else None
+        print(muse.action_id(refresh=args.refresh, chunks=chunks))
+    except Exception as exc:  # noqa: BLE001 - 短い理由に変える
+        return _fail(str(exc) or exc.__class__.__name__)
+    return 0
+
+
+def _cmd_muse_ingest(args) -> int:
+    """muse-ingest: アプリの WebKit で取った応答を muse-usage.json に保存する。"""
+    from .providers import muse
+    if args.clear:
+        try:
+            muse.clear_usage_file()
+        except OSError as exc:
+            return _fail(str(exc))
+        _print_json({"ok": True, "cleared": True})
+        return 0
+    if args.status is None:
+        return _fail(t("cli.muse_ingest.status_required"))
+    body = sys.stdin.read(muse.INGEST_BODY_LIMIT + 1)
+    if len(body) > muse.INGEST_BODY_LIMIT:
+        return _fail(t("cli.muse_ingest.too_large"))
+    try:
+        kind = muse.ingest_usage(args.status, body)
+    except OSError as exc:
         return _fail(str(exc))
-    except urllib.error.HTTPError as exc:
-        return _fail(t("cli.verify_key.http_error", code=exc.code))
-    except Exception as exc:
-        return _fail(t("cli.verify_key.failed", detail=exc.__class__.__name__))
-    if args.json:
-        payload: Dict[str, Any] = {"ok": True, "plan": usage.name}
-        if usage.windows:
-            payload["used_percent"] = usage.windows[0].used_percent
-        _print_json(payload)
-    else:
-        print(t("cli.verify_key.ok", name=usage.name))
+    _print_json({"ok": True, "result": kind})
     return 0
 
 
@@ -1332,9 +1334,17 @@ def main(argv=None) -> int:
     p_key.add_argument("provider", metavar="PROVIDER", help="service id, e.g. glm")
     p_key.add_argument("--delete", action="store_true", help="remove the stored key")
     p_key.add_argument("--json", action="store_true", help="print the result as JSON")
-    p_verify = sub.add_parser("verify-key", help=t("cli.help.verify_key"))
-    p_verify.add_argument("provider", metavar="PROVIDER", help="service id, e.g. muse")
-    p_verify.add_argument("--json", action="store_true", help="print the result as JSON")
+    p_mid = sub.add_parser("muse-action-id", help=t("cli.help.muse_action_id"))
+    p_mid.add_argument("--refresh", action="store_true",
+                       help="re-resolve the id instead of using the cache")
+    p_mid.add_argument("--chunks-stdin", action="store_true",
+                       help="read newline-separated chunk paths from stdin "
+                            "and resolve from them without fetching the page HTML")
+    p_ingest = sub.add_parser("muse-ingest", help=t("cli.help.muse_ingest"))
+    p_ingest.add_argument("--status", type=int, default=None, metavar="N",
+                          help="HTTP status of the fetched response")
+    p_ingest.add_argument("--clear", action="store_true",
+                          help="delete the stored usage file")
     p_refresh = sub.add_parser("refresh",
                                help=t("cli.help.refresh", path=refresh_mod.REFRESH_REQUEST_PATH))
     p_refresh.add_argument("--json", action="store_true", help='print {"requested": true} as JSON')
@@ -1393,8 +1403,10 @@ def main(argv=None) -> int:
         return _cmd_detect(args)
     if args.command == "set-key":
         return _cmd_set_key(args)
-    if args.command == "verify-key":
-        return _cmd_verify_key(args)
+    if args.command == "muse-action-id":
+        return _cmd_muse_action_id(args)
+    if args.command == "muse-ingest":
+        return _cmd_muse_ingest(args)
     if args.command == "refresh":
         return _cmd_refresh(args)
     if args.command == "config":

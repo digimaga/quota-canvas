@@ -68,7 +68,8 @@ final class EngineClient: @unchecked Sendable {
     // MARK: - process runner
 
     /// CLI を実行し stdout を返す。失敗時は EngineError（stdout の {"error": ...} を優先）。
-    func run(_ args: [String], stdin: Data? = nil) async throws -> Data {
+    /// timeout を渡すと、その秒数を超えたら子プロセスを terminate する（失敗として返る）。
+    func run(_ args: [String], stdin: Data? = nil, timeout: TimeInterval? = nil) async throws -> Data {
         let exe = enginePath
         let displayPath = enginePathRaw
         guard FileManager.default.isExecutableFile(atPath: exe) else {
@@ -97,6 +98,12 @@ final class EngineClient: @unchecked Sendable {
                 } catch {
                     continuation.resume(throwing: EngineError(message: String(localized: "エンジンを起動できません: \(error.localizedDescription)")))
                     return
+                }
+                if let timeout {
+                    // タイムアウトで子プロセスを終了させ、waitUntilExit を解除する。
+                    DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                        if process.isRunning { process.terminate() }
+                    }
                 }
 
                 // どの pipe も同時に処理し、子プロセスの出力待ちとの循環を避ける。
@@ -224,10 +231,35 @@ final class EngineClient: @unchecked Sendable {
         _ = try await run(["set-key", provider], stdin: Data(key.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
     }
 
-    /// `quota-canvas verify-key <provider>`（キーは stdin。保存せずエンジンで実取得して検証する。
-    /// 失敗時の EngineError.message がエンジンの短い理由）
-    func verifyKey(provider: String, key: String) async throws {
-        _ = try await run(["verify-key", provider, "--json"], stdin: Data(key.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
+    /// `quota-canvas muse-action-id [--refresh] [--chunks-stdin]`
+    /// chunks を渡すと改行区切りで stdin に流す（ページが読み込んだ chunk パス）。
+    /// timeout で子プロセスを打ち切る。stdout の ID 文字列を返す。
+    func museActionId(refresh: Bool, chunks: [String]? = nil,
+                      timeout: TimeInterval? = nil) async throws -> String {
+        var args = ["muse-action-id"]
+        if refresh { args.append("--refresh") }
+        var stdinData: Data?
+        if let chunks {
+            args.append("--chunks-stdin")
+            stdinData = Data(chunks.joined(separator: "\n").utf8)
+        }
+        let id = String(data: try await run(args, stdin: stdinData, timeout: timeout), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !id.isEmpty else {
+            throw EngineError(message: "muse action id is empty")
+        }
+        return id
+    }
+
+    /// `quota-canvas muse-ingest --status N`（本文は stdin で渡す）
+    func museIngest(status: Int, body: String, timeout: TimeInterval? = nil) async throws {
+        _ = try await run(["muse-ingest", "--status", String(status)],
+                          stdin: Data(body.utf8), timeout: timeout)
+    }
+
+    /// `quota-canvas muse-ingest --clear`（muse-usage.json を消す）
+    func museIngestClear() async throws {
+        _ = try await run(["muse-ingest", "--clear"])
     }
 
     /// `quota-canvas set-key <provider> --delete`

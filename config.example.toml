@@ -192,9 +192,8 @@ enabled = true
 
 [providers.muse]
 enabled = true
-# quota-canvas set-key muse で muse.ai のログイン Cookie を保存
-# （ブラウザの Cookie ヘッダーの文字列をそのまま）
-# キーチェーンに無いときは環境変数 MUSE_COOKIE を読む
+# メニューバーアプリの設定で muse.ai にログインすると、アプリが 5 分ごとに
+# 利用枠を取ってエンジンに渡す（Cookie や API キーは使わない）
 # color = "#F59E0B"
 
 # ローカル LLM サーバー（OpenAI 互換サーバーの並列枠の空きを /metrics から取る）。

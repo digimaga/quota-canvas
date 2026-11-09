@@ -34,6 +34,9 @@ struct ServiceSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .museKeySaved)) { _ in
             Task { await reloadDetect() } // Muse ログインの Cookie 保存後は再検出する
         }
+        .onReceive(NotificationCenter.default.publisher(for: .museUsageUpdated)) { _ in
+            Task { await reloadDetect() } // muse-usage.json 更新・削除後は再検出する
+        }
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Text("自動配置で画面に出るのは最大 \(Self.maxAutoServices) サービスです（「配置」タブの手動配置なら最大 \(LayoutSettingsView.columnCount * 2) 枚）")
@@ -238,12 +241,13 @@ struct ServiceSettingsView: View {
         do {
             if service.provider == "muse" {
                 // 世代を進めて進行中の保存を無効化しつつ、キーと専用 WebKit 領域を消す。
+                // 再検出は deleteCredential が投げる .museUsageUpdated 通知の 1 回に統一する。
                 try await MuseCredentialCoordinator.shared.deleteCredential(client: client)
             } else {
                 try await client.deleteKey(provider: service.provider)
+                await reloadDetect()
             }
             keyDrafts[service.provider] = ""
-            await reloadDetect()
         } catch {
             alertMessage = error.localizedDescription
         }
@@ -313,32 +317,30 @@ private struct ServiceRow: View {
                     .padding(.leading, 24)
             }
 
-            if service.needsKey {
-                if service.provider == "muse" {
-                    // Muse は API キーではなくログイン Cookie。アプリ内の WebView で
-                    // muse.ai にログインしてもらい、「保存」で Cookie を set-key に渡す。
-                    HStack(spacing: 6) {
-                        Button(service.detected ? "ログインし直す" : "muse.ai にログイン", action: onMuseLogin)
-                            .disabled(busy)
-                        Button("削除", role: .destructive, action: onDeleteKey)
-                            .disabled(busy || museCoordinator.saving) // 保存中は削除できない
-                    }
-                    .padding(.leading, 24)
-                    Text("Cookie はログインキーチェーン（quota-canvas）に、ログイン状態はアプリ専用の WebKit 領域に保存されます。「削除」で両方を消します。")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .padding(.leading, 24)
-                } else {
-                    HStack(spacing: 6) {
-                        SecureField("API キー", text: $keyDraft, prompt: Text("API キー"))
-                            .textFieldStyle(.squareBorder)
-                        Button("保存", action: onSaveKey).disabled(keyDraft.isEmpty || busy)
-                        Button("削除", role: .destructive, action: onDeleteKey).disabled(busy)
-                    }
-                    .padding(.leading, 24)
-                    Text("キーはログインキーチェーン（quota-canvas）に保存され、アプリ自体には残りません。")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .padding(.leading, 24)
+            if service.provider == "muse" {
+                // Muse は API キーではなくアプリ内ログイン。アプリ内の WebView で
+                // muse.ai にログインしてもらい、「完了」で利用枠の取得を始める。
+                HStack(spacing: 6) {
+                    Button(service.detected ? "ログインし直す" : "muse.ai にログイン", action: onMuseLogin)
+                        .disabled(busy)
+                    Button("削除", role: .destructive, action: onDeleteKey)
+                        .disabled(busy || museCoordinator.polling) // 取得中は削除できない
                 }
+                .padding(.leading, 24)
+                Text("ログイン状態はアプリ専用の WebKit 領域に、取得した利用枠はデータフォルダの muse-usage.json に保存されます。アプリが 5 分ごとに更新し、「削除」で両方を消します。")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .padding(.leading, 24)
+            } else if service.needsKey {
+                HStack(spacing: 6) {
+                    SecureField("API キー", text: $keyDraft, prompt: Text("API キー"))
+                        .textFieldStyle(.squareBorder)
+                    Button("保存", action: onSaveKey).disabled(keyDraft.isEmpty || busy)
+                    Button("削除", role: .destructive, action: onDeleteKey).disabled(busy)
+                }
+                .padding(.leading, 24)
+                Text("キーはログインキーチェーン（quota-canvas）に保存され、アプリ自体には残りません。")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .padding(.leading, 24)
             }
         }
         .padding(.vertical, 2)

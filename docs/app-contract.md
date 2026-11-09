@@ -301,12 +301,14 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `<provider>`. `quota-canvas set-key <provider> --delete` removes it. Only for services
   with `needs_key: true`. With `--json` it prints `{"provider": "<p>", "stored": true}`
   (or `"deleted": true`).
-- `quota-canvas verify-key <provider>` — verifies a key without storing it: reads the key
-  from stdin (same as `set-key`), fetches usage once with it (no Keychain, no env, nothing
-  written), and exits 0 on success. On failure it exits 1 with a short secret-free
-  `{"error": ...}` (e.g. expired Cookie, fetch error); providers other than `muse` exit 2.
-  With `--json` success prints `{"ok": true, "plan": "...", "used_percent": N}` (no secrets).
-  The app's Muse login window runs this before `set-key muse`.
+- `quota-canvas muse-action-id [--refresh]` — prints the resolved Muse Action ID on one
+  line (from the `muse-action.json` cache, or re-resolved from the static JS bundles when
+  there is none or `--refresh` is given). Exits 1 with a short `{"error": ...}` on failure.
+- `quota-canvas muse-ingest --status N` — reads the Server Action response body from stdin
+  (max 1 MB) and writes `{fetched_at, status, result}` to `muse-usage.json` in the data
+  directory (atomically; the raw body and cookies are never stored). `result` is a parsed
+  secret-free object on a 200 with a success line, `"logged_out"` on 401/403, and
+  `"error"` otherwise. `quota-canvas muse-ingest --clear` deletes the file.
 
 - `quota-canvas routing line [--json]` — the routing verdict as one line, e.g.
   `quota: glm=go(89%,~23:07) … (21:30時点)` (same format as `~/.claude/bin/quota-gate
@@ -395,25 +397,23 @@ with `set-key devin`), then `windsurf_api_key` in the Devin CLI login at
 `overageBalanceMicros` is shown as the extra usage balance (USD). A 401/403 means the key
 is invalid (check that the key belongs to a Devin account).
 
-Muse (`muse`, Meta's chatbot at https://muse.ai) reads Keychain
-`quota-canvas/muse` (saved with `set-key muse`), then `MUSE_COOKIE`; the value is the
-browser's Cookie request header for a logged-in muse.ai session, verbatim. Usage is
-fetched through the `fetchSubscriptionAction` Next.js Server Action on muse.ai; the
-Action ID is resolved from the page's `/_next/static/chunks/*.js` bundles (cached in
-the data directory with a `verified` flag and `resolved_at`, re-resolved once when a
-proven-good or long-unverified ID fails) and posted with a `Next-Action`
-header. Its window is `muse:weekly` (7 days); top-up tokens are reported as a
-`balances` entry (`currency: "TOKENS"`, `amount`: remaining percent, `text`: the
-display string like `残り 70%`) rather than a window or a money amount — the raw
-token count is not reported because it does not match the service's own labels. A
-401/403 or a response without a `success: true`
-line means the Cookie has expired; save a fresh one with `set-key muse`.
-The menu bar app can register the Cookie without copying it from devtools: the
-Services settings shows a「muse.ai にログイン」button for Muse instead of an API-key
-field, which opens an in-app WebKit window (a dedicated persistent
-`WKWebsiteDataStore`, not shared with Safari); its「保存」button collects the
-muse.ai cookies, verifies them with `verify-key muse`, and stores them through the
-same `set-key muse` path.
+Muse (`muse`, Meta's chatbot at https://muse.ai) needs the menu bar app: the
+engine's urllib POST to the `fetchSubscriptionAction` Next.js Server Action is
+blocked (HTTP 403 bot protection), so the app runs the same `fetch` inside its
+dedicated in-app WebKit session (a persistent `WKWebsiteDataStore` where the user
+logs in via Settings → サービス →「muse.ai にログイン」) every 5 minutes and pipes
+`{status, body}` to `muse-ingest`, which stores `muse-usage.json` (see above).
+`fetch` only reads that file (no network); a missing file asks to log in,
+`logged_out` asks to log in again, and data older than 20 minutes counts as a
+failed fetch (last-good/stale display). The Action ID for the POST comes from
+`muse-action-id` (cached in `muse-action.json` with `verified`/`resolved_at`;
+`--refresh` re-resolves after a 404). Its window is `muse:weekly` (7 days);
+top-up tokens are reported as a `balances` entry (`currency: "TOKENS"`,
+`amount`: remaining percent, `text`: the display string like `残り 70%`)
+rather than a window or a money amount — the raw token count is not reported
+because it does not match the service's own labels. `needs_key` is false; there
+is no `set-key muse`/`MUSE_COOKIE` path anymore (a stale Keychain entry is
+simply ignored, and `set-key muse --delete` still removes it).
 
 ## Config keys the app edits
 

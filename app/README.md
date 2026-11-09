@@ -65,8 +65,9 @@ SwiftPM で実行ファイルをビルドし、リソースと Info.plist を .a
     SecureField + 保存/削除（`set-key`、キーは stdin 経由で引数に載せない）。
     Muse だけは API キー欄の代わりに「muse.ai にログイン」ボタンが出る。アプリ内の
     WebKit ウィンドウ（専用の永続 `WKWebsiteDataStore`、Safari とは共有しない）で
-    ログインして「保存」を押すと、muse.ai の Cookie が `set-key muse` に渡される
-    （CLI の `set-key muse` もそのまま使える）。「再検出」ボタン。
+    ログインして「完了」を押すと、MuseUsagePoller が起動時・完了後・5 分ごとに
+    同じ WebKit セッションで Server Action を呼び、応答を `muse-ingest` に渡す
+    （「削除」でログインと `muse-usage.json` を消す）。「再検出」ボタン。
   - 表示: ゲージ方式（remaining/used）、明るさ 0-100、夜間減光（開始/終了/明るさ）、
     通知を出す（F4）、エンジンのパス（UserDefaults、既定
     同梱エンジン、無ければ `~/dev/quota-canvas/.venv/bin/quota-canvas`）、ログイン時に起動（SMAppService.mainApp）。

@@ -10,7 +10,6 @@ token_expired_run_claude = "トークン期限切れ（claude を一度起動し
 token_expired_refreshing = "トークン期限切れ（自動更新中）"
 login_expired_run_grok = "ログインの期限切れ（grok を一度起動してください）"
 login_expired_refreshing = "ログインの期限切れ（自動更新中）"
-muse_cookie_expired = "Cookie の期限切れ（set-key muse で入れ直してください）"
 muse_resolve_unavailable = "Muse の取得先を解決できない（数時間後に再試行）"
 reset_credit = "リセット権"
 
@@ -51,6 +50,11 @@ weekly_scoped = "週間 {model}"
 [muse]
 topup = "追加のトークン"
 topup_left = "残り {pct}%"
+source_app = "メニューバーアプリのログイン"
+login_required = "メニューバーアプリの設定で muse.ai にログインしてください"
+logged_out = "muse.ai のログインが切れました（アプリの設定でログインし直してください）"
+app_stale = "メニューバーアプリが Muse を更新していません"
+ingest_error = "Muse の利用枠を解釈できませんでした ({detail})"
 
 [gemini]
 claude_window = "Claude"

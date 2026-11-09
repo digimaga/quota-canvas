@@ -55,11 +55,10 @@ def _js_with_action(action_id, extra=""):
             't.findSourceMapURL,"fetchSubscriptionAction");' % action_id) + extra
 
 
-def _install_http(monkeypatch, pages, posts=None):
-    """ダミー HTTP。pages: url -> str 応答 (Exception なら raise、無ければ 404)。
-    posts: _post_action の応答キュー (str または Exception)。記録を返す。"""
-    calls = {"get": [], "post": []}
-    posts = list(posts or [])
+def _install_http(monkeypatch, pages):
+    """ダミー HTTP GET。pages: url -> str 応答 (Exception なら raise、
+    無ければ 404)。記録を返す。"""
+    calls = {"get": []}
 
     def fake_get(url, headers, timeout=muse.TIMEOUT, deadline=None):
         calls["get"].append((url, headers, timeout))
@@ -70,22 +69,15 @@ def _install_http(monkeypatch, pages, posts=None):
             raise response
         return response
 
-    def fake_post(url, headers, body, timeout=muse.TIMEOUT):
-        calls["post"].append((url, headers, body))
-        if not posts:
-            raise AssertionError("unexpected POST")
-        response = posts.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
-
     monkeypatch.setattr(muse, "_get_text", fake_get)
-    monkeypatch.setattr(muse, "_post_text", fake_post)
     return calls
 
 
-def _cookie_keychain(monkeypatch):
-    monkeypatch.setattr(muse.keychain, "read", lambda account: COOKIE)
+def _usage_file_patch(monkeypatch, tmp_path):
+    """muse-usage.json を tmp_path に向ける。書き込みヘルパーを返す。"""
+    path = tmp_path / "muse-usage.json"
+    monkeypatch.setattr(muse, "_usage_file", lambda: path)
+    return path
 
 
 def _http_error(code):
@@ -270,12 +262,6 @@ def test_parse_muse_non_string_is_error(data):
 
 # ---------------------------------------------------------- cookie expiry
 
-def test_error_message_has_no_cookie():
-    message = providers.t("providers.muse_cookie_expired")
-    assert message == "Cookie の期限切れ（set-key muse で入れ直してください）"
-    assert COOKIE not in message
-
-
 # ------------------------------------------------------- action id resolve
 
 def test_resolve_action_id_first_level(monkeypatch):
@@ -285,12 +271,9 @@ def test_resolve_action_id_first_level(monkeypatch):
         "https://muse.ai/_next/static/chunks/a.js": "var x=1;",
         "https://muse.ai/_next/static/chunks/b.js": _js_with_action(ACTION_ID),
     })
-    assert muse._resolve_action_id(COOKIE) == ACTION_ID
-    # HTML には Cookie を付けるが、静的 JS には付けない
-    by_url = {u: h for u, h, _t in calls["get"]}
-    assert by_url[muse.MUSE_PAGE_URL]["Cookie"] == COOKIE
-    assert "Cookie" not in by_url["https://muse.ai/_next/static/chunks/a.js"]
-    assert "Cookie" not in by_url["https://muse.ai/_next/static/chunks/b.js"]
+    assert muse._resolve_action_id() == ACTION_ID
+    # ページも静的 JS も Cookie は付けない
+    assert all("Cookie" not in h for _u, h, _t in calls["get"])
 
 
 def test_resolve_action_id_second_level(monkeypatch):
@@ -302,7 +285,7 @@ def test_resolve_action_id_second_level(monkeypatch):
         "https://muse.ai/_next/static/chunks/lazy-1.js": "var x=1;",
         "https://muse.ai/_next/static/chunks/lazy-2.js": _js_with_action(ACTION_ID),
     })
-    assert muse._resolve_action_id(COOKIE) == ACTION_ID
+    assert muse._resolve_action_id() == ACTION_ID
     urls = [c[0] for c in calls["get"]]
     assert urls == [
         muse.MUSE_PAGE_URL,
@@ -319,7 +302,7 @@ def test_resolve_action_id_dedupes_chunks(monkeypatch):
                                   "https://muse.ai/_next/static/chunks/a.js"),
         "https://muse.ai/_next/static/chunks/a.js": _js_with_action(ACTION_ID),
     })
-    assert muse._resolve_action_id(COOKIE) == ACTION_ID
+    assert muse._resolve_action_id() == ACTION_ID
 
 
 def test_resolve_action_id_not_found(monkeypatch):
@@ -330,7 +313,7 @@ def test_resolve_action_id_not_found(monkeypatch):
         "https://muse.ai/_next/static/chunks/lazy.js": "var y=2;",
     })
     with pytest.raises(ValueError):
-        muse._resolve_action_id(COOKIE)
+        muse._resolve_action_id()
 
 
 def test_resolve_action_id_js_errors_are_skipped(monkeypatch):
@@ -341,17 +324,7 @@ def test_resolve_action_id_js_errors_are_skipped(monkeypatch):
             urllib.error.URLError("dummy network error"),
         "https://muse.ai/_next/static/chunks/good.js": _js_with_action(ACTION_ID),
     })
-    assert muse._resolve_action_id(COOKIE) == ACTION_ID
-
-
-def test_resolve_action_id_page_401_is_cookie_error(monkeypatch):
-    _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _http_error(401),
-    })
-    with pytest.raises(CredentialError) as excinfo:
-        muse._resolve_action_id(COOKIE)
-    assert "Cookie" in str(excinfo.value)
-    assert COOKIE not in str(excinfo.value)
+    assert muse._resolve_action_id() == ACTION_ID
 
 
 def test_resolve_action_id_page_other_error(monkeypatch):
@@ -359,7 +332,7 @@ def test_resolve_action_id_page_other_error(monkeypatch):
         muse.MUSE_PAGE_URL: _http_error(500),
     })
     with pytest.raises(urllib.error.HTTPError):
-        muse._resolve_action_id(COOKIE)
+        muse._resolve_action_id()
 
 
 def test_action_id_cache_round_trip(tmp_path, monkeypatch):
@@ -390,200 +363,7 @@ def test_action_id_cache_ignores_broken_files(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------------ fetch
 
-def test_fetch_resolve_post_and_parse(monkeypatch):
-    _cookie_keychain(monkeypatch)
-    calls = _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js": _js_with_action(ACTION_ID),
-    }, posts=[_rsc(SUBSCRIPTION)])
-
-    usage = muse.fetch(NOW)
-
-    assert usage.provider == "muse"
-    assert usage.name == "Muse ダミープラン"
-    assert usage.error is None
-    assert [w.id for w in usage.windows] == ["muse:weekly"]
-    assert [b.currency for b in usage.balances] == ["TOKENS"]
-    assert usage.fetched_at == NOW
-
-    url, headers, body = calls["post"][0]
-    assert url == "https://muse.ai/"
-    assert headers["Cookie"] == COOKIE
-    assert headers["User-Agent"] == "quota-canvas"
-    assert headers["Next-Action"] == ACTION_ID
-    assert headers["Accept"] == "text/x-component"
-    assert headers["Content-Type"] == "text/plain;charset=UTF-8"
-    assert headers["Origin"] == "https://muse.ai"
-    assert body == '[{"includeAgreement":false}]'
-
-
-def test_fetch_uses_cached_action_id(monkeypatch, tmp_path):
-    _cookie_keychain(monkeypatch)
-    cache = tmp_path / "muse-action.json"
-    cache.write_text(json.dumps({"action_id": ACTION_ID, "verified": True}),
-                     encoding="utf-8")
-    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
-    calls = _install_http(monkeypatch, {}, posts=[_rsc(SUBSCRIPTION)])
-
-    usage = muse.fetch(NOW)
-
-    assert usage.error is None
-    assert calls["get"] == []                    # キャッシュが効くので解決しない
-    assert calls["post"][0][1]["Next-Action"] == ACTION_ID
-
-
-def test_fetch_saves_resolved_action_id(monkeypatch, tmp_path):
-    _cookie_keychain(monkeypatch)
-    cache = tmp_path / "muse-action.json"
-    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
-    _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js": _js_with_action(ACTION_ID),
-    }, posts=[_rsc(SUBSCRIPTION)])
-
-    muse.fetch(NOW)
-    # 解決直後は verified=false、Server Action 成功で verified=true に更新
-    data = json.loads(cache.read_text(encoding="utf-8"))
-    assert data["action_id"] == ACTION_ID
-    assert data["verified"] is True
-    assert isinstance(data["resolved_at"], int)
-
-
-def test_fetch_reresolves_after_verified_cached_id_404(monkeypatch, tmp_path):
-    _cookie_keychain(monkeypatch)
-    cache = tmp_path / "muse-action.json"
-    cache.write_text(json.dumps({"action_id": ACTION_ID, "verified": True}),
-                     encoding="utf-8")
-    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
-    calls = _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js":
-            _js_with_action(RESOLVED_ID),
-    }, posts=[_http_error(404), _rsc(SUBSCRIPTION)])
-
-    usage = muse.fetch(NOW)
-
-    assert usage.error is None
-    assert len(calls["post"]) == 2
-    assert calls["post"][0][1]["Next-Action"] == ACTION_ID
-    assert calls["post"][1][1]["Next-Action"] == RESOLVED_ID
-    assert json.loads(cache.read_text(encoding="utf-8"))["action_id"] \
-        == RESOLVED_ID
-
-
-def test_fetch_unverified_cached_id_404_is_cookie_error(monkeypatch,
-                                                      tmp_path):
-    # verified=false でも解決から 6 時間以内なら再解決せず Cookie 切れ
-    _cookie_keychain(monkeypatch)
-    cache = tmp_path / "muse-action.json"
-    cache.write_text(json.dumps({"action_id": ACTION_ID, "verified": False,
-                                 "resolved_at": int(time.time())}),
-                     encoding="utf-8")
-    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
-    calls = _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js":
-            _js_with_action(RESOLVED_ID),
-    }, posts=[_http_error(404)])
-    with pytest.raises(CredentialError) as excinfo:
-        muse.fetch(NOW)
-    assert "Cookie" in str(excinfo.value)
-    assert calls["get"] == []                    # 再解決しない
-    assert len(calls["post"]) == 1
-
-
-def test_fetch_stale_unverified_cached_id_404_reresolves(monkeypatch,
-                                                         tmp_path):
-    # verified=false でも解決から 6 時間過ぎていれば失敗時に 1 回だけ再解決
-    _cookie_keychain(monkeypatch)
-    cache = tmp_path / "muse-action.json"
-    stale = int(time.time() - muse.RESOLVE_BACKOFF - 1)
-    cache.write_text(json.dumps({"action_id": ACTION_ID, "verified": False,
-                                 "resolved_at": stale}),
-                     encoding="utf-8")
-    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
-    calls = _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js":
-            _js_with_action(RESOLVED_ID),
-    }, posts=[_http_error(404), _rsc(SUBSCRIPTION)])
-    usage = muse.fetch(NOW)
-    assert usage.error is None
-    assert len(calls["post"]) == 2
-    assert calls["post"][0][1]["Next-Action"] == ACTION_ID
-    assert calls["post"][1][1]["Next-Action"] == RESOLVED_ID
-
-
-def test_fetch_cached_id_without_resolved_at_reresolves(monkeypatch,
-                                                        tmp_path):
-    # resolved_at が無い古いキャッシュは期限切れ扱い (失敗で再解決する)
-    _cookie_keychain(monkeypatch)
-    cache = tmp_path / "muse-action.json"
-    cache.write_text(json.dumps({"action_id": ACTION_ID}), encoding="utf-8")
-    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
-    calls = _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js":
-            _js_with_action(RESOLVED_ID),
-    }, posts=[_http_error(404), _rsc(SUBSCRIPTION)])
-    usage = muse.fetch(NOW)
-    assert usage.error is None
-    assert len(calls["post"]) == 2
-    assert calls["post"][1][1]["Next-Action"] == RESOLVED_ID
-
-
-def test_fetch_fresh_id_404_is_cookie_error_without_reresolve(monkeypatch):
-    _cookie_keychain(monkeypatch)
-    calls = _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js":
-            _js_with_action(RESOLVED_ID),
-    }, posts=[_http_error(404)])
-    # 解決したばかりの ID (verified=false) で 404 → 解決し直さず Cookie 切れ
-    with pytest.raises(CredentialError) as excinfo:
-        muse.fetch(NOW)
-    assert "Cookie" in str(excinfo.value)
-    assert len(calls["post"]) == 1
-    assert len(calls["get"]) == 2  # ページ + 1 本の JS のみ (再解決なし)
-
-
-def test_fetch_fresh_id_unexpected_response_is_cookie_error(monkeypatch):
-    _cookie_keychain(monkeypatch)
-    calls = _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js":
-            _js_with_action(RESOLVED_ID),
-    }, posts=['0:{"a":"$@1","q":"","i":false}'])
-    # 解決したばかりの ID (verified=false) で success 行無し → 再解決せず
-    # Cookie 切れ
-    with pytest.raises(CredentialError) as excinfo:
-        muse.fetch(NOW)
-    assert "Cookie" in str(excinfo.value)
-    assert len(calls["post"]) == 1
-    assert len(calls["get"]) == 2  # 再解決なし
-
-
-def test_fetch_cached_id_unexpected_response_reresolve_succeeds(monkeypatch,
-                                                               tmp_path):
-    _cookie_keychain(monkeypatch)
-    cache = tmp_path / "muse-action.json"
-    cache.write_text(json.dumps({"action_id": ACTION_ID, "verified": True}),
-                     encoding="utf-8")
-    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
-    calls = _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js":
-            _js_with_action(RESOLVED_ID),
-    }, posts=['0:{"a":"$@1","q":"","i":false}', _rsc(SUBSCRIPTION)])
-    # verified のキャッシュ ID の応答が想定外 → 解決し直せば成功する
-    usage = muse.fetch(NOW)
-    assert usage.error is None
-    assert len(calls["post"]) == 2
-    assert calls["post"][1][1]["Next-Action"] == RESOLVED_ID
-
-
 def test_resolve_failure_is_cached_and_throttled(monkeypatch, tmp_path):
-    _cookie_keychain(monkeypatch)
     cache = tmp_path / "muse-action.json"
     monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
     calls = _install_http(monkeypatch, {
@@ -591,14 +371,14 @@ def test_resolve_failure_is_cached_and_throttled(monkeypatch, tmp_path):
         "https://muse.ai/_next/static/chunks/main.js": "var x=1;",
     })
     with pytest.raises(ValueError):
-        muse.fetch(NOW)
+        muse.action_id()
     stamp = json.loads(cache.read_text(encoding="utf-8"))["resolve_failed_at"]
     assert isinstance(stamp, int)
 
     # 抑制中は JS を取り直さず短いエラー
     calls["get"].clear()
     with pytest.raises(CredentialError) as excinfo:
-        muse.fetch(NOW)
+        muse.action_id()
     assert str(excinfo.value) == \
         "Muse の取得先を解決できない（数時間後に再試行）"
     assert calls["get"] == []
@@ -607,12 +387,11 @@ def test_resolve_failure_is_cached_and_throttled(monkeypatch, tmp_path):
     monkeypatch.setattr(muse.time, "time",
                         lambda: stamp + muse.RESOLVE_BACKOFF + 1)
     with pytest.raises(ValueError):
-        muse.fetch(NOW)
+        muse.action_id()
     assert len(calls["get"]) == 2
 
 
 def test_resolve_aborts_after_time_budget(monkeypatch):
-    _cookie_keychain(monkeypatch)
     calls = _install_http(monkeypatch, {
         muse.MUSE_PAGE_URL: _html("/_next/static/chunks/a.js",
                                   "/_next/static/chunks/b.js"),
@@ -622,25 +401,23 @@ def test_resolve_aborts_after_time_budget(monkeypatch):
     ticks = itertools.count(0, 1000)  # monotonic が大きく進む → 打ち切り
     monkeypatch.setattr(muse.time, "monotonic", lambda: next(ticks))
     with pytest.raises(ValueError):
-        muse._resolve_action_id(COOKIE)
+        muse._resolve_action_id()
     # 1 本目の JS も取得せず打ち切る
     assert [c[0] for c in calls["get"]] == [muse.MUSE_PAGE_URL]
 
 
 def test_resolve_uses_short_js_timeout(monkeypatch):
-    _cookie_keychain(monkeypatch)
     calls = _install_http(monkeypatch, {
         muse.MUSE_PAGE_URL: _html("/_next/static/chunks/a.js"),
         "https://muse.ai/_next/static/chunks/a.js": _js_with_action(ACTION_ID),
     })
-    assert muse._resolve_action_id(COOKIE) == ACTION_ID
+    assert muse._resolve_action_id() == ACTION_ID
     timeouts = {u: t for u, _h, t in calls["get"]}
     assert timeouts["https://muse.ai/_next/static/chunks/a.js"] \
         == muse.JS_TIMEOUT
 
 
 def test_resolve_js_429_propagates(monkeypatch):
-    _cookie_keychain(monkeypatch)
     calls = _install_http(monkeypatch, {
         muse.MUSE_PAGE_URL: _html("/_next/static/chunks/a.js",
                                   "/_next/static/chunks/b.js"),
@@ -648,7 +425,7 @@ def test_resolve_js_429_propagates(monkeypatch):
         "https://muse.ai/_next/static/chunks/b.js": _js_with_action(ACTION_ID),
     })
     with pytest.raises(urllib.error.HTTPError) as excinfo:
-        muse._resolve_action_id(COOKIE)
+        muse._resolve_action_id()
     assert excinfo.value.code == 429
     # 429 で探索を中断する (b.js には行かない)
     assert not any(c[0].endswith("b.js") for c in calls["get"])
@@ -692,14 +469,6 @@ def test_get_text_aborts_on_deadline(monkeypatch):
         muse._get_text("https://muse.ai/x", {}, deadline=-1.0)
 
 
-def test_post_text_aborts_over_limit(monkeypatch):
-    data = b"x" * (muse.READ_LIMIT + 1)
-    monkeypatch.setattr(muse, "_open",
-                        lambda req, timeout=None: _FakeResponse(data))
-    with pytest.raises(ValueError):
-        muse._post_text("https://muse.ai/", {}, "body")
-
-
 class _Read1Response(_FakeResponse):
     """read1 だけを持つ応答 (read は呼ばれたら失敗)。"""
     def read(self, n=-1):
@@ -738,16 +507,6 @@ def test_read_bounded_checks_deadline_each_chunk(monkeypatch):
         muse._get_text("https://muse.ai/x", {}, deadline=15.0)
 
 
-def test_post_text_has_own_deadline(monkeypatch):
-    clock = [0.0]
-    monkeypatch.setattr(muse.time, "monotonic", lambda: clock[0])
-    response = _TrickleResponse(b"x" * (muse.READ_CHUNK * 3), clock,
-                                muse.POST_DEADLINE + 1)
-    monkeypatch.setattr(muse, "_open", lambda req, timeout=None: response)
-    with pytest.raises(TimeoutError):
-        muse._post_text("https://muse.ai/", {}, "body")
-
-
 def test_read_bounded_sets_socket_timeout(monkeypatch):
     clock = [0.0]
     monkeypatch.setattr(muse.time, "monotonic", lambda: clock[0])
@@ -767,7 +526,6 @@ def test_read_bounded_sets_socket_timeout(monkeypatch):
 def test_resolve_deadline_counts_from_page_fetch(monkeypatch):
     # deadline は HTML 取得の前から数える: ページを読み終えた時点で
     # 予算超過なら JS は 1 本も取らない
-    _cookie_keychain(monkeypatch)
     calls = _install_http(monkeypatch, {
         muse.MUSE_PAGE_URL: _html("/_next/static/chunks/a.js"),
         "https://muse.ai/_next/static/chunks/a.js": _js_with_action(ACTION_ID),
@@ -783,86 +541,11 @@ def test_resolve_deadline_counts_from_page_fetch(monkeypatch):
 
     monkeypatch.setattr(muse, "_get_text", slow_get)
     with pytest.raises(ValueError):
-        muse._resolve_action_id(COOKIE)
+        muse._resolve_action_id()
     assert [c[0] for c in calls["get"]] == [muse.MUSE_PAGE_URL]
 
 
-@pytest.mark.parametrize("code", [401, 403])
-def test_fetch_cookie_expired_http_error(monkeypatch, code):
-    _cookie_keychain(monkeypatch)
-    calls = _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js": _js_with_action(ACTION_ID),
-    }, posts=[_http_error(code)])
-    with pytest.raises(CredentialError) as excinfo:
-        muse.fetch(NOW)
-    assert str(excinfo.value) == \
-        "Cookie の期限切れ（set-key muse で入れ直してください）"
-    assert COOKIE not in str(excinfo.value)
-    assert len(calls["post"]) == 1               # 認証失敗では再試行しない
-
-
-def test_fetch_other_http_error_propagates(monkeypatch):
-    _cookie_keychain(monkeypatch)
-    _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js": _js_with_action(ACTION_ID),
-    }, posts=[_http_error(500)])
-    with pytest.raises(urllib.error.HTTPError) as excinfo:
-        muse.fetch(NOW)
-    assert excinfo.value.code == 500
-
-
-def test_fetch_action_id_not_found_is_error(monkeypatch):
-    _cookie_keychain(monkeypatch)
-    _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js": "var x=1;",
-    })
-    with pytest.raises(ValueError):
-        muse.fetch(NOW)
-
-
-def test_fetch_without_cookie_is_credential_error(monkeypatch):
-    monkeypatch.setattr(muse.keychain, "read", lambda account: None)
-    monkeypatch.delenv("MUSE_COOKIE", raising=False)
-    with pytest.raises(CredentialError):
-        muse.fetch(NOW)
-
-
 # ------------------------------------------------------------- detection
-
-def test_detect_uses_keychain_without_network(monkeypatch):
-    _cookie_keychain(monkeypatch)
-
-    def no_network(*args, **kwargs):
-        raise AssertionError("detect must not make a request")
-
-    monkeypatch.setattr(muse, "_get_text", no_network)
-    monkeypatch.setattr(muse, "_post_text", no_network)
-    detection = muse.detect()
-    assert detection.detected is True
-    assert "Muse" in detection.source
-    assert "キーチェーン" in detection.source
-    assert detection.error is None
-
-
-def test_detect_reports_missing_cookie_without_network(monkeypatch):
-    monkeypatch.setattr(muse.keychain, "read", lambda account: None)
-    monkeypatch.delenv("MUSE_COOKIE", raising=False)
-    detection = muse.detect()
-    assert detection.detected is False
-    assert detection.source is None
-    assert detection.error == "API キーが未設定"
-
-
-def test_detect_env_variable(monkeypatch):
-    monkeypatch.setattr(muse.keychain, "read", lambda account: None)
-    monkeypatch.setenv("MUSE_COOKIE", COOKIE)
-    detection = muse.detect()
-    assert detection.detected is True
-    assert "MUSE_COOKIE" in detection.source
-
 
 # ---------------------------------------------------------------- provider
 
@@ -870,49 +553,259 @@ def test_provider_metadata():
     assert muse.PROVIDER.id == "muse"
     assert muse.PROVIDER.name == "Muse"
     assert muse.PROVIDER.display_name == "Muse (Meta)"
-    assert muse.PROVIDER.needs_key is True
+    assert muse.PROVIDER.needs_key is False
     assert providers.REGISTRY["muse"] is muse.PROVIDER
 
 
-def test_verify_key_ignores_resolve_backoff(monkeypatch, tmp_path):
-    """未ログインでの解決失敗の 6 時間抑制を verify-key (ignore_backoff) は無視する。
 
-    通常取得の解決失敗が resolve_failed_at に記録されても、
-    fetch_with_cookie(..., ignore_backoff=True) は即時に解決して成功する。"""
-    _cookie_keychain(monkeypatch)
+# ---------------------------------------------------------------- ingest
+
+def _parsed_file_payload():
+    return {"fetched_at": int(NOW.timestamp()), "status": 200,
+            "result": {"used_percent": 42.0, "resets_at": RESETS_AT,
+                       "tier": "ダミープラン", "topup_left_percent": 30.0}}
+
+
+def test_ingest_200_writes_parsed_result(monkeypatch, tmp_path):
     cache = tmp_path / "muse-action.json"
     monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
-    # 未ログイン Cookie: ページは取れるが Action ID は見つからない
-    _install_http(monkeypatch, {muse.MUSE_PAGE_URL: _html()})
-    with pytest.raises(ValueError):
-        muse.fetch(NOW)
-    assert "resolve_failed_at" in muse._read_action_cache()
-    # 抑制中は通常取得は短いエラー (再解決しない)
-    with pytest.raises(CredentialError):
-        muse.fetch(NOW)
-    # verify-key 相当の取得は抑制を無視して即時に解決・成功する
-    calls = _install_http(monkeypatch, {
-        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
-        "https://muse.ai/_next/static/chunks/main.js": _js_with_action(ACTION_ID),
-    }, posts=[_rsc(SUBSCRIPTION)])
-    usage = muse.fetch_with_cookie("a=b", NOW, ignore_backoff=True)
+    path = _usage_file_patch(monkeypatch, tmp_path)
+    kind = muse.ingest_usage(200, _rsc(SUBSCRIPTION), now=NOW)
+    assert kind == "parsed"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["status"] == 200
+    assert data["fetched_at"] == int(NOW.timestamp())
+    assert data["result"]["used_percent"] == pytest.approx(42.0)
+    assert data["result"]["tier"] == "ダミープラン"
+    # 本文・Cookie は保存しない
+    assert "subscription" not in path.read_text(encoding="utf-8")
+
+
+def test_ingest_200_marks_action_verified(monkeypatch, tmp_path):
+    cache = tmp_path / "muse-action.json"
+    cache.write_text(json.dumps({"action_id": ACTION_ID, "verified": False}),
+                     encoding="utf-8")
+    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
+    _usage_file_patch(monkeypatch, tmp_path)
+    muse.ingest_usage(200, _rsc(SUBSCRIPTION), now=NOW)
+    assert json.loads(cache.read_text(encoding="utf-8"))["verified"] is True
+
+
+@pytest.mark.parametrize("code", [401, 403])
+def test_ingest_auth_error_is_logged_out(monkeypatch, tmp_path, code):
+    path = _usage_file_patch(monkeypatch, tmp_path)
+    kind = muse.ingest_usage(code, '{"error":"Authentication required"}', now=NOW)
+    assert kind == "logged_out"
+    assert json.loads(path.read_text(encoding="utf-8"))["result"] == "logged_out"
+
+
+def test_ingest_broken_body_is_error(monkeypatch, tmp_path):
+    path = _usage_file_patch(monkeypatch, tmp_path)
+    kind = muse.ingest_usage(200, "not rsc", now=NOW)
+    assert kind == "error"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["result"] == "error"
+    assert data["detail"]
+
+
+def test_ingest_other_status_is_error(monkeypatch, tmp_path):
+    path = _usage_file_patch(monkeypatch, tmp_path)
+    kind = muse.ingest_usage(500, "boom", now=NOW)
+    assert kind == "error"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["result"] == "error"
+    assert "500" in data["detail"]
+
+
+def test_clear_usage_file(monkeypatch, tmp_path):
+    path = _usage_file_patch(monkeypatch, tmp_path)
+    path.write_text("{}", encoding="utf-8")
+    muse.clear_usage_file()
+    assert not path.exists()
+    muse.clear_usage_file()  # 無くても失敗しない
+
+
+# ------------------------------------------------------------------ fetch
+
+def test_fetch_reads_usage_file(monkeypatch, tmp_path):
+    path = _usage_file_patch(monkeypatch, tmp_path)
+    path.write_text(json.dumps(_parsed_file_payload()), encoding="utf-8")
+    usage = muse.fetch(NOW)
+    assert usage.provider == "muse"
     assert usage.name == "Muse ダミープラン"
-    assert calls["post"][0][1]["Next-Action"] == ACTION_ID
-    # 解決できた ID は通常どおりキャッシュする
-    assert json.loads(cache.read_text(encoding="utf-8"))["action_id"] == ACTION_ID
+    assert usage.error is None
+    assert [w.id for w in usage.windows] == ["muse:weekly"]
+    assert usage.windows[0].used_percent == pytest.approx(42.0)
+    assert usage.windows[0].resets_at == datetime.fromtimestamp(RESETS_AT,
+                                                              tz=UTC)
+    assert [b.currency for b in usage.balances] == ["TOKENS"]
+    assert usage.balances[0].amount == pytest.approx(30.0)
 
 
-def test_verify_key_resolve_failure_is_not_cached(monkeypatch, tmp_path):
-    """verify-key (ignore_backoff) の解決失敗は resolve_failed_at を書かない
-    (常駐の取得を 6 時間抑制で巻き込まない)。"""
-    _cookie_keychain(monkeypatch)
+def test_fetch_missing_file_is_login_required(monkeypatch, tmp_path):
+    _usage_file_patch(monkeypatch, tmp_path)  # ファイルを作らない
+    with pytest.raises(CredentialError) as excinfo:
+        muse.fetch(NOW)
+    assert "muse.ai にログイン" in str(excinfo.value)
+
+
+def test_fetch_logged_out(monkeypatch, tmp_path):
+    path = _usage_file_patch(monkeypatch, tmp_path)
+    payload = {"fetched_at": int(NOW.timestamp()), "status": 401,
+               "result": "logged_out"}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(CredentialError) as excinfo:
+        muse.fetch(NOW)
+    assert "ログインが切れました" in str(excinfo.value)
+
+
+def test_fetch_stale_file_is_app_stale(monkeypatch, tmp_path):
+    path = _usage_file_patch(monkeypatch, tmp_path)
+    payload = _parsed_file_payload()
+    payload["fetched_at"] = int(NOW.timestamp() - muse.USAGE_MAX_AGE - 1)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(CredentialError) as excinfo:
+        muse.fetch(NOW)
+    assert "更新していません" in str(excinfo.value)
+
+
+def test_fetch_error_result_is_ingest_error(monkeypatch, tmp_path):
+    path = _usage_file_patch(monkeypatch, tmp_path)
+    payload = {"fetched_at": int(NOW.timestamp()), "status": 200,
+               "result": "error", "detail": "no quota"}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(CredentialError) as excinfo:
+        muse.fetch(NOW)
+    assert "no quota" in str(excinfo.value)
+
+
+# ------------------------------------------------------------- detection
+
+def test_detect_reports_usage_file_without_network(monkeypatch, tmp_path):
+    path = _usage_file_patch(monkeypatch, tmp_path)
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("detect must not make a request")
+
+    monkeypatch.setattr(muse, "_get_text", no_network)
+    path.write_text(json.dumps(_parsed_file_payload()), encoding="utf-8")
+    detection = muse.detect()
+    assert detection.detected is True
+    assert "アプリ" in detection.source
+    assert detection.error is None
+
+
+def test_detect_reports_missing_usage_file(monkeypatch, tmp_path):
+    _usage_file_patch(monkeypatch, tmp_path)  # ファイルを作らない
+    detection = muse.detect()
+    assert detection.detected is False
+    assert detection.source is None
+    assert "muse.ai にログイン" in detection.error
+
+
+# ------------------------------------------------------------ action id
+
+def test_action_id_uses_cache(monkeypatch, tmp_path):
     cache = tmp_path / "muse-action.json"
+    cache.write_text(json.dumps({"action_id": ACTION_ID, "verified": True}),
+                     encoding="utf-8")
     monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("cached id must not fetch")
+
+    monkeypatch.setattr(muse, "_get_text", no_network)
+    assert muse.action_id() == ACTION_ID
+
+
+def test_action_id_refresh_reresolves(monkeypatch, tmp_path):
+    cache = tmp_path / "muse-action.json"
+    cache.write_text(json.dumps({"action_id": ACTION_ID, "verified": True}),
+                     encoding="utf-8")
+    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
+    _install_http(monkeypatch, {
+        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
+        "https://muse.ai/_next/static/chunks/main.js":
+            _js_with_action(RESOLVED_ID),
+    })
+    assert muse.action_id(refresh=True) == RESOLVED_ID
+    # 解決し直した ID は verified=false でキャッシュする
+    data = json.loads(cache.read_text(encoding="utf-8"))
+    assert data["action_id"] == RESOLVED_ID
+    assert data["verified"] is False
+
+
+def test_action_id_failure_raises(monkeypatch, tmp_path):
+    monkeypatch.setattr(muse, "_action_cache_file",
+                        lambda: tmp_path / "muse-action.json")
     _install_http(monkeypatch, {muse.MUSE_PAGE_URL: _html()})
     with pytest.raises(ValueError):
-        muse.fetch_with_cookie("bad=cookie", NOW, ignore_backoff=True)
-    assert "resolve_failed_at" not in muse._read_action_cache()
-    # 直後の通常取得は抑制されず解決を試みる (失敗すれば通常どおり記録される)
+        muse.action_id()
+
+
+# -------------------------------------------------------- chunks resolve
+
+def test_action_id_resolves_from_given_chunks(monkeypatch, tmp_path):
+    monkeypatch.setattr(muse, "_action_cache_file",
+                        lambda: tmp_path / "muse-action.json")
+    calls = _install_http(monkeypatch, {
+        "https://muse.ai/_next/static/chunks/app.js":
+            'e("static/chunks/lazy.js")',
+        "https://muse.ai/_next/static/chunks/lazy.js": _js_with_action(ACTION_ID),
+    })
+    # HTML は取らず、渡した chunk と遅延 chunk だけを取得する
+    assert muse.action_id(chunks=["/_next/static/chunks/app.js"]) == ACTION_ID
+    assert [c[0] for c in calls["get"]] == [
+        "https://muse.ai/_next/static/chunks/app.js",
+        "https://muse.ai/_next/static/chunks/lazy.js",
+    ]
+
+
+def test_action_id_chunks_filters_bad_paths(monkeypatch, tmp_path):
+    monkeypatch.setattr(muse, "_action_cache_file",
+                        lambda: tmp_path / "muse-action.json")
+    calls = _install_http(monkeypatch, {
+        "https://muse.ai/_next/static/chunks/app.js": _js_with_action(ACTION_ID),
+    })
+    chunks = ["https://evil.example/x.js", "/other/x.js", "",
+              "/_next/static/chunks/app.js"]
+    assert muse.action_id(chunks=chunks) == ACTION_ID
+    assert [c[0] for c in calls["get"]] == \
+        ["https://muse.ai/_next/static/chunks/app.js"]
+
+
+def test_action_id_chunks_ignores_backoff(monkeypatch, tmp_path):
+    cache = tmp_path / "muse-action.json"
+    # 直前の解決失敗で抑制中でも、明示的な chunks 解決は実行される
+    cache.write_text(json.dumps({"resolve_failed_at": int(time.time())}),
+                     encoding="utf-8")
+    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
+    _install_http(monkeypatch, {
+        "https://muse.ai/_next/static/chunks/app.js": _js_with_action(ACTION_ID),
+    })
+    assert muse.action_id(chunks=["/_next/static/chunks/app.js"]) == ACTION_ID
+
+
+def test_action_id_chunks_failure_is_not_recorded(monkeypatch, tmp_path):
+    cache = tmp_path / "muse-action.json"
+    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
+    _install_http(monkeypatch, {
+        "https://muse.ai/_next/static/chunks/app.js": "var x=1;",
+    })
     with pytest.raises(ValueError):
-        muse.fetch(NOW)
-    assert "resolve_failed_at" in muse._read_action_cache()
+        muse.action_id(chunks=["/_next/static/chunks/app.js"])
+    assert not cache.exists()  # 明示的な解決の失敗は記録しない
+
+
+def test_action_id_chunks_empty_is_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(muse, "_action_cache_file",
+                        lambda: tmp_path / "muse-action.json")
+    with pytest.raises(ValueError):
+        muse.action_id(chunks=["https://evil.example/x.js"])
+
+
+def test_clear_usage_file_propagates_delete_errors(monkeypatch, tmp_path):
+    path = _usage_file_patch(monkeypatch, tmp_path)
+    path.mkdir()  # ディレクトリ → unlink は IsADirectoryError (OSError)
+    with pytest.raises(OSError):
+        muse.clear_usage_file()

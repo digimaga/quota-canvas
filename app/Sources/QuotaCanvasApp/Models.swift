@@ -309,14 +309,17 @@ struct StatusWindow: Decodable, Identifiable {
     var id: String?
     var provider: String?
     var partOf: String?
+    /// 窓の長さ（秒）。主枠候補の順位（render.py の _main_rank と同じ「一番長い窓」）に使う。
+    var length: Double?
 
-    enum CodingKeys: String, CodingKey { case id, provider; case partOf = "part_of" }
+    enum CodingKeys: String, CodingKey { case id, provider; case partOf = "part_of"; case length }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try? c.decodeIfPresent(String.self, forKey: .id)
         provider = try? c.decodeIfPresent(String.self, forKey: .provider)
         partOf = try? c.decodeIfPresent(String.self, forKey: .partOf)
+        length = try? c.decodeIfPresent(Double.self, forKey: .length)
     }
 }
 
@@ -454,6 +457,8 @@ extension Notification.Name {
     static let engineArtifactsChanged = Notification.Name("quota-canvas.engineArtifactsChanged")
     /// Muse ログインウィンドウで Cookie を保存したあとのサービス再検出依頼。
     static let museKeySaved = Notification.Name("quota-canvas.museKeySaved")
+    /// MuseUsagePoller が muse-usage.json を書き換えたあとのサービス再検出依頼。
+    static let museUsageUpdated = Notification.Name("quota-canvas.museUsageUpdated")
 }
 
 /// status 値 → 色（over/exhausted=赤, tight/on_track=紫, spare/fresh=緑, unknown=灰）。
