@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -93,21 +94,36 @@ def test_success_saved_and_used_after_restart(tmp_path, monkeypatch):
     assert result[0].stale_error == "HTTP 500"      # 失敗中であることは stale_error で
 
 
-def test_old_last_good_is_still_used_during_failures(tmp_path, monkeypatch):
-    # 経過時間に関係なく (1 時間以上前でも) 失敗中は last_good を表示し続ける
+@pytest.mark.parametrize("enabled", [{"claude", "codex"}, {"claude"}],
+                         ids=["default", "claude-only"])
+def test_old_last_good_is_still_used_during_failures(tmp_path, monkeypatch, enabled):
+    # 経過時間に関係なく (1 時間以上前でも) 失敗中は last_good を表示し続ける。
+    # enabled は既定 (claude+codex) と絞り込み (claude のみ) の両経路で確かめる。
     old = _usage("claude", [_win("claude", "weekly")],
                  fetched_at=NOW - timedelta(hours=5))
     LastGood(tmp_path / LAST_GOOD).set(old)
+    on_disk_before = (tmp_path / LAST_GOOD).read_bytes()
     FakeFetch(monkeypatch, lambda pid, now: _usage(pid, error="HTTP 500", fetched_at=now))
-    poller = _poller(tmp_path)
+    poller = _poller(tmp_path, enabled=enabled)
     result = poller.fetch(NOW)
-    assert result[0].error is None                  # last_good を返す
-    assert result[0].windows == old.windows
-    assert result[0].stale_error == "HTTP 500"
-    assert result[0].fetched_at == old.fetched_at   # 取得時刻は前回成功時のまま
+    assert [u.provider for u in result] == [p for p in providers.REGISTRY
+                                            if p in enabled]   # 全件返す (順序も)
+    shown = next(u for u in result if u.provider == "claude")
+    assert shown.error is None                  # last_good を返す
+    assert shown.windows == old.windows
+    assert shown.stale_error == "HTTP 500"
+    assert shown.fetched_at == old.fetched_at   # 取得時刻は前回成功時のまま
+    assert shown is not poller.last_good["claude"]   # 表示用は本体のコピー
     assert poller.last_good["claude"].stale_error is None   # 本体は汚さない
-    on_disk = json.loads((tmp_path / LAST_GOOD).read_text(encoding="utf-8"))
-    assert "stale_error" not in on_disk["claude"]   # last-good.json にも書かない
+    # 失敗中は last-good.json も history も更新しない (stale_error を書かない)
+    assert (tmp_path / LAST_GOOD).read_bytes() == on_disk_before
+    on_disk = json.loads(on_disk_before)
+    assert "stale_error" not in on_disk["claude"]   # キーとしても存在しない
+    assert not (tmp_path / "history.jsonl").exists()
+    if "codex" in enabled:
+        codex_usage = next(u for u in result if u.provider == "codex")
+        assert codex_usage.error == "HTTP 500"  # last_good 無しは従来どおりエラーのまま
+        assert codex_usage.stale_error is None
 
 
 def test_missing_last_good_file_returns_empty(tmp_path):
@@ -410,10 +426,47 @@ def test_last_good_past_reset_is_rolled_over(tmp_path, monkeypatch):
 
 
 def test_future_reset_window_is_unchanged(tmp_path, monkeypatch):
-    FakeFetch(monkeypatch, _other)
+    # リセット時刻が未来・不明の窓は繰り越さない (条件を逆にして未過ぎの窓まで
+    # 0% にする過剰適用を used_percent の実値で検出する)。内訳窓 (part_of) や
+    # リセット権もそのまま。no-op なら同一オブジェクトのまま。
+    future = Window("claude", "weekly", "weekly", 10.0,
+                    NOW + timedelta(days=1), timedelta(days=7))
+    build = Window("claude", "weekly_build", "週間 Build", 20.0,
+                   future.resets_at, timedelta(days=7), part_of="weekly")
+    unknown = Window("claude", "5h", "5h", 30.0, None, timedelta(hours=5))
+    credit = ResetCredit("週リセット", NOW - timedelta(days=1), NOW + timedelta(days=6))
+    # 期待値は fetch 前に値のコピーとして確保する (処理後に窓やリセット権の
+    # フィールドを直接書き換える退行でも期待値が一緒に変わらないように)
+    expected_windows = [replace(w) for w in (future, build, unknown)]
+    expected_credit = replace(credit)
+    built = {}
+
+    def behavior(pid, now):
+        usage = (replace(_usage("claude", [future, build, unknown], fetched_at=now),
+                         reset_credits=[credit])
+                 if pid == "claude" else _other(pid, now))
+        built[pid] = usage
+        return usage
+
+    FakeFetch(monkeypatch, behavior)
     poller = _poller(tmp_path)
-    for u in poller.fetch(NOW):
-        assert u.windows[0].used_percent == 10.0
+    result = poller.fetch(NOW)
+    # fetch が [] を返しても通らないよう、件数と provider 集合 (REGISTRY 順) を見る
+    assert [u.provider for u in result] == [p for p in providers.REGISTRY
+                                            if p in {"claude", "codex"}]
+    claude = result[0]
+    assert claude is built["claude"]                # roll 不要なら同一オブジェクト
+    assert claude.windows == expected_windows       # 全フィールドが期待値のコピーと一致
+    assert [w.used_percent for w in claude.windows] == [10.0, 20.0, 30.0]
+    assert [w.resets_at for w in claude.windows] == [NOW + timedelta(days=1),
+                                                     NOW + timedelta(days=1), None]
+    assert [w.part_of for w in claude.windows] == [None, "weekly", None]  # 内訳は保持
+    assert all(not w.reset_estimated for w in claude.windows)
+    assert claude.reset_credits == [expected_credit]   # リセット権への影響もなし
+    codex = result[1]
+    assert codex.windows[0].used_percent == 10.0
+    assert codex.windows[0].resets_at == NOW + timedelta(days=1)
+    assert not codex.windows[0].reset_estimated
 
 
 def test_zero_length_window_past_reset_is_reset_with_unknown_next():

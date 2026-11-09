@@ -1,6 +1,7 @@
 """High-resolution desktop rendering and its file contract."""
 
 import json
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -101,14 +102,20 @@ def test_write_replace_and_remove(tmp_path):
     destination = tmp_path / "desktop.png"
     request.write_text('{"pixel_width": 5000}')
     calls = []
+    produced = []
     def draw(scale):
         calls.append(scale)
-        return Image.new("RGB", (round(CANVAS_W * scale), round(CANVAS_H * scale)), "red")
+        image = Image.new("RGB", (round(CANVAS_W * scale), round(CANVAS_H * scale)), "red")
+        produced.append(image)
+        return image
     desktop_frame.update(draw, tmp_path)
     assert calls == [2.0]
     with Image.open(destination) as image:
         assert image.size == (3840, 924)
-    assert not (tmp_path / "desktop.png.tmp").exists()
+        # 書かれたのは draw が返した 2 倍スケールのフレームそのもの
+        assert ImageChops.difference(image.convert("RGB"), produced[0]).getbbox() is None
+    # 一時ファイルは実名 (.desktop.png.<hex>.tmp) で glob して残骸を見ない
+    assert list(tmp_path.glob(".*.tmp")) == []
     request.write_text('{"pixel_width": 1920}')
     desktop_frame.update(draw, tmp_path)
     assert not destination.exists()
@@ -117,22 +124,31 @@ def test_write_replace_and_remove(tmp_path):
     request.unlink()
     desktop_frame.update(draw, tmp_path)
     assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []   # 要求もフレームも一時ファイルも残らない
 
 
 def test_failed_write_keeps_previous_frame_and_removes_temporary_file(tmp_path):
     (tmp_path / "desktop-request.json").write_text('{"pixel_width": 2400}')
     destination = tmp_path / "desktop.png"
     destination.write_bytes(b"previous frame")
+    temps_during_save = []
 
     class BrokenImage:
         def save(self, handle, format):
+            # save の時点で実一時ファイル (.desktop.png.<hex>.tmp) が有ることを記録
+            temps_during_save.append(sorted(p.name for p in tmp_path.glob(".*.tmp")))
             handle.write(b"partial frame")
             raise OSError("write failed")
 
     with pytest.raises(OSError, match="write failed"):
         desktop_frame.update(lambda scale: BrokenImage(), tmp_path)
     assert destination.read_bytes() == b"previous frame"
-    assert not (tmp_path / "desktop.png.tmp").exists()
+    # 失敗後はその一時ファイルが掃除されている (ディレクトリ一覧で確認)
+    assert len(temps_during_save) == 1
+    assert temps_during_save[0] and all(
+        name.startswith(".desktop.png.") and name.endswith(".tmp")
+        for name in temps_during_save[0])
+    assert list(tmp_path.glob(".*.tmp")) == []
 
 
 def test_app_write_rerenders_with_same_arguments(tmp_path, monkeypatch):
@@ -157,10 +173,21 @@ desktop_update = desktop_frame.update
 
 
 def test_render_failure_does_not_stop_app_write(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(cli, "write_status", lambda payload: None)
-    monkeypatch.setattr(cli, "write_frame", lambda image: None)
+    written = []
+    monkeypatch.setattr(cli, "write_status",
+                        lambda payload: written.append(("status", payload)))
+    monkeypatch.setattr(cli, "write_frame",
+                        lambda image: written.append(("frame", image)))
     def fail(draw):
         raise OSError("desktop test failure")
     monkeypatch.setattr(cli.desktop_frame, "update", fail)
-    cli._write_app_files(Config(), [], [], NOW, Image.new("RGB", (1, 1)))
-    assert "desktop test failure" in caplog.text
+    frame = Image.new("RGB", (1, 1))
+    with caplog.at_level(logging.WARNING, logger="quotacanvas"):
+        cli._write_app_files(Config(), [], [], NOW, frame)
+    # desktop.png の更新が失敗しても status.json / frame.png の書込みは行われる
+    assert [kind for kind, _ in written] == ["status", "frame"]
+    assert written[0][1]["updated_at"] == NOW.astimezone().isoformat(timespec="seconds")
+    assert written[1][1] is frame
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING
+                and "desktop test failure" in r.getMessage()]
+    assert len(warnings) == 1

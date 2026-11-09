@@ -9,14 +9,18 @@ shutil.which をすべてモックし、実際の claude / security / ネット�
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import stat
 import subprocess
+import sys
+import textwrap
 import threading
 import types
 import urllib.error
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +31,33 @@ NOW = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
 
 USAGE_PAYLOAD = {"five_hour": {"utilization": 10.0,
                                "resets_at": "2026-10-25T20:00:00+00:00"}}
+
+# import 時の atexit.register を確認する隔離 subprocess 用スクリプト:
+# atexit.register を spy に差し替えてからモジュールを import し、登録された
+# 関数の一覧と「_kill_running_child そのものが登録されたか」を JSON で出力する。
+# (in-process の importlib.reload は他テストと共有するモジュール状態を汚すので使わない)
+_ATEXIT_SPY = textwrap.dedent("""
+    import atexit, json, sys
+    registered = []
+    real_register = atexit.register
+    def spy(func=None, *args, **kwargs):
+        registered.append(func)
+        return func
+    atexit.register = spy
+    try:
+        mod = __import__(sys.argv[1], fromlist=["*"])
+    finally:
+        atexit.register = real_register
+    print(json.dumps({
+        "registered": [str(getattr(f, "__module__", None)) + ":"
+                       + str(getattr(f, "__qualname__", repr(f)))
+                       for f in registered],
+        "target_index": [i for i, f in enumerate(registered)
+                         if f is getattr(mod, "_kill_running_child", None)],
+    }))
+""")
+
+_SRC_ROOT = Path(claude.__file__).resolve().parents[2]
 
 # autouse fixture が差し替える前の本物の実装 (単フライトのテストで使う)
 REAL_SPAWN = claude._spawn_refresh_thread
@@ -520,6 +551,19 @@ def test_unset_mode_waits_for_run(monkeypatch, clock, sync_refresh):
 
 
 # --------------------------------------------- 子プロセスの後始末 (atexit / off)
+
+def test_atexit_register_is_executed_on_import():
+    """import 時の `atexit.register(_kill_running_child)` を隔離 subprocess で
+    確かめる (register 行が消えたら赤くなる)。"""
+    name = "quotacanvas.providers.claude"
+    proc = subprocess.run([sys.executable, "-c", _ATEXIT_SPY, name],
+                          capture_output=True, text=True,
+                          env=dict(os.environ, PYTHONPATH=str(_SRC_ROOT)), timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads(proc.stdout.splitlines()[-1])
+    assert name + ":_kill_running_child" in report["registered"]  # 登録されている
+    assert report["target_index"]     # 登録されたのは本体の _kill_running_child そのもの
+
 
 def test_kill_running_child_via_atexit_handler(monkeypatch, clock):
     """atexit で登録したのと同じ _kill_running_child が、生きた子を killpg する。"""
