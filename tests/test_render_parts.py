@@ -371,3 +371,19 @@ def test_render_without_percent_colors_differs_only_when_colored():
     colored = render(_claude_cards(), NOW, layout=layout)
     plain = render(_claude_cards(), NOW, layout=layout, percent_colors=False)
     assert colored.tobytes() != plain.tobytes()
+
+    # 逆: 色付き対象 (OVER / EXHAUSTED / SPARE) がないカードでは
+    # トグルしても 1 ピクセルも変わらない (無関係な描画まで変えない契約)
+    win = Window("claude", "weekly", "週間", 10.0,
+                 NOW + timedelta(days=5), timedelta(days=7))
+    pace = Pace(window=win, status=PaceStatus.TIGHT, elapsed_fraction=2.0 / 7.0,
+                ideal_used_percent=200.0 / 7.0, rate_per_day=10.0,
+                projected_end_percent=70.0, exhausts_at=None,
+                sustainable_per_day=10.0, adjust_percent=0.0,
+                daily_used=[10.0, 10.0])
+    cards = [(ProviderUsage("claude", "Claude Max", [win]), pace)]
+    layout = [PanelSpec("claude:weekly"),
+              PanelSpec("claude:weekly", size="small")]
+    on = render(cards, NOW, layout=layout)
+    off = render(cards, NOW, layout=layout, percent_colors=False)
+    assert on.tobytes() == off.tobytes()

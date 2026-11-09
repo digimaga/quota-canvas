@@ -88,16 +88,37 @@ def _exhausted_pace(win):
                 sustainable_per_day=1.0, adjust_percent=None)
 
 
-def test_exhausted_mark_draws_on_narrow_fill():
+def test_exhausted_mark_draws_on_narrow_fill(monkeypatch):
     """残り 1% (塗り幅 4px 弱) でも en の "Exhausted" が例外なく描ける。"""
+    from quotacanvas import render as render_mod
+
     img = Image.new("RGB", (400, 100), "black")
     s = _S(img, (0, 0))
     win = Window("grok", "weekly", "Weekly", 99.0, NOW + timedelta(days=7),
                  timedelta(days=7))
+    box = (10.0, 40.0, 400.0, 80.0)
+
+    calls = []
+    orig = render_mod._S.text
+
+    def spy(self, xy, text, **kw):
+        calls.append((tuple(xy), text, kw.get("anchor")))
+        return orig(self, xy, text, **kw)
+
+    monkeypatch.setattr(render_mod._S, "text", spy)
     i18n.set_language("en")
-    caption = _draw_gauge(s, (10.0, 40.0, 400.0, 80.0), win, _exhausted_pace(win),
+    # 現行実装は狭い塗りに合わせて縮小 → 省略した文字列を左端に描く。
+    # 全文一致ではなく、_fit_text の結果そのものが描かれたことを確認する。
+    fill_w = (box[2] - box[0]) * (win.remaining_percent / 100.0)
+    _font, expected = render_mod._fit_text(
+        s, i18n.t("render.gauge.exhausted"), "w7", 13,
+        max(fill_w - 4, 12), min_size=9)
+    caption = _draw_gauge(s, box, win, _exhausted_pace(win),
                           (200, 60, 60), (255, 80, 80), "remaining")
     assert caption
+    assert any(xy == (box[0] + 2, box[1] - 5) and text == expected
+               and anchor == "ls" for xy, text, anchor in calls), calls
+
     i18n.set_language("ja")
-    assert _draw_gauge(s, (10.0, 40.0, 400.0, 80.0), win, _exhausted_pace(win),
+    assert _draw_gauge(s, box, win, _exhausted_pace(win),
                        (200, 60, 60), (255, 80, 80), "remaining")

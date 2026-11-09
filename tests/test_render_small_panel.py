@@ -138,5 +138,10 @@ def test_small_panel_too_short_box_draws_no_reset_row(text_calls):
     _draw_small_panel(s, box, "Codex Pro", (pu, pace), NOW.astimezone(),
                       "remaining", (200, 60, 30))
 
+    # box 内だけでなく、この描画で出した全 text 呼び出しを確認する:
+    # 描画ガードを外すと band_top (box 下端の外) に reset 行が出るため、
+    # box 内だけの確認では退行を検出できない。
+    assert not [text for _d, _xy, text, _f, _a in text_calls
+                if text.startswith("リセット")]
     rows = _panel_rows(text_calls, box)
     assert not [x for _t, _b, x in rows if x.startswith("リセット")]

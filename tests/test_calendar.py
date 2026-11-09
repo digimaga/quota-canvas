@@ -15,7 +15,8 @@ import pytest
 from quotacanvas.config import load_config
 from quotacanvas.models import PaceStatus, ProviderUsage, Window
 from quotacanvas.pacing import compute_pace
-from quotacanvas.render import (CALENDAR_MAIN, CANVAS_H, CANVAS_W, PanelSpec,
+from quotacanvas.render import (AREA_BOTTOM, AREA_TOP, CALENDAR_MAIN,
+                                CANVAS_H, CANVAS_W, GAP, MARGIN, PanelSpec,
                                 calendar_marks, month_weeks, render,
                                 weekday_column, weekday_columns)
 
@@ -113,7 +114,7 @@ def test_month_weeks_31_day_month_spans_6_rows():
     weeks = month_weeks(2026, 8, "sunday")
     n_days = sum(1 for w in weeks for d in w if d)
     assert n_days == 31
-    assert 4 <= len(weeks) <= 6
+    assert len(weeks) == 6
     # 日付は 1..月末日が一度ずつ
     flat = sorted(d.day for w in weeks for d in w if d)
     assert flat == list(range(1, 32))
@@ -318,11 +319,15 @@ def test_config_accepts_calendar_panel_small(tmp_path):
     p = _write_cfg(tmp_path,
                   '[[layout.panels]]\nmain = "calendar"\nsize = "small"\n')
     cfg = load_config(p)
+    assert cfg.layout.panels[0].main == CALENDAR_MAIN
     assert cfg.layout.panels[0].size == "small"
 
 
 def test_config_calendar_panel_ignores_subs(tmp_path):
-    # subs を書いてもエラーにしない (local:<名前> パネルと同じ扱い)
+    # subs を書いてもエラーにしない (local:<名前> パネルと同じ扱い)。
+    # config は値を保持するが、描画用の配置 (cli._render_layout) では捨てる。
+    from quotacanvas.cli import _render_layout
+
     p = _write_cfg(tmp_path, """
         [[layout.panels]]
         main = "calendar"
@@ -330,6 +335,9 @@ def test_config_calendar_panel_ignores_subs(tmp_path):
     """)
     cfg = load_config(p)
     assert cfg.layout.panels[0].main == "calendar"
+    assert cfg.layout.panels[0].subs == ["claude:5h"]   # config は受理して保持
+    specs = _render_layout(cfg, [])
+    assert [(s.main, s.subs) for s in specs] == [("calendar", [])]
 
 
 # ------------------------------------------------- 描画 (例外なし・寸法)
@@ -356,8 +364,18 @@ def test_render_calendar_large_and_small():
     assert img.size == (CANVAS_W, CANVAS_H)
 
 
-def test_render_calendar_in_five_columns():
-    # 5 列 (列幅約 365px) でも small / large とも例外なし
+def test_render_calendar_in_five_columns(monkeypatch):
+    # 5 列 (列幅約 365px) でも large / small のカレンダーが描かれる
+    from quotacanvas import render as render_mod
+
+    calls = []
+    orig = render_mod._draw_calendar
+
+    def spy(s, box, *args, **kwargs):
+        calls.append((tuple(box), kwargs.get("small", False)))
+        return orig(s, box, *args, **kwargs)
+
+    monkeypatch.setattr(render_mod, "_draw_calendar", spy)
     cards = _render_cards(4)
     layout = [PanelSpec(CALENDAR_MAIN), PanelSpec("p0:weekly"),
               PanelSpec("p1:weekly"), PanelSpec("p2:weekly"),
@@ -365,6 +383,23 @@ def test_render_calendar_in_five_columns():
               PanelSpec("p3:weekly", size="small")]
     img = render(cards, NOW, layout=layout)
     assert img.size == (CANVAS_W, CANVAS_H)
+
+    # 5 列 + GAP から各列の box を算出し、カレンダーの box 全体を比較する。
+    # 中央のサービス列が欠けて列数が縮み、残りが再等分される退行も検出する。
+    area = (MARGIN, AREA_TOP, CANVAS_W - MARGIN, AREA_BOTTOM)
+    ncols = 5
+    col_w = (area[2] - area[0] - (ncols - 1) * GAP) / ncols
+    small_h = (area[3] - area[1] - GAP) / 2.0
+
+    def col_box(i):
+        x = area[0] + i * (col_w + GAP)
+        return (int(round(x)), area[1], int(round(x + col_w)), area[3])
+
+    large_box = col_box(0)
+    small_col = col_box(4)
+    small_box = (small_col[0], area[1], small_col[2],
+                 int(round(area[1] + small_h)))
+    assert calls == [(large_box, False), (small_box, True)]
 
 
 def test_render_calendar_with_monday_start():
