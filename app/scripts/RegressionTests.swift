@@ -99,10 +99,14 @@ struct RegressionTests {
         check(decoded.cards![1].fetchedAt == nil && decoded.cards![2].fetchedAt == nil, "malformed and missing fetch time are unknown")
         check(!StatusStore.engineIsStale(updatedAt: decoded.updatedAt, now: reference), "engine freshness uses update time")
         check(StatusStore.engineIsStale(updatedAt: decoded.updatedAt, now: reference.addingTimeInterval(300)), "engine stale after update threshold")
+        check(!StatusStore.engineIsStale(updatedAt: decoded.updatedAt, now: decoded.updatedAt!.addingTimeInterval(300)),
+              "exactly 300 seconds is still fresh")
+        check(StatusStore.engineIsStale(updatedAt: decoded.updatedAt, now: decoded.updatedAt!.addingTimeInterval(300.5)),
+              "just past 300 seconds is stale")
         check(StatusStore.engineIsStale(updatedAt: nil, now: reference), "missing engine timestamp is unknown")
         let fetchText = CardRow(card: firstCard, gauge: nil).fetchText(now: reference)
         let expectedAge = RelativeDateTimeFormatter().localizedString(for: firstCard.fetchedAt!, relativeTo: reference)
-        check(fetchText.contains(expectedAge), "card shows fetch age independent of redraw")
+        check(fetchText == "取得: \(expectedAge)", "card shows fetch age independent of redraw")
         check(CardRow(card: decoded.cards![1], gauge: nil).fetchText(now: reference) == String(localized: "取得時刻: 不明"), "unknown fetch time shown")
         let balanceJSON = #"{"balances":[{"provider":"kimi","name":"Kimi","currency":"USD","amount":49.58,"label":"今月の使用","stale_error":"HTTP 429","fetched_at":"2026-01-02T03:04:05Z"},{"provider":"deepseek","name":"DeepSeek","currency":"CNY","amount":110}]}"#
         let balanceStatus = try JSONDecoder().decode(EngineStatus.self, from: Data(balanceJSON.utf8))
@@ -111,7 +115,7 @@ struct RegressionTests {
         check(balanceStatus.balances?.first?.fetchedAt != nil, "balance fetched_at decoding")
         check(balanceStatus.balances?.first?.displayText == "今月の使用 $49.58", "balance label precedes amount")
         check(balanceStatus.balances?.last?.fetchedAt == nil, "optional balance fetched_at")
-        check(balanceStatus.balances?.last?.displayText.contains("¥110.00") == true, "default balance label")
+        check(balanceStatus.balances?.last?.displayText == "残高 ¥110.00", "default balance label precedes the amount")
 
         let input = Data(repeating: 65, count: 1_000_000)
         let code = "import sys; sys.stderr.buffer.write(b'e'*1000000); sys.stderr.flush(); sys.stdout.buffer.write(b'o'*1000000); sys.stdout.flush(); data=sys.stdin.buffer.read(); sys.stdout.buffer.write(str(len(data)).encode())"
@@ -361,6 +365,24 @@ struct RegressionTests {
         check(MenuPopoverView.mainWindowRank(multiCards[0], windows: multiWindows)
               < MenuPopoverView.mainWindowRank(multiCards[1], windows: multiWindows),
               "a longer window outranks a shorter one")
+        // 長さ優先と weekly 優先を分ける競合入力: nova:monthly は nova:weekly より
+        // 長いが key が "weekly" ではない。weekly 優先だけなら weekly が主枠になる。
+        let novaCards = try JSONDecoder().decode([StatusCard].self, from: Data("""
+            [{"id":"nova:weekly","provider":"nova"},{"id":"nova:monthly","provider":"nova"}]
+            """.utf8))
+        let novaWindows = try JSONDecoder().decode([StatusWindow].self, from: Data("""
+            [{"id":"nova:weekly","provider":"nova","key":"weekly","length":604800},
+             {"id":"nova:monthly","provider":"nova","key":"monthly","length":2592000}]
+            """.utf8))
+        let novaLayout = try JSONDecoder().decode([LayoutPanel].self, from: Data(#"[{"main":"nova","subs":[]}]"#.utf8))
+        let novaResolved = MenuPopoverView.orderedCards(novaCards, layout: novaLayout, windows: novaWindows)
+        check(novaResolved.first?.card.id == "nova:monthly", "a longer non-weekly window wins the main slot")
+        check(novaResolved.map(\.inLayout) == [true, false], "the outranked weekly window stays an extra card")
+        check(MenuPopoverView.mainWindowRank(novaCards[0], windows: novaWindows)
+              < MenuPopoverView.mainWindowRank(novaCards[1], windows: novaWindows),
+              "window length outranks the weekly key")
+        // windows 省略（既定 nil）の呼び出しは orderedCards(menuCards, layout: menuLayout) で
+        // コンパイル済み。明示的な windows: nil で長さ不明でも weekly key が勝つことを見る。
         check(MenuPopoverView.orderedCards(multiCards, layout: claudeLayout, windows: nil)
               .first?.card.id == "claude:weekly", "unknown window lengths still prefer the weekly key")
         let tieCards = try JSONDecoder().decode([StatusCard].self, from: Data("""
@@ -388,8 +410,8 @@ struct RegressionTests {
         check(MenuPopoverView.orderedCards(staleCards, layout: codexLayout, windows: staleWindows,
                                            errorProviders: ["codex"]).map(\.inLayout) == [false, false],
               "a provider with a fetch error stays off screen like the render error panel")
-        check(MenuPopoverView.orderedCards(multiCards, layout: claudeLayout).first?.card.id == "claude:weekly",
-              "missing windows array still prefers the weekly key")
+        // windows 既定引数（nil）の呼び出し契約は orderedCards(menuCards, layout: menuLayout) と
+        // 上の windows: nil チェックでカバー済みのため、実行時同値のチェックは置かない。
         // main="claude:weekly" の次に main="claude" でも、描画側と同じく両方 weekly に
         // 解決し、同じカードは最初の位置に 1 回だけ出る（5h は配置外のまま）。
         let duplicateLayout = try JSONDecoder().decode([LayoutPanel].self, from: Data("""
