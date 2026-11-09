@@ -1196,6 +1196,40 @@ def _cmd_set_key(args) -> int:
     return 0
 
 
+def _cmd_verify_key(args) -> int:
+    """verify-key: 保存前の検証。stdin のキーで利用枠を 1 回取得してみる。
+
+    キーチェーン・環境変数は使わず、書き込みもしない。対応は muse だけ。
+    成功 0 / 取得失敗 1 ({"error": ...}) / 未対応プロバイダ 2。
+    出力にキーの値は出さない。"""
+    if args.provider != "muse":
+        print(t("cli.verify_key.unsupported", provider=args.provider),
+              file=sys.stderr)
+        return 2
+    key = _read_secret(t("cli.set_key.prompt", name="Muse"))
+    if not key:
+        return _fail(t("cli.set_key.empty_key"))
+    import urllib.error
+    from .providers import CredentialError, muse
+    try:
+        usage = muse.fetch_with_cookie(key, datetime.now(timezone.utc),
+                                       ignore_backoff=True)
+    except CredentialError as exc:
+        return _fail(str(exc))
+    except urllib.error.HTTPError as exc:
+        return _fail(t("cli.verify_key.http_error", code=exc.code))
+    except Exception as exc:
+        return _fail(t("cli.verify_key.failed", detail=exc.__class__.__name__))
+    if args.json:
+        payload: Dict[str, Any] = {"ok": True, "plan": usage.name}
+        if usage.windows:
+            payload["used_percent"] = usage.windows[0].used_percent
+        _print_json(payload)
+    else:
+        print(t("cli.verify_key.ok", name=usage.name))
+    return 0
+
+
 def _set_local_key(name: str, args) -> int:
     """set-key local:<名前>: ローカル LLM サーバーのキーを保存 / --delete で削除。
 
@@ -1298,6 +1332,9 @@ def main(argv=None) -> int:
     p_key.add_argument("provider", metavar="PROVIDER", help="service id, e.g. glm")
     p_key.add_argument("--delete", action="store_true", help="remove the stored key")
     p_key.add_argument("--json", action="store_true", help="print the result as JSON")
+    p_verify = sub.add_parser("verify-key", help=t("cli.help.verify_key"))
+    p_verify.add_argument("provider", metavar="PROVIDER", help="service id, e.g. muse")
+    p_verify.add_argument("--json", action="store_true", help="print the result as JSON")
     p_refresh = sub.add_parser("refresh",
                                help=t("cli.help.refresh", path=refresh_mod.REFRESH_REQUEST_PATH))
     p_refresh.add_argument("--json", action="store_true", help='print {"requested": true} as JSON')
@@ -1356,6 +1393,8 @@ def main(argv=None) -> int:
         return _cmd_detect(args)
     if args.command == "set-key":
         return _cmd_set_key(args)
+    if args.command == "verify-key":
+        return _cmd_verify_key(args)
     if args.command == "refresh":
         return _cmd_refresh(args)
     if args.command == "config":

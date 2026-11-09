@@ -8,6 +8,7 @@ only = "window ids to show, e.g. claude:weekly codex:weekly glm:5h (overrides co
 json_config = "print the effective config as JSON (app integration)"
 detect = "which services are usable on this Mac (app integration)"
 set_key = "store an API key in the login Keychain (app integration)"
+verify_key = "fetch usage once with a key from stdin without storing it (app integration)"
 refresh = "ask a running engine to redraw now (app integration: creates {path})"
 pick = "print which service is best to use right now, one line (app integration)"
 routing = "quota-aware AI worker routing (reads status.json only; never fetches)"
@@ -58,6 +59,12 @@ deleted = "Deleted the {name} API key from the Keychain"
 prompt = "API key for {name} (one line): "
 empty_key = "API key is empty. Enter it on one line"
 stored = "Stored the {name} API key in the Keychain (service {service}, account {account})"
+
+[verify_key]
+unsupported = "{provider} is not supported by verify-key"
+ok = "{name}: usage fetched"
+http_error = "muse.ai returned HTTP {code}"
+failed = "Could not fetch usage ({detail})"
 
 [keychain]
 timeout = "security command timed out"

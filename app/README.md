@@ -63,7 +63,10 @@ SwiftPM で実行ファイルをビルドし、リソースと Info.plist を .a
   - サービス: `detect --json` の一覧。有効トグル（最大 5 サービス）、検出状態、プラン、
     窓チェックボックス（全チェック = `[]` として保存）、`needs_key` サービスの
     SecureField + 保存/削除（`set-key`、キーは stdin 経由で引数に載せない）。
-    「再検出」ボタン。
+    Muse だけは API キー欄の代わりに「muse.ai にログイン」ボタンが出る。アプリ内の
+    WebKit ウィンドウ（専用の永続 `WKWebsiteDataStore`、Safari とは共有しない）で
+    ログインして「保存」を押すと、muse.ai の Cookie が `set-key muse` に渡される
+    （CLI の `set-key muse` もそのまま使える）。「再検出」ボタン。
   - 表示: ゲージ方式（remaining/used）、明るさ 0-100、夜間減光（開始/終了/明るさ）、
     通知を出す（F4）、エンジンのパス（UserDefaults、既定
     同梱エンジン、無ければ `~/dev/quota-canvas/.venv/bin/quota-canvas`）、ログイン時に起動（SMAppService.mainApp）。

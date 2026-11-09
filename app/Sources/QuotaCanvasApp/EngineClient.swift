@@ -224,6 +224,12 @@ final class EngineClient: @unchecked Sendable {
         _ = try await run(["set-key", provider], stdin: Data(key.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
     }
 
+    /// `quota-canvas verify-key <provider>`（キーは stdin。保存せずエンジンで実取得して検証する。
+    /// 失敗時の EngineError.message がエンジンの短い理由）
+    func verifyKey(provider: String, key: String) async throws {
+        _ = try await run(["verify-key", provider, "--json"], stdin: Data(key.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
+    }
+
     /// `quota-canvas set-key <provider> --delete`
     func deleteKey(provider: String) async throws {
         _ = try await run(["set-key", provider, "--delete"])

@@ -301,6 +301,12 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `<provider>`. `quota-canvas set-key <provider> --delete` removes it. Only for services
   with `needs_key: true`. With `--json` it prints `{"provider": "<p>", "stored": true}`
   (or `"deleted": true`).
+- `quota-canvas verify-key <provider>` — verifies a key without storing it: reads the key
+  from stdin (same as `set-key`), fetches usage once with it (no Keychain, no env, nothing
+  written), and exits 0 on success. On failure it exits 1 with a short secret-free
+  `{"error": ...}` (e.g. expired Cookie, fetch error); providers other than `muse` exit 2.
+  With `--json` success prints `{"ok": true, "plan": "...", "used_percent": N}` (no secrets).
+  The app's Muse login window runs this before `set-key muse`.
 
 - `quota-canvas routing line [--json]` — the routing verdict as one line, e.g.
   `quota: glm=go(89%,~23:07) … (21:30時点)` (same format as `~/.claude/bin/quota-gate
@@ -402,6 +408,12 @@ display string like `残り 70%`) rather than a window or a money amount — the
 token count is not reported because it does not match the service's own labels. A
 401/403 or a response without a `success: true`
 line means the Cookie has expired; save a fresh one with `set-key muse`.
+The menu bar app can register the Cookie without copying it from devtools: the
+Services settings shows a「muse.ai にログイン」button for Muse instead of an API-key
+field, which opens an in-app WebKit window (a dedicated persistent
+`WKWebsiteDataStore`, not shared with Safari); its「保存」button collects the
+muse.ai cookies, verifies them with `verify-key muse`, and stores them through the
+same `set-key muse` path.
 
 ## Config keys the app edits
 

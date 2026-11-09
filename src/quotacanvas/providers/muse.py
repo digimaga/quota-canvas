@@ -288,20 +288,23 @@ def _resolve_action_id(cookie: str) -> str:
     raise ValueError("muse action id not found")
 
 
-def _resolve_and_cache(cookie: str) -> str:
+def _resolve_and_cache(cookie: str, ignore_backoff: bool = False) -> str:
     """抑制付きの Action ID 解決。
 
     直前の解決失敗 (ID が見つからない) から RESOLVE_BACKOFF 時間は再解決せず
     短いエラーにする (JS を何百本も取り直さない)。解決できた ID はキャッシュ
-    する。"""
-    stamp = _read_action_cache().get("resolve_failed_at")
-    if (not isinstance(stamp, bool) and isinstance(stamp, (int, float))
-            and time.time() - stamp < RESOLVE_BACKOFF):
-        raise CredentialError(t("providers.muse_resolve_unavailable"))
+    する。ignore_backoff=True (verify-key) のときは抑制を無視して解決し、
+    失敗しても resolve_failed_at を書かない (常駐の取得を巻き込まない)。"""
+    if not ignore_backoff:
+        stamp = _read_action_cache().get("resolve_failed_at")
+        if (not isinstance(stamp, bool) and isinstance(stamp, (int, float))
+                and time.time() - stamp < RESOLVE_BACKOFF):
+            raise CredentialError(t("providers.muse_resolve_unavailable"))
     try:
         action_id = _resolve_action_id(cookie)
     except ValueError:
-        _write_action_cache({"resolve_failed_at": int(time.time())})
+        if not ignore_backoff:
+            _write_action_cache({"resolve_failed_at": int(time.time())})
         raise
     # まだ成功実績のない ID (verified=false) として保存する。
     _write_action_cache({"action_id": action_id, "verified": False,
@@ -416,7 +419,7 @@ def _resolve_retryable(resolved_at: Optional[float]) -> bool:
             or time.time() - resolved_at >= RESOLVE_BACKOFF)
 
 
-def _fetch_usage(cookie: str, now: datetime) \
+def _fetch_usage(cookie: str, now: datetime, ignore_backoff: bool = False) \
         -> Tuple[str, List[Window], List[Balance]]:
     """Server Action を呼んで (name, windows, balances) を返す。
 
@@ -424,11 +427,13 @@ def _fetch_usage(cookie: str, now: datetime) \
     ある ID (verified=true)、または解決から十分経った verified=false の
     ID が HTTP 404 や success:true の無い応答で失敗したときだけ。直近で
     解決した (verified=false) ID で失敗したときは解決し直さず
-    「Cookie の期限切れ」エラーにする (ポーリングごとに再探索しない)。"""
+    「Cookie の期限切れ」エラーにする (ポーリングごとに再探索しない)。
+    ignore_backoff=True (verify-key) のときは解決失敗の抑制を無視する。"""
     cached = _cached_action()
     for _attempt in range(2):
         if cached is None:
-            cached = (_resolve_and_cache(cookie), False, int(time.time()))
+            cached = (_resolve_and_cache(cookie, ignore_backoff), False,
+                      int(time.time()))
         action_id, verified, resolved_at = cached
         try:
             text = _post_action(cookie, action_id)
@@ -458,11 +463,20 @@ def _fetch_usage(cookie: str, now: datetime) \
     raise AssertionError("unreachable")  # pragma: no cover
 
 
-def fetch(now: datetime) -> ProviderUsage:
-    cookie, _source = locate_muse_cookie()
-    name, windows, balances = _fetch_usage(cookie, now)
+def fetch_with_cookie(cookie: str, now: datetime,
+                      ignore_backoff: bool = False) -> ProviderUsage:
+    """キーチェーン・環境変数を通さず Cookie を直接受け取って取得する
+    (verify-key の保存前検証用)。キーはどこにも書き込まない。
+    ignore_backoff=True なら解決失敗の 6 時間抑制を無視し、解決失敗を
+    resolve_failed_at に記録しない。"""
+    name, windows, balances = _fetch_usage(cookie, now, ignore_backoff)
     return ProviderUsage("muse", name, windows, None, now,
                          balances=balances)
+
+
+def fetch(now: datetime) -> ProviderUsage:
+    cookie, _source = locate_muse_cookie()
+    return fetch_with_cookie(cookie, now)
 
 
 PROVIDER = Provider(

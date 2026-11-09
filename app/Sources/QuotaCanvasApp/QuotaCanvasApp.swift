@@ -38,6 +38,11 @@ struct QuotaCanvasApp: App {
             FramePreviewView()
         }
         .defaultSize(width: 1000, height: 300)
+
+        Window("muse.ai にログイン", id: MuseLoginView.windowID) {
+            MuseLoginView()
+        }
+        .defaultSize(width: 960, height: 700)
     }
 }
 

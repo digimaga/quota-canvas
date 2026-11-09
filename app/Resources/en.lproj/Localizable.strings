@@ -287,3 +287,12 @@
 "モード" = "Mode";
 "モードを取得中…" = "Fetching modes…";
 "監視のみ（振り分けで使わない）" = "Monitor only (excluded from routing)";
+
+/* MARK: MuseLoginView */
+"muse.ai にログイン" = "Log in to muse.ai";
+"ログインし直す" = "Log in again";
+"muse.ai にログインしたら「保存」を押してください" = "Log in to muse.ai, then press \"Save\".";
+"このログインは Safari などのブラウザとは別の、アプリ専用の領域に保存されます。" = "This login is kept in an app-private store, separate from Safari and other browsers.";
+"まだログインしていないようです" = "It looks like you are not logged in yet.";
+"キーが削除されたため保存を中止しました" = "Save cancelled because the key was deleted.";
+"Cookie はログインキーチェーン（quota-canvas）に、ログイン状態はアプリ専用の WebKit 領域に保存されます。「削除」で両方を消します。" = "The Cookie is stored in the login keychain (quota-canvas), and the login itself in the app-private WebKit store. \"Delete\" removes both.";

@@ -8,6 +8,7 @@ only = "window ids to show, e.g. claude:weekly codex:weekly glm:5h (config displ
 json_config = "print the effective config as JSON (app 連携)"
 detect = "which services are usable on this Mac (app 連携)"
 set_key = "store an API key in the login Keychain (app 連携)"
+verify_key = "キーを保存せずに利用枠の取得を 1 回試す (stdin から読む。app 連携)"
 refresh = "ask a running engine to redraw now (app 連携: {path} を作る)"
 pick = "今使うと得なサービスを 1 行で出す (app 連携)"
 routing = "残量に応じた AI ワーカー振り分け判定 (status.json を読むだけ。取得はしない)"
@@ -58,6 +59,12 @@ deleted = "{name} の API キーをキーチェーンから削除しました"
 prompt = "{name} の API キーを入力 (1 行): "
 empty_key = "API キーが空です。1 行で入力してください"
 stored = "{name} の API キーをキーチェーン (service {service}, account {account}) に保存しました"
+
+[verify_key]
+unsupported = "{provider} は verify-key に対応していません"
+ok = "{name}: 利用枠を取得できました"
+http_error = "muse.ai が HTTP {code} を返しました"
+failed = "利用枠を取得できませんでした ({detail})"
 
 [keychain]
 timeout = "security コマンドがタイムアウトしました"

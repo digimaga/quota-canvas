@@ -872,3 +872,47 @@ def test_provider_metadata():
     assert muse.PROVIDER.display_name == "Muse (Meta)"
     assert muse.PROVIDER.needs_key is True
     assert providers.REGISTRY["muse"] is muse.PROVIDER
+
+
+def test_verify_key_ignores_resolve_backoff(monkeypatch, tmp_path):
+    """未ログインでの解決失敗の 6 時間抑制を verify-key (ignore_backoff) は無視する。
+
+    通常取得の解決失敗が resolve_failed_at に記録されても、
+    fetch_with_cookie(..., ignore_backoff=True) は即時に解決して成功する。"""
+    _cookie_keychain(monkeypatch)
+    cache = tmp_path / "muse-action.json"
+    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
+    # 未ログイン Cookie: ページは取れるが Action ID は見つからない
+    _install_http(monkeypatch, {muse.MUSE_PAGE_URL: _html()})
+    with pytest.raises(ValueError):
+        muse.fetch(NOW)
+    assert "resolve_failed_at" in muse._read_action_cache()
+    # 抑制中は通常取得は短いエラー (再解決しない)
+    with pytest.raises(CredentialError):
+        muse.fetch(NOW)
+    # verify-key 相当の取得は抑制を無視して即時に解決・成功する
+    calls = _install_http(monkeypatch, {
+        muse.MUSE_PAGE_URL: _html("/_next/static/chunks/main.js"),
+        "https://muse.ai/_next/static/chunks/main.js": _js_with_action(ACTION_ID),
+    }, posts=[_rsc(SUBSCRIPTION)])
+    usage = muse.fetch_with_cookie("a=b", NOW, ignore_backoff=True)
+    assert usage.name == "Muse ダミープラン"
+    assert calls["post"][0][1]["Next-Action"] == ACTION_ID
+    # 解決できた ID は通常どおりキャッシュする
+    assert json.loads(cache.read_text(encoding="utf-8"))["action_id"] == ACTION_ID
+
+
+def test_verify_key_resolve_failure_is_not_cached(monkeypatch, tmp_path):
+    """verify-key (ignore_backoff) の解決失敗は resolve_failed_at を書かない
+    (常駐の取得を 6 時間抑制で巻き込まない)。"""
+    _cookie_keychain(monkeypatch)
+    cache = tmp_path / "muse-action.json"
+    monkeypatch.setattr(muse, "_action_cache_file", lambda: cache)
+    _install_http(monkeypatch, {muse.MUSE_PAGE_URL: _html()})
+    with pytest.raises(ValueError):
+        muse.fetch_with_cookie("bad=cookie", NOW, ignore_backoff=True)
+    assert "resolve_failed_at" not in muse._read_action_cache()
+    # 直後の通常取得は抑制されず解決を試みる (失敗すれば通常どおり記録される)
+    with pytest.raises(ValueError):
+        muse.fetch(NOW)
+    assert "resolve_failed_at" in muse._read_action_cache()

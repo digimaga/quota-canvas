@@ -629,3 +629,71 @@ def test_set_json_roundtrips_quoted_values(monkeypatch, capsys, tmp_path):
     cfg = load_config(target)
     assert cfg.routing.workers == data["routing"]["workers"]
     assert cfg.layout.panels[0].main == 'glm:"quoted"'
+
+
+# ------------------------------------------------------------ verify-key
+
+def test_verify_key_muse_success(monkeypatch, capsys):
+    from quotacanvas.providers import muse
+
+    usage = ProviderUsage(
+        "muse", "Muse ダミープラン",
+        [Window("muse", "weekly", "週間", 42.0, None, timedelta(days=7))],
+        None, NOW)
+    monkeypatch.setattr(muse, "fetch_with_cookie",
+                        lambda cookie, now, ignore_backoff=False: usage)
+    rc, out = _run(monkeypatch, capsys, ["verify-key", "muse", "--json"],
+                   stdin="c=d\n")
+    assert rc == 0
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert payload["plan"] == "Muse ダミープラン"
+    assert payload["used_percent"] == 42.0
+    assert "c=d" not in out  # 値が出力に現れない
+
+
+def test_verify_key_reads_stdin_not_keychain(monkeypatch, capsys):
+    """verify-key はキーチェーン・環境変数を読まず stdin の値で取得する。"""
+    from quotacanvas.providers import muse
+
+    seen = []
+
+    def fake_fetch(cookie, now, ignore_backoff=False):
+        seen.append(cookie)
+        return ProviderUsage("muse", "Muse", [], None, NOW)
+
+    monkeypatch.setattr(muse, "fetch_with_cookie", fake_fetch)
+    monkeypatch.setattr(muse.keychain, "read",
+                        lambda account: "should-not-be-used")
+    rc, out = _run(monkeypatch, capsys, ["verify-key", "muse", "--json"],
+                   stdin="x=y\n")
+    assert rc == 0
+    assert seen == ["x=y"]
+
+
+def test_verify_key_muse_bad_cookie(monkeypatch, capsys):
+    from quotacanvas.providers import CredentialError, muse
+
+    def fail(cookie, now, ignore_backoff=False):
+        raise CredentialError("Cookie の期限切れ")
+
+    monkeypatch.setattr(muse, "fetch_with_cookie", fail)
+    rc, out = _run(monkeypatch, capsys, ["verify-key", "muse", "--json"],
+                   stdin="c=d\n")
+    assert rc == 1
+    assert json.loads(out)["error"] == "Cookie の期限切れ"
+
+
+def test_verify_key_unsupported_provider(monkeypatch, capsys):
+    def boom(*a, **k):
+        raise AssertionError("未対応プロバイダで取得してはいけない")
+
+    monkeypatch.setattr(providers, "fetch_all", boom)
+    rc, out = _run(monkeypatch, capsys, ["verify-key", "glm"], stdin="k\n")
+    assert rc == 2
+
+
+def test_verify_key_empty_input(monkeypatch, capsys):
+    rc, out = _run(monkeypatch, capsys, ["verify-key", "muse"], stdin="\n")
+    assert rc != 0
+    assert json.loads(out)["error"]

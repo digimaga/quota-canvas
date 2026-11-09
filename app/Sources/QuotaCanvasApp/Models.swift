@@ -452,6 +452,8 @@ enum AppDefaults {
 /// 設定保存の 2 秒後などに status.json / frame.png の再読み込みを促す通知。
 extension Notification.Name {
     static let engineArtifactsChanged = Notification.Name("quota-canvas.engineArtifactsChanged")
+    /// Muse ログインウィンドウで Cookie を保存したあとのサービス再検出依頼。
+    static let museKeySaved = Notification.Name("quota-canvas.museKeySaved")
 }
 
 /// status 値 → 色（over/exhausted=赤, tight/on_track=紫, spare/fresh=緑, unknown=灰）。

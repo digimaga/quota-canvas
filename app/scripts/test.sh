@@ -7,5 +7,5 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 "$ROOT/scripts/check-ui-regressions.py"
 sources=()
 while IFS= read -r file; do sources+=("$file"); done < <(find "$ROOT/Sources/QuotaCanvasApp" -name '*.swift' ! -name QuotaCanvasApp.swift -print)
-swiftc -module-cache-path "$TMP_DIR/module-cache" -parse-as-library -swift-version 5 "${sources[@]}" "$ROOT/scripts/RegressionTests.swift" -o "$TMP_DIR/regression-tests" -framework AppKit -framework ServiceManagement -framework UserNotifications
+swiftc -module-cache-path "$TMP_DIR/module-cache" -parse-as-library -swift-version 5 "${sources[@]}" "$ROOT/scripts/RegressionTests.swift" -o "$TMP_DIR/regression-tests" -framework AppKit -framework ServiceManagement -framework UserNotifications -framework WebKit
 QUOTA_CANVAS_TEST_REPO="$ROOT/.." "$TMP_DIR/regression-tests"

@@ -1,0 +1,302 @@
+import SwiftUI
+import WebKit
+
+/// 「muse.ai にログイン」ウィンドウ: 専用の永続データストアを持つ WKWebView で
+/// muse.ai を開き、「保存」でログイン Cookie を `set-key muse` に渡す。
+/// Cookie の値はログ・画面・引数に出さない（stdin 経由でエンジンに渡す）。
+struct MuseLoginView: View {
+    static let windowID = "muse-login"
+
+    @Environment(\.dismissWindow) private var dismissWindow
+    @StateObject private var model = MuseLoginModel()
+    @ObservedObject private var coordinator = MuseCredentialCoordinator.shared
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("muse.ai にログインしたら「保存」を押してください")
+                    Text("このログインは Safari などのブラウザとは別の、アプリ専用の領域に保存されます。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.saving { ProgressView().controlSize(.small) }
+                Button("キャンセル", role: .cancel) { close() }
+                    .keyboardShortcut(.cancelAction)
+                Button("保存") {
+                    Task { if await model.save() { close() } }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.saving || coordinator.deleting) // 削除中は保存できない
+            }
+            .padding(10)
+            Divider()
+            MuseWebView(model: model)
+            if let message = model.message {
+                Text(message)
+                    .font(.caption).foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+            }
+        }
+    }
+
+    private func close() {
+        dismissWindow(id: Self.windowID)
+    }
+}
+
+/// Muse の Cookie 保存と削除の競合を防ぐ共有コーディネーター。
+/// 保存中は設定側の「削除」を、削除中はログイン側の「保存」を無効化する。
+/// 世代番号で、保存処理の途中に削除が走ったことを検出して保存を中止する。
+@MainActor
+final class MuseCredentialCoordinator: ObservableObject {
+    static let shared = MuseCredentialCoordinator()
+    private init() {}
+
+    @Published private(set) var saving = false
+    @Published private(set) var deleting = false
+    private(set) var generation = 0
+
+    /// 保存開始。削除中は nil（保存しない）。返した世代を setKey 直前に isCurrent で確認する。
+    func beginSave() -> Int? {
+        guard !deleting else { return nil }
+        saving = true
+        return generation
+    }
+
+    func endSave() { saving = false }
+
+    /// setKey の直前に呼ぶ。世代が進んでいれば（途中で削除された）false。
+    func isCurrent(_ generation: Int) -> Bool {
+        generation == self.generation && !deleting
+    }
+
+    /// 設定側の「削除」。世代を進めてから、キーと専用 WebKit 領域を消す。
+    func deleteCredential(client: EngineClient) async throws {
+        deleting = true
+        generation += 1
+        defer { deleting = false }
+        try await client.deleteKey(provider: "muse")
+        await MuseLoginModel.clearMuseWebsiteData()
+    }
+}
+
+/// Cookie の収集と set-key 呼び出し。
+@MainActor
+final class MuseLoginModel: ObservableObject {
+    /// 固定 UUID の専用永続ストア（macOS 14 の forIdentifier）。
+    /// Safari や他の WebView と共有しない。セッションが残るので次回の
+    /// 「ログインし直す」では再入力が不要なことがある。
+    static let dataStore = WKWebsiteDataStore(
+        forIdentifier: UUID(uuidString: "3F6E0A1B-9C2D-4E5F-A6B7-C8D9E0F1A2B3")!)
+
+    @Published var saving = false
+    @Published var message: String?
+
+    /// ログイン中の WKWebView（MuseWebView がセットする）。未ログイン判定に使う。
+    weak var webView: WKWebView?
+
+    private let client = EngineClient()
+
+    /// 表示されているログイン入力欄を探す JS。1 つでも見つかれば true を返す。
+    private static let loginFieldProbe = """
+        (function () {
+            var inputs = document.querySelectorAll(
+                'input[type=email],input[type=tel],input[type=password],' +
+                'input[autocomplete=username],input[name=email]');
+            for (var i = 0; i < inputs.length; i++) {
+                if (inputs[i].getClientRects().length > 0) { return true; }
+            }
+            return false;
+        })()
+        """
+
+    /// エンジンが https://muse.ai/ に送る Cookie だけに絞る:
+    /// domain が muse.ai / .muse.ai、path は "/"（または空）、期限切れは除く。
+    /// （secure 属性は https なので絞らない。）同名 Cookie は 1 つだけにし、
+    /// domain がより具体的な "muse.ai"（host-only）を優先する。
+    static func museCookies(from cookies: [HTTPCookie]) -> [HTTPCookie] {
+        let now = Date()
+        var byName: [String: HTTPCookie] = [:]
+        for cookie in cookies {
+            guard cookie.domain == "muse.ai" || cookie.domain == ".muse.ai",
+                  cookie.path.isEmpty || cookie.path == "/",
+                  cookie.expiresDate.map({ $0 > now }) ?? true else { continue }
+            if byName[cookie.name]?.domain == "muse.ai" { continue }
+            byName[cookie.name] = cookie
+        }
+        return byName.values.sorted { $0.name < $1.name }
+    }
+
+    /// ページの見た目からログイン済みかを判定する: muse.ai のページにいて、
+    /// ログイン用の入力欄が表示されていないこと。判定できないときは安全側
+    /// （未ログイン扱い）に倒す。
+    private func looksLoggedIn() async -> Bool {
+        guard let webView, webView.url?.host == "muse.ai" else { return false }
+        let result = try? await webView.evaluateJavaScript(Self.loginFieldProbe)
+        return (result as? Bool) == false
+    }
+
+    /// Cookie ヘッダー文字列を組み立て、エンジンで実取得を試してから `set-key muse` に渡す。
+    /// 保存に成功したときだけ true を返す（呼び出し側がウィンドウを閉じる）。
+    func save() async -> Bool {
+        let coordinator = MuseCredentialCoordinator.shared
+        guard let generation = coordinator.beginSave() else { return false }
+        saving = true
+        message = nil
+        defer {
+            saving = false
+            coordinator.endSave()
+        }
+        let museCookies = Self.museCookies(from: await Self.dataStore.httpCookieStore.allCookies())
+        guard await looksLoggedIn(), !museCookies.isEmpty else {
+            message = String(localized: "まだログインしていないようです")
+            return false
+        }
+        let header = museCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+        do {
+            // 保存の前にエンジンで実際に取得を試し、成功したときだけ保存する。
+            // 失敗時の EngineError.message がエンジンの短い理由（Cookie 期限切れ等）。
+            try await client.verifyKey(provider: "muse", key: header)
+            // verify の間に設定側で削除されたら保存しない（消したキーの復活を防ぐ）。
+            guard coordinator.isCurrent(generation) else {
+                message = String(localized: "キーが削除されたため保存を中止しました")
+                return false
+            }
+            try await client.setKey(provider: "muse", key: header)
+        } catch {
+            message = error.localizedDescription
+            return false
+        }
+        // 既存のキー登録後と同じ後処理: サービス一覧の再検出を依頼する。
+        NotificationCenter.default.post(name: .museKeySaved, object: nil)
+        return true
+    }
+
+    /// キーの「削除」に合わせて、専用データストアの muse.ai のデータも消す
+    /// （ログアウト相当。キーを消すだけではログイン状態が残るため）。
+    static func clearMuseWebsiteData() async {
+        let types = WKWebsiteDataStore.allWebsiteDataTypes()
+        let records = await dataStore.dataRecords(ofTypes: types)
+        let museRecords = records.filter {
+            $0.displayName == "muse.ai" || $0.displayName.hasSuffix(".muse.ai")
+        }
+        if !museRecords.isEmpty {
+            await dataStore.removeData(ofTypes: types, for: museRecords)
+        }
+    }
+}
+
+/// muse.ai 表示用の WKWebView。Meta 系への遷移を含む同一フレームの遷移はそのまま
+/// 許可し、新規ウィンドウ要求は同じビューで開き、ファイルダウンロードは行わない。
+private struct MuseWebView: NSViewRepresentable {
+    let model: MuseLoginModel
+
+    func makeNSView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = MuseLoginModel.dataStore
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
+        model.webView = webView
+        webView.load(URLRequest(url: URL(string: "https://muse.ai/")!))
+        return webView
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        /// window.open 系の子 WebView に対応する小ウィンドウ。
+        private struct ChildPopup {
+            weak var webView: WKWebView?
+            let window: NSWindow
+        }
+        private var childWindows: [ObjectIdentifier: ChildPopup] = [:]
+        /// 閉じたとき子も閉じるために監視中の親ウィンドウ。
+        private let observedParents = NSHashTable<NSWindow>.weakObjects()
+
+        func webView(_ webView: WKWebView,
+                     decidePolicyFor navigationAction: WKNavigationAction
+        ) async -> WKNavigationActionPolicy {
+            if navigationAction.shouldPerformDownload { return .cancel }
+            // 新規ウィンドウ要求は許可し、createWebViewWith が子ウィンドウを作る。
+            return .allow
+        }
+
+        /// window.open / target=_blank: 渡された構成で子 WebView を作り、
+        /// 小さな別ウィンドウに出して返す（返した WebView に元の遷移が続く。
+        /// window.open の戻り値を使うページでも壊れない）。
+        func webView(_ webView: WKWebView,
+                     createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction,
+                     windowFeatures: WKWindowFeatures) -> WKWebView? {
+            let child = WKWebView(frame: .zero, configuration: configuration)
+            child.navigationDelegate = self
+            child.uiDelegate = self
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 680),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = child
+            childWindows[ObjectIdentifier(child)] = ChildPopup(webView: child, window: window)
+            // 赤い閉じるボタンで直接閉じられても後片付けできるよう監視する。
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(childWindowWillClose(_:)),
+                name: NSWindow.willCloseNotification, object: window)
+            if let parent = webView.window {
+                window.title = parent.title
+                parent.addChildWindow(window, ordered: .above)
+                // ログインウィンドウを閉じたら子も閉じる。
+                if !observedParents.contains(parent) {
+                    observedParents.add(parent)
+                    NotificationCenter.default.addObserver(
+                        self, selector: #selector(parentWindowWillClose(_:)),
+                        name: NSWindow.willCloseNotification, object: parent)
+                }
+            }
+            window.makeKeyAndOrderFront(nil)
+            return child
+        }
+
+        /// 子ポップアップの後片付けを 1 か所に: 監視を外し、親から切り離し、
+        /// 保持辞書から外して WebView の委譲も外す（JS・赤ボタン・親クローズの
+        /// どの経路でも呼ぶ。閉じ済みのウィンドウに対しても無害）。
+        private func detachChild(_ key: ObjectIdentifier) {
+            guard let popup = childWindows.removeValue(forKey: key) else { return }
+            NotificationCenter.default.removeObserver(
+                self, name: NSWindow.willCloseNotification, object: popup.window)
+            popup.window.parent?.removeChildWindow(popup.window)
+            popup.webView?.navigationDelegate = nil
+            popup.webView?.uiDelegate = nil
+            popup.window.close()
+        }
+
+        /// 子ウィンドウが（赤い閉じるボタンなどで）直接閉じられたとき。
+        @objc private func childWindowWillClose(_ note: Notification) {
+            guard let window = note.object as? NSWindow,
+                  let key = childWindows.first(where: { $0.value.window === window })?.key
+            else { return }
+            detachChild(key)
+        }
+
+        /// JS の window.close(): 対応する子ウィンドウを閉じる。
+        func webViewDidClose(_ webView: WKWebView) {
+            detachChild(ObjectIdentifier(webView))
+        }
+
+        /// 親（ログイン）ウィンドウが閉じたら子ウィンドウも全部閉じる。
+        @objc private func parentWindowWillClose(_ note: Notification) {
+            for key in Array(childWindows.keys) { detachChild(key) }
+        }
+
+        func webView(_ webView: WKWebView,
+                     decidePolicyFor navigationResponse: WKNavigationResponse
+        ) async -> WKNavigationResponsePolicy {
+            navigationResponse.canShowMIMEType ? .allow : .cancel
+        }
+    }
+}
