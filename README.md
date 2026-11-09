@@ -2,7 +2,7 @@
 
 English | [日本語](README.ja.md)
 
-A macOS menu bar app that shows remaining quota and usage pace for Claude, Codex, GLM, Grok, Gemini, OpenRouter, DeepSeek, Kimi, OpenCode Go, and Devin on your desktop, in the menu bar, or on an optional TURZX 9.2" USB screen.
+A macOS menu bar app that shows remaining quota and usage pace for Claude, Codex, GLM, Grok, Gemini, OpenRouter, DeepSeek, Kimi, OpenCode Go, Devin, and Muse on your desktop, in the menu bar, or on an optional TURZX 9.2" USB screen.
 
 ![QuotaCanvas panel embedded in the macOS desktop](docs/images/desktop-ja.png)
 
@@ -31,6 +31,7 @@ Embedded in the desktop like wallpaper — your icons stay on top, and windows c
 | Kimi | Global USD account balance | Moonshot API key in Keychain or `MOONSHOT_API_KEY` |
 | OpenCode Go | 5-hour, weekly, and 30-day usage windows | API key in Keychain, `OPENCODE_API_KEY`, or the opencode CLI login (`~/.local/share/opencode/auth.json`) |
 | Devin | Daily and weekly usage windows, plus the extra usage balance when reported | API key in Keychain, the Devin CLI login (`~/.local/share/devin/credentials.toml`), or the Devin desktop app login (`state.vscdb`) |
+| Muse | Weekly usage window and top-up token balance | Logged-in muse.ai Cookie in Keychain (the browser's Cookie header) or `MUSE_COOKIE` |
 
 OpenRouter, DeepSeek, and Kimi follow public API specifications and have not been verified with real accounts. See [Credentials](#credentials) for details.
 
@@ -114,6 +115,7 @@ QuotaCanvas fetches usage and shows whether the current pace will exhaust a quot
 .venv/bin/quota-canvas set-key kimi             # Moonshot API key
 .venv/bin/quota-canvas set-key opencode         # OpenCode Go API key
 .venv/bin/quota-canvas set-key devin            # Devin (Windsurf) API key
+.venv/bin/quota-canvas set-key muse             # muse.ai login Cookie (Cookie header)
 .venv/bin/quota-canvas pick                     # show a recommendation (--json is also available)
 ./scripts/install-agent.sh                      # start at login; --uninstall removes it
 ./scripts/install-auto-update.sh                # pull new main commits every 10 minutes and restart; --uninstall removes it
@@ -144,6 +146,7 @@ The Routing settings tab enables routing, sets the remaining quota floor and dat
 - OpenRouter, DeepSeek, and Kimi read Keychain `quota-canvas/openrouter`, `quota-canvas/deepseek`, and `quota-canvas/kimi` first, then `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, and `MOONSHOT_API_KEY` respectively. These integrations follow public API specifications and have not been verified with real accounts. Kimi uses the global USD API.
 - OpenCode Go reads Keychain `quota-canvas/opencode` (saved with `set-key opencode`), then `OPENCODE_API_KEY`, then the `opencode-go` entry's `key` in the opencode CLI login at `~/.local/share/opencode/auth.json`. The usage endpoint reports `opencode:5h` (5-hour rolling), `opencode:weekly` (7 days), and `opencode:30d` (30 days). A 401/403 means the key is invalid or the account has no OpenCode Go subscription; check that the key is correct and that the account subscribes to OpenCode Go.
 - Devin reads Keychain `quota-canvas/devin` (saved with `set-key devin`), then `windsurf_api_key` in the Devin CLI login at `~/.local/share/devin/credentials.toml` (using the host of its `api_server_url` only when it is `https://` on codeium.com, windsurf.com, or devin.ai or their subdomains), then the `windsurfAuthStatus` entry's `apiKey` in the Devin desktop app's `state.vscdb`. The windows are `devin:1d` (daily) and `devin:weekly` (7 days); `hideDailyQuota` / `hideWeeklyQuota` hides the corresponding window, and an optional `overageBalanceMicros` is shown as the extra usage balance (USD). A 401/403 means the key is invalid; check that the key belongs to a Devin account.
+- Muse reads Keychain `quota-canvas/muse` (saved with `set-key muse`), then `MUSE_COOKIE`; the value is the browser's Cookie request header for a logged-in muse.ai session, verbatim. Usage is fetched through the `fetchSubscriptionAction` Next.js Server Action on muse.ai; its Action ID is resolved from the page's JS chunks and cached. The window is `muse:weekly` (7 days); top-up tokens show as a balance line with the remaining share (`Top-up tokens NN% left`, `currency: "TOKENS"` — not a money amount or a window). A 401/403 or a response without `success: true` means the Cookie has expired; save a fresh one with `set-key muse`.
 - Gemini uses Antigravity CLI's `agy -p "/usage" --output-format json`. This does not invoke a model or consume quota, and agy refreshes its own token. `providers.gemini.token_refresh` is accepted for compatibility but is no longer used. The windows are `gemini:weekly`, Gemini 4 Argon's `gemini:argon`, `gemini:5h`, and `gemini:claude` / `gemini:claude_5h` for Claude / GPT through Antigravity. The plan name is shown if it can be obtained with the Keychain token for service `gemini` / account `antigravity`; otherwise it is shown as “Gemini”.
 
 #### History, pace and recommendations

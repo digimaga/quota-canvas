@@ -55,12 +55,13 @@ def _no_real_balance_credentials(monkeypatch):
     from quotacanvas import keychain
     original = keychain.read
     def read(provider):
-        if provider in {"openrouter", "deepseek", "kimi", "opencode", "devin"}:
+        if provider in {"openrouter", "deepseek", "kimi", "opencode", "devin",
+                        "muse"}:
             return None
         return original(provider)
     monkeypatch.setattr(keychain, "read", read)
     for variable in ("OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "MOONSHOT_API_KEY",
-                     "OPENCODE_API_KEY"):
+                     "OPENCODE_API_KEY", "MUSE_COOKIE"):
         monkeypatch.delenv(variable, raising=False)
 
 
@@ -84,3 +85,13 @@ def _no_real_devin_login(tmp_path, monkeypatch):
                         lambda: tmp_path / "devin-credentials.toml")
     monkeypatch.setattr(providers.devin, "_desktop_state_db",
                         lambda: tmp_path / "devin-state.vscdb")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_muse_cache(tmp_path, monkeypatch):
+    """Point the Muse provider at a nonexistent action-id cache so tests never
+    read or write the real cache file."""
+    from quotacanvas import providers
+
+    monkeypatch.setattr(providers.muse, "_action_cache_file",
+                        lambda: tmp_path / "muse-action.json")

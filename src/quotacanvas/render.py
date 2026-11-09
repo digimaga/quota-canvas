@@ -91,6 +91,7 @@ BRAND_COLORS = {
     "kimi": "#18A999",
     "opencode": "#EC4899",
     "devin": "#0EA5E9",
+    "muse": "#F59E0B",
     # ローカル LLM サーバー (providers.local.<名前>、provider id "local:<名前>")
     # は窓と違って状態色 (空き/満杯/待ち) が主体なので、名前のドットは落ち着いた
     # シアン 1 色に寄せる。[providers.local.<名前>].color で台ごとに上書き可
@@ -1840,8 +1841,11 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
 
 def _balance_text(balance: Balance) -> str:
     """Format a display-only amount with its label or the default balance label."""
+    label = balance.label or t("providers.balance")
+    if balance.text is not None:
+        return "%s %s" % (label, balance.text)
     symbol = {"USD": "$", "CNY": "¥"}.get(balance.currency, balance.currency + " ")
-    return "%s %s%.2f" % (balance.label or t("providers.balance"), symbol, balance.amount)
+    return "%s %s%.2f" % (label, symbol, balance.amount)
 
 
 def _draw_balance_card(s, box, g, theme):

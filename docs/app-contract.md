@@ -128,7 +128,7 @@ The app finds the CLI at the path stored in its settings (default
   of the same service is below 20%, ×1.5 when a Codex reset credit expires within 24
   hours.
 
-- `balances` — top-level array of `{provider, name, currency, amount, label, fetched_at, stale_error}`. Amounts are display-only and do not affect routing or pacing. `label` is the optional display prefix (for example, usage or remaining limit); when absent, display the localized "Balance" prefix; `stale_error` marks last-good data after a fetch failure, and `fetched_at` is the original successful fetch time. Empty when no balances are available.
+- `balances` — top-level array of `{provider, name, currency, amount, label, text, fetched_at, stale_error}`. Amounts are display-only and do not affect routing or pacing. `label` is the optional display prefix (for example, usage or remaining limit); when absent, display the localized "Balance" prefix; `text` (optional, may be absent in old files) is a free-form display string shown after the label instead of a currency amount (e.g. `追加のトークン 残り 70%` — use it when `currency` is not a real currency); `stale_error` marks last-good data after a fetch failure, and `fetched_at` is the original successful fetch time. Empty when no balances are available.
 
 - `reset_credits` — optional; present only when at least one service reports unused
   "rate-limit reset credits" (the right to instantly reset the weekly window, Codex).
@@ -319,7 +319,7 @@ non-zero with `{"error": "<日本語の短い説明>"}` on stdout.
   `stop` → one stderr line, exit 3; `reserve` → one stderr note, exit 0; `unknown` → one
   stderr line (「判定できないためそのまま続行」), exit 0; `go`/`boost` → silent, exit 0.
   A name is valid when it is one of `KNOWN_PROVIDERS` (claude / codex / glm / grok /
-  gemini / opencode / devin), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
+  gemini / opencode / devin / muse), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
   the worst of its workers; a worker name wins on collision) — anything else exits 2, regardless of what
   status.json contains. A valid name whose windows are absent from status.json (or when
   status.json is missing / too old / unreadable) is `unknown` with exit 0; with `--json`
@@ -388,6 +388,20 @@ with `set-key devin`), then `windsurf_api_key` in the Devin CLI login at
 `hideDailyQuota` / `hideWeeklyQuota` hides the corresponding window, and an optional
 `overageBalanceMicros` is shown as the extra usage balance (USD). A 401/403 means the key
 is invalid (check that the key belongs to a Devin account).
+
+Muse (`muse`, Meta's chatbot at https://muse.ai) reads Keychain
+`quota-canvas/muse` (saved with `set-key muse`), then `MUSE_COOKIE`; the value is the
+browser's Cookie request header for a logged-in muse.ai session, verbatim. Usage is
+fetched through the `fetchSubscriptionAction` Next.js Server Action on muse.ai; the
+Action ID is resolved from the page's `/_next/static/chunks/*.js` bundles (cached in
+the data directory with a `verified` flag and `resolved_at`, re-resolved once when a
+proven-good or long-unverified ID fails) and posted with a `Next-Action`
+header. Its window is `muse:weekly` (7 days); top-up tokens are reported as a
+`balances` entry (`currency: "TOKENS"`, `amount`: remaining percent, `text`: the
+display string like `残り 70%`) rather than a window or a money amount — the raw
+token count is not reported because it does not match the service's own labels. A
+401/403 or a response without a `success: true`
+line means the Cookie has expired; save a fresh one with `set-key muse`.
 
 ## Config keys the app edits
 

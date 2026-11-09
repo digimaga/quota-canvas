@@ -72,11 +72,12 @@ struct StatusBalance: Decodable {
     var currency: String
     var amount: Double
     var label: String?
+    var text: String?
     var staleError: String?
     var fetchedAtRaw: String?
 
     enum CodingKeys: String, CodingKey {
-        case provider, name, currency, amount, label
+        case provider, name, currency, amount, label, text
         case staleError = "stale_error"
         case fetchedAtRaw = "fetched_at"
     }
@@ -84,6 +85,9 @@ struct StatusBalance: Decodable {
     var fetchedAt: Date? { fetchedAtRaw.flatMap(ISO8601Support.parse) }
 
     var displayText: String {
+        if let text {
+            return "\(label ?? String(localized: "残高")) \(text)"
+        }
         let symbol = currency == "USD" ? "$" : (currency == "CNY" ? "¥" : currency + " ")
         let amountText = String(format: "%.2f", amount)
         return "\(label ?? String(localized: "残高")) \(symbol)\(amountText)"

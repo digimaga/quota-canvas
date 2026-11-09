@@ -190,6 +190,13 @@ enabled = true
 # 次に Devin デスクトップアプリの state.vscdb の windsurfAuthStatus を読む
 # color = "#0EA5E9"
 
+[providers.muse]
+enabled = true
+# quota-canvas set-key muse で muse.ai のログイン Cookie を保存
+# （ブラウザの Cookie ヘッダーの文字列をそのまま）
+# キーチェーンに無いときは環境変数 MUSE_COOKIE を読む
+# color = "#F59E0B"
+
 # ローカル LLM サーバー（OpenAI 互換サーバーの並列枠の空きを /metrics から取る）。
 # サーバー名ごとに [providers.local.<名前>] を 1 つ書けます（名前は半角英数字と
 # . _ - で、routing.workers では "local:<名前>" で束ねます）。

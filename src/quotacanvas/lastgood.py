@@ -66,7 +66,8 @@ def _encode_usage(usage: ProviderUsage) -> Dict[str, Any]:
             }
             for w in usage.windows
         ],
-        "balances": [{"currency": b.currency, "amount": b.amount, "label": b.label}
+        "balances": [{"currency": b.currency, "amount": b.amount, "label": b.label,
+                      "text": b.text}
                      for b in usage.balances],
         "reset_credits": [
             {
@@ -114,12 +115,14 @@ def _decode_balance(entry: Any) -> Optional[Balance]:
         return None
     try:
         currency, amount, label = entry["currency"], entry["amount"], entry.get("label")
+        text = entry.get("text")            # キーが無い古いファイルは None
         if not isinstance(currency, str) or not currency or isinstance(amount, bool):
             return None
         amount = float(amount)
-        if not math.isfinite(amount) or (label is not None and not isinstance(label, str)):
+        if not math.isfinite(amount) or (label is not None and not isinstance(label, str)) \
+                or (text is not None and not isinstance(text, str)):
             return None
-        return Balance(currency, amount, label)
+        return Balance(currency, amount, label, text)
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
 

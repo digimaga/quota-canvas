@@ -10,6 +10,8 @@ token_expired_run_claude = "Token expired (run claude once)"
 token_expired_refreshing = "Token expired (auto-refreshing)"
 login_expired_run_grok = "Login expired (run grok once)"
 login_expired_refreshing = "Login expired (auto-refreshing)"
+muse_cookie_expired = "Cookie expired (save a fresh one with set-key muse)"
+muse_resolve_unavailable = "Cannot resolve Muse endpoint (retrying in a few hours)"
 reset_credit = "Reset credits"
 
 balance = "Balance"
@@ -45,6 +47,10 @@ devin_desktop = "Devin desktop app login (state.vscdb)"
 
 [claude]
 weekly_scoped = "Weekly {model}"
+
+[muse]
+topup = "Top-up tokens"
+topup_left = "{pct}% left"
 
 [gemini]
 claude_window = "Claude"

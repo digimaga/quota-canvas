@@ -48,6 +48,7 @@ class Balance:
     currency: str
     amount: float
     label: Optional[str] = None
+    text: Optional[str] = None   # 金額の代わりにそのまま出す表示文 (例: "残り 70%")
 
 
 @dataclass
