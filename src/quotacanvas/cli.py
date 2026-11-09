@@ -873,7 +873,7 @@ def _cmd_routing_line(args, cfg: Config) -> int:
             for model_line in gate.format_model_lines(cfg.routing.models, result, lang):
                 print(model_line)
     except Exception as exc:  # 判定できないときも起動は止めない (fail-open)
-        print("routing: %s" % exc, file=sys.stderr)
+        print("routing: %s" % str(exc).replace("\n", " ").replace("\r", " "), file=sys.stderr)
     return 0
 
 

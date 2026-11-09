@@ -164,10 +164,13 @@ def test_line_json_outputs_result(tmp_path):
     assert data["workers"][0]["verdict"] == "boost"
 
 
-def test_line_missing_status_prints_stale_line_exit0(tmp_path, capsys):
+def test_line_missing_status_prints_stale_line_exit0(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(providers, "fetch_all", lambda *a, **kw: calls.append(a))
     rc, out, err = _run(tmp_path, ["routing", "line"], status=tmp_path / "none.json")
     assert rc == 0 and err == ""
     assert "stale" in out
+    assert calls == []  # status 不在でも絶対に取得しない (_no_fetch の例外は except に吸収されるため呼出回数で測る)
 
 
 def test_line_exception_failopen_exit0_stderr_one_line(tmp_path, monkeypatch):
@@ -175,18 +178,12 @@ def test_line_exception_failopen_exit0_stderr_one_line(tmp_path, monkeypatch):
     _write_status(status, [_win("glm:5h", "glm", "spare", 70.0)])
 
     def _boom(*args, **kwargs):
-        raise RuntimeError("broken")
+        raise RuntimeError("problem\nmore")
 
     monkeypatch.setattr(gate, "evaluate", _boom)
     rc, out, err = _run(tmp_path, ["routing", "line"], status=status)
     assert rc == 0 and out == ""
-    assert err == "routing: broken\n"
-
-
-def test_line_never_fetches_even_without_status(tmp_path):
-    # _no_fetch fixture が fetch_all を例外化済み。取得なしで完走する。
-    rc, out, _ = _run(tmp_path, ["routing", "line"], status=tmp_path / "none.json")
-    assert rc == 0 and "stale" in out
+    assert err.splitlines() == ["routing: problem more"]  # 複数行例外でも stderr は 1 行
 
 
 # ------------------------------------------------------------------ routing check
@@ -235,13 +232,6 @@ def test_check_go_and_boost_are_silent(tmp_path):
     assert (rc, out, err) == (0, "", "")
 
 
-def test_check_unknown_name_exit2(tmp_path):
-    status = tmp_path / "status.json"
-    _write_status(status, [_win("glm:5h", "glm", "spare", 70.0)])
-    rc, out, err = _run(tmp_path, ["routing", "check", "nosuch"], status=status)
-    assert rc == 2
-
-
 def test_check_disabled_is_silent_exit0(tmp_path):
     cfg = _write_config(tmp_path / "cfg.toml", enabled=False)
     rc, out, err = _run(tmp_path, ["routing", "check", "glm"],
@@ -258,11 +248,13 @@ def test_check_force_env_exit0_silent(tmp_path, monkeypatch):
 
 
 def test_check_stale_status_reports_unknown_exit0(tmp_path):
+    """古い status の check は 1 行の unknown で、その reason に stale を含む。"""
     status = tmp_path / "status.json"
     _write_status(status, [_win("glm:5h", "glm", "exhausted", 0.0)], age_seconds=3600)
     cfg = _write_config(tmp_path / "cfg.toml", workers={"glm": ["glm:5h"]})
     rc, out, err = _run(tmp_path, ["routing", "check", "glm"], status=status, config=cfg)
-    assert rc == 0 and "unknown" in err
+    assert rc == 0 and out == ""
+    assert "unknown" in err and "stale" in err
 
 
 # ------------------------------------------------------------------ status / env / fallback
@@ -488,9 +480,13 @@ def test_routing_burn_promotes_stop_in_check_not_forced(tmp_path):
     status = tmp_path / "status.json"
     _write_status(status, [_win("glm:5h", "glm", "over", 80.0)])
     gate.store_burn(gate.BURN_PATH, "glm", datetime.now().astimezone() + timedelta(hours=2))
-    rc, out, _ = _run(tmp_path, ["routing", "check", "glm"], status=status)
-    assert rc == 0  # reserve だが burn で boost → ノートも出ない
-    assert out == "" and "reserve" not in (out or "")
+    rc, out, err = _run(tmp_path, ["routing", "check", "glm"], status=status)
+    assert (rc, out, err) == (0, "", "")  # reserve→boost 昇格で reserve の注意も出ない
+    rc, out, _ = _run(tmp_path, ["routing", "check", "glm", "--json"], status=status)
+    assert rc == 0 and json.loads(out)["verdict"] == "boost"  # 昇格を直接確認
+    _write_status(status, [_win("glm:5h", "glm", "exhausted", 0.0)])
+    rc, out, err = _run(tmp_path, ["routing", "check", "glm"], status=status)
+    assert rc == 3 and "stop" in err  # stop は burn で昇格しない
 
 
 # ------------------------------------------------------------------ レビュー対応分
@@ -507,10 +503,14 @@ def test_check_known_name_without_windows_is_unknown_exit0(tmp_path):
 
 
 def test_check_unknown_name_exit2_even_when_status_stale(tmp_path):
-    status = tmp_path / "status.json"
-    _write_status(status, [_win("glm:5h", "glm", "spare", 70.0)], age_seconds=3600)
-    rc, out, err = _run(tmp_path, ["routing", "check", "nosuch"], status=status)
-    assert rc == 2
+    """未知名は status の鮮度に関係なく無出力で exit 2 (引数ミスを判定不能と混同しない)。"""
+    fresh = tmp_path / "fresh.json"
+    _write_status(fresh, [_win("glm:5h", "glm", "spare", 70.0)])
+    stale = tmp_path / "stale.json"
+    _write_status(stale, [_win("glm:5h", "glm", "spare", 70.0)], age_seconds=3600)
+    for path in (fresh, stale):
+        rc, out, err = _run(tmp_path, ["routing", "check", "nosuch"], status=path)
+        assert (rc, out, err) == (2, "", "")
 
 
 def test_check_json_missing_status_outputs_unknown_json(tmp_path):
@@ -539,13 +539,6 @@ def test_check_broken_status_reason_broken(tmp_path):
     assert json.loads(out)["reason"] == "broken"
     rc, out, err = _run(tmp_path, ["routing", "check", "glm"], status=status)
     assert rc == 0 and "broken" in err  # 人間向け行も detail に応じた reason
-
-
-def test_check_old_status_note_says_stale(tmp_path):
-    status = tmp_path / "status.json"
-    _write_status(status, [_win("glm:5h", "glm", "spare", 70.0)], age_seconds=3600)
-    rc, out, err = _run(tmp_path, ["routing", "check", "glm"], status=status)
-    assert rc == 0 and "stale" in err
 
 
 def test_line_empty_workers_prints_nothing(tmp_path):

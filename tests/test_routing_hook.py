@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from quotacanvas import gate
+from quotacanvas import gate, providers
 from test_routing_cli import (  # noqa: F401  (fixtures / helpers の再利用)
     _no_fetch, _restore_language, _run, _win, _write_config, _write_status, burn_path,
 )
@@ -75,10 +75,14 @@ def test_hook_exception_is_silent_exit0(tmp_path, monkeypatch):
     assert (rc, out, err) == (0, "", "")
 
 
-def test_hook_never_fetches_even_without_status(tmp_path):
-    # _no_fetch fixture が fetch_all を例外化済み。取得なしで完走する。
+def test_hook_never_fetches_even_without_status(tmp_path, monkeypatch):
+    """missing status でも取得せず stale 行で完走する。呼出回数を直接数える
+    (_no_fetch の例外は cli.py の except に吸収され、rc だけでは取得を観測できない)。"""
+    calls = []
+    monkeypatch.setattr(providers, "fetch_all", lambda *a, **kw: calls.append(a))
     rc, out, _ = _hook(tmp_path, status=tmp_path / "none.json")
-    assert rc == 0
+    assert rc == 0 and calls == []
+    assert "stale" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
 
 
 # ------------------------------------------------------------------ JSON の形

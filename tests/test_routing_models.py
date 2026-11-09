@@ -79,6 +79,20 @@ def test_model_verdict(verdicts, expected):
     assert gate.model_verdict("model", model, result).verdict == ("stop" if expected == "stop" else "unknown")
 
 
+def test_model_verdict_stale_worker_is_unknown_but_stop_wins():
+    """stale ワーカーは unknown と同じく判定不能に倒す (`or w.stale`)。
+    確定した stop だけは stale より優先される。"""
+    model = config.RoutingModel(["a", "b"], ["review"])
+    result = gate.RoutingResult(workers=[
+        gate.WorkerResult("a", "boost", "test", stale=True),
+        gate.WorkerResult("b", "go", "test"),
+    ])
+    assert gate.model_verdict("m", model, result).verdict == "unknown"
+    result.workers.insert(0, gate.WorkerResult("s", "stop", "test"))
+    model.workers.append("s")
+    assert gate.model_verdict("m", model, result).verdict == "stop"
+
+
 def test_line_hook_check_and_stale(tmp_path):
     path = tmp_path / "status.json"
     _write_status(path, [_win("codex:weekly", "codex", "spare", 70), _win("glm:weekly", "glm", "exhausted", 0)])
