@@ -155,15 +155,34 @@ def test_recent_rate_skipped_when_span_too_short():
 
 
 def test_recent_rate_short_lookback_for_5h_window():
+    # 5h window: start 0%, +1h 6%, now +2h 10%. The correct 1h lookback picks
+    # the +1h sample as base -> 108/d. If the lookback were always 24h, the
+    # base becomes the start sample -> 120/d; if the cutoff comparison were
+    # < instead of <=, the +1h sample is dropped -> also 120/d.
     start = datetime(2026, 10, 24, tzinfo=UTC)
     reset = start + timedelta(hours=5)
     w = Window("codex", "5h", "5時間", 10.0, reset, timedelta(hours=5))
     now = start + timedelta(hours=2)
-    stray = samp(start + timedelta(hours=1), 6.0)  # weekly-period sample: ignored
+    at_start = Sample("codex:5h", start, 0.0, reset)
     own = Sample("codex:5h", start + timedelta(hours=1), 6.0, reset)
-    pace = compute_pace(w, [stray, own], now)
-    # r_win=120/d, r_recent=(10-6)/(1/24)=96/d -> 108
+    # stray from another period at the same time, passed after own; without the
+    # period filter it becomes the base (used 0) and the rate changes to 180/d
+    stray = samp(start + timedelta(hours=1), 0.0)  # weekly-period sample: ignored
+    pace = compute_pace(w, [at_start, own, stray], now)
+    # r_win=120/d, r_recent=(10-6)/(1/24)=96/d -> (120+96)/2 = 108
     assert pace.rate_per_day == pytest.approx(108.0)
+
+    # exactly one day must take the 24h lookback branch, not the <1 day 1h one
+    start_day = datetime(2026, 10, 24, tzinfo=UTC)
+    reset_day = start_day + timedelta(days=1)
+    w_day = Window("codex", "daily", "1日", 10.0, reset_day, timedelta(days=1))
+    now_day = start_day + timedelta(hours=2)
+    base_zero = Sample("codex:daily", start_day, 0.0, reset_day)
+    later = Sample("codex:daily", start_day + timedelta(hours=1), 6.0, reset_day)
+    pace_day = compute_pace(w_day, [base_zero, later], now_day)
+    # 24h branch: lookback 2h, base at start -> r_recent=120/d -> (120+120)/2=120
+    # 1h branch (wrong): base at +1h -> r_recent=96/d -> 108
+    assert pace_day.rate_per_day == pytest.approx(120.0)
 
 
 # --- burst rate (F2: 直近 2 時間の加速) ------------------------------------
@@ -192,6 +211,11 @@ def test_burst_needs_both_conditions():
     # moved 1.5% but 18/d < 1.5 x 20/d: no burst either
     pace = compute_pace(weekly(40.0), [bsamp(NOW - timedelta(hours=2), 38.5)], NOW)
     assert pace.burst_rate_per_day is None
+    # moved only 0.5% but the baseline is low (2.5/d): 6/d clears 1.5 x 2.5 = 3.75,
+    # so only the "moved >= 1%" guard suppresses it
+    pace = compute_pace(weekly(5.0), [bsamp(NOW - timedelta(hours=2), 4.5)], NOW)
+    assert pace.burst_rate_per_day is None
+    assert pace.burst_exhausts_at is None
 
 
 def test_burst_exhausts_at_only_before_reset():
@@ -334,5 +358,10 @@ def test_no_cautious_exhausts_for_fractional_or_over():
 
 
 def test_no_cautious_exhausts_for_short_window():
-    five_h = Window("claude", "5h", "5時間", 50.0, NOW + timedelta(hours=2), timedelta(hours=5))
-    assert compute_pace(five_h, [], NOW).cautious_exhausts_at is None
+    # elapsed 2h, used 40% -> 40 x 5/3 = 100% at the reset exactly, so
+    # exhausts_at is None and the +1% correction would reach the reset
+    # (41 x 5/2 = 102.5%) unless the length >= 1 day guard blocks it.
+    five_h = Window("claude", "5h", "5時間", 40.0, NOW + timedelta(hours=3), timedelta(hours=5))
+    pace = compute_pace(five_h, [], NOW)
+    assert pace.exhausts_at is None  # the cautious branch is otherwise reachable
+    assert pace.cautious_exhausts_at is None

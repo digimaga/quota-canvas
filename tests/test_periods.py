@@ -120,8 +120,12 @@ def test_encode_decode_roundtrip():
 def test_creates_missing_directories(tmp_path):
     path = tmp_path / "a" / "b" / "periods.jsonl"
     Periods(path).record_closed("claude:5h", T0, 1.0, T0 + timedelta(hours=5))
+    assert path.parent.is_dir()
     assert path.exists()
-    assert not path.with_name("periods.jsonl.tmp").exists()  # 原子的な書き込み
+    assert Periods(path).previous_used("claude:5h") == pytest.approx(1.0)
+    # atomic.py writes .{name}.{token}.tmp in the destination directory; after
+    # the write no temporary file may remain (check the real naming, not a fixed one)
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
 
 
 # --------------------------------------------- History.record からの検知 (F3)

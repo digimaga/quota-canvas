@@ -94,6 +94,13 @@ def test_unusable_when_remaining_below_5_percent(tmp_path):
 def test_error_service_is_skipped(tmp_path):
     bad = _usage("glm", "GLM", [], error="HTTP 401")
     assert _rec([bad], tmp_path) is None
+    # error with a perfectly usable window: only the error check excludes it
+    # (the empty-window check would not, and the window itself is usable)
+    bad_with_window = _usage(
+        "glm", "GLM",
+        [_win("glm", "5h", 2.0, timedelta(hours=5), timedelta(hours=5), "5時間")],
+        error="HTTP 401")
+    assert _rec([bad_with_window], tmp_path) is None
 
 
 def test_past_reset_window_makes_service_not_usable(tmp_path):

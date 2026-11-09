@@ -36,22 +36,18 @@ def test_5h_last_unit_spare_compact():
     assert pace.status is PaceStatus.SPARE
     text = advice_text(pace, compact=True, now=NOW)
     assert text == "このままだと約73%余る · リセットまで18分"
+    # 18分残しでは「1時間あたり 244%」のような許容量は意味をなさない
+    assert "244" not in text
+    assert "1時間あたり" not in text
 
 
 def test_5h_last_unit_spare_normal():
     pace = _pace(25.0, timedelta(minutes=18), timedelta(hours=5))
     text = advice_text(pace, compact=False, now=NOW)
     assert text == "このままだと約73%余る · リセットまで18分、残り75%は自由に使える"
-
-
-def test_5h_last_unit_never_shows_per_hour_allowance():
-    # used 25%・18分残しでは「1時間あたり 244%」のような許容量は意味をなさない
-    pace = _pace(25.0, timedelta(minutes=18), timedelta(hours=5))
-    for compact in (True, False):
-        text = advice_text(pace, compact, NOW)
-        assert "244" not in text
-        assert "1時間あたり" not in text
-        assert "リセットまで18分" in text
+    # 18分残しでは「1時間あたり 244%」のような許容量は意味をなさない
+    assert "244" not in text
+    assert "1時間あたり" not in text
 
 
 # --- 5時間枠・リセットまで1時間以上: 残量と時間をそのまま出す新仕様 ----------
@@ -125,21 +121,16 @@ def test_weekly_last_unit_compact():
     assert pace.status is PaceStatus.SPARE
     text = advice_text(pace, compact=True, now=NOW)
     assert text == "このままだと約78%余る · リセットまで23時間"
+    # 残り 23時間 (< 1日) で「1日 約○○%まで」は意味をなさない
+    assert "1日" not in text
 
 
 def test_weekly_last_unit_normal():
     pace = _pace(19.0, timedelta(hours=23), timedelta(days=7))
     text = advice_text(pace, compact=False, now=NOW)
     assert text == "このままだと約78%余る · リセットまで23時間、残り81%は自由に使える"
-
-
-def test_weekly_last_unit_never_shows_per_day_allowance():
     # 残り 23時間 (< 1日) で「1日 約○○%まで」は意味をなさない
-    pace = _pace(19.0, timedelta(hours=23), timedelta(days=7))
-    for compact in (True, False):
-        text = advice_text(pace, compact, NOW)
-        assert "1日" not in text
-        assert "リセットまで23時間" in text
+    assert "1日" not in text
 
 
 # --- last_unit での状態ごとの文言 (通常サイズ) ------------------------------
