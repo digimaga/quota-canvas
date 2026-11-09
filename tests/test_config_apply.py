@@ -1,7 +1,9 @@
 import copy
 import json
+import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -48,16 +50,109 @@ def test_invalid_apply_does_not_overwrite(tmp_path):
 
 def test_parallel_cli_edits_are_merged(tmp_path):
     path = tmp_path / 'config.toml'
+    sync = tmp_path / 'sync'
+    sync.mkdir()
     original = config_to_dict(load_config(path))
-    commands = []
-    for key, value in [('paused', True), ('brightness', 17)]:
+    # 各子プロセスで config_lock と load_config をラップする。
+    #  - apply が latest を読んだ直後に ready-<pid> を立て、go-<pid> が
+    #    来るまで書き込み前に止まる (gate_load)。
+    #  - ロック取得前に別 fd で LOCK_NB を試し、取れなければ
+    #    blocked-<pid> を立てる (gate_lock)。本物の config_lock 自体は
+    #    そのまま使うので flock が無ければ直列化も無い。
+    # 親は 1 本目が ready になってから 2 本目を起動する。flock が効いて
+    # いれば 2 本目は必ず blocked になり、flock が無ければ両者が同じ
+    # latest を読んでから書き込むので必ず片方の編集が消える。
+    preamble = (
+        "import os, sys, time\n"
+        "from contextlib import contextmanager\n"
+        "from pathlib import Path\n"
+        "import quotacanvas.config as _c\n"
+        "sync = Path(os.environ['QCTEST_SYNC'])\n"
+        "cfg_target = Path(os.environ['QCTEST_CONFIG'])\n"
+        "pid = str(os.getpid())\n"
+        "real_lock, real_load = _c.config_lock, _c.load_config\n"
+        "lock_path = cfg_target.with_name('.' + cfg_target.name + '.lock')\n"
+        "gated = [False]\n"
+        "def gate_load(path):\n"
+        "    result = real_load(path)\n"
+        "    if not gated[0] and Path(path) == cfg_target:\n"
+        "        gated[0] = True\n"
+        "        (sync / ('ready-' + pid)).touch()\n"
+        "        end = time.monotonic() + 30\n"
+        "        while not (sync / ('go-' + pid)).exists():\n"
+        "            if time.monotonic() > end:\n"
+        "                raise TimeoutError('go marker did not appear')\n"
+        "            time.sleep(0.005)\n"
+        "    return result\n"
+        "def probe_free():\n"
+        "    lock_path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    with lock_path.open('a+b') as fh:\n"
+        "        fh.seek(0)\n"
+        "        if os.name == 'nt':\n"
+        "            import msvcrt\n"
+        "            try:\n"
+        "                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)\n"
+        "            except OSError:\n"
+        "                return False\n"
+        "            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)\n"
+        "            return True\n"
+        "        import fcntl\n"
+        "        try:\n"
+        "            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "        except OSError:\n"
+        "            return False\n"
+        "        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)\n"
+        "        return True\n"
+        "@contextmanager\n"
+        "def gate_lock(target):\n"
+        "    if not probe_free():\n"
+        "        (sync / ('blocked-' + pid)).touch()\n"
+        "    with real_lock(target):\n"
+        "        yield\n"
+        "_c.config_lock, _c.load_config = gate_lock, gate_load\n"
+        "from quotacanvas.cli import main\n"
+        "sys.exit(main())\n"
+    )
+    env = dict(os.environ, QCTEST_SYNC=str(sync), QCTEST_CONFIG=str(path))
+    children = []
+
+    def spawn(key, value):
         edited = copy.deepcopy(original)
         edited['display'][key] = value
-        commands.append(subprocess.Popen([sys.executable, '-m', 'quotacanvas.cli', '--config', str(path), 'config', '--apply-json'],
-                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
-        commands[-1].stdin.write(json.dumps({'original': original, 'edited': edited}))
-        commands[-1].stdin.close()
-    for process in commands:
+        proc = subprocess.Popen([sys.executable, '-c', preamble,
+                                 '--config', str(path), 'config', '--apply-json'],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=env)
+        proc.stdin.write(json.dumps({'original': original, 'edited': edited}))
+        proc.stdin.close()
+        children.append(proc)
+
+    def markers(kind):
+        return {p.name[len(kind) + 1:] for p in sync.glob(kind + '-*')}
+
+    def wait_until(pred, what):
+        end = time.monotonic() + 30
+        while not pred():
+            assert time.monotonic() < end, "timeout waiting for " + what
+            time.sleep(0.005)
+
+    spawn('paused', True)
+    wait_until(lambda: markers('ready'), 'first child to finish its read')
+    first = markers('ready')
+    spawn('brightness', 17)
+    # 2 本目がロックで待つ (blocked) か、そのまま読了する (ready) かを待つ。
+    wait_until(lambda: len(markers('ready')) == 2 or markers('blocked') - first,
+               'second child to become ready or blocked')
+    if len(markers('ready')) == 2:
+        for pid in markers('ready'):
+            (sync / ('go-' + pid)).touch()
+    else:
+        for pid in first:
+            (sync / ('go-' + pid)).touch()
+        wait_until(lambda: len(markers('ready')) == 2, 'second child to finish its read')
+        for pid in markers('ready') - first:
+            (sync / ('go-' + pid)).touch()
+    for process in children:
         process.wait()
         assert process.returncode == 0, process.stderr.read()
     current = load_config(path)

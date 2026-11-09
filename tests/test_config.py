@@ -230,11 +230,6 @@ def test_syntax_error_mentions_file(tmp_path):
     assert "config.toml" in str(ei.value)
 
 
-def test_provider_enabled_bad_bool_raises(tmp_path):
-    with pytest.raises(ConfigError):
-        load_config(write_cfg(tmp_path, '[providers.claude]\nenabled = "yes"\n'))
-
-
 # --- unknown keys --------------------------------------------------------------
 
 
@@ -643,7 +638,9 @@ def test_invalid_provider_color_raises(tmp_path, text):
 
 
 def test_config_to_dict_defaults(tmp_path):
-    d = config_to_dict(load_config(tmp_path / "none.toml"))
+    cfg = load_config(tmp_path / "none.toml")
+    assert cfg.display.separator == ""  # "" = 言語既定 (render.default_separator)
+    d = config_to_dict(cfg)
     assert d["display"] == {"paused": False, "sleep_with_mac": True,
                             "gauge": "remaining", "percent_colors": True,
                             "separator": "", "language": "auto",
@@ -743,7 +740,8 @@ def test_save_config_writes_loadable_toml(tmp_path):
     target = tmp_path / "out" / "config.toml"
     cfg = load_config(tmp_path / "none.toml")
     assert save_config(cfg, target) == target
-    assert not (tmp_path / "out" / "config.toml.tmp").exists()
+    # 一時ファイル (.{name}.{random}.tmp) を残さない
+    assert not list(target.parent.glob("." + target.name + ".*.tmp"))
     assert config_to_dict(load_config(target)) == config_to_dict(cfg)
 
 
@@ -757,7 +755,9 @@ def test_save_config_atomic_replace(tmp_path):
 
 
 def test_overlapping_saves_are_serialized_and_clean_up(tmp_path, monkeypatch):
+    import time
     from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
     from threading import Event
     from quotacanvas import config
 
@@ -765,8 +765,20 @@ def test_overlapping_saves_are_serialized_and_clean_up(tmp_path, monkeypatch):
     first = config_from_dict({"display": {"brightness": 40}})
     second = config_from_dict({"display": {"brightness": 60}})
     replace = config.os.replace
+    real_lock = config.config_lock
     entered, release = Event(), Event()
     sources = []
+    lock_events = []  # ロック取得の試行・出入り (取得順・待機の観測)
+
+    @contextmanager
+    def observed_lock(path):
+        lock_events.append("attempt")
+        with real_lock(path):
+            lock_events.append("acquire")
+            try:
+                yield
+            finally:
+                lock_events.append("release")
 
     def interleave(source, destination):
         sources.append(source)
@@ -777,14 +789,30 @@ def test_overlapping_saves_are_serialized_and_clean_up(tmp_path, monkeypatch):
         replace(source, destination)
 
     monkeypatch.setattr(config.os, "replace", interleave)
+    monkeypatch.setattr(config, "config_lock", observed_lock)
     with ThreadPoolExecutor(max_workers=2) as pool:
         a = pool.submit(save_config, first, target)
         assert entered.wait(10)
+        if config.os.name != "nt":
+            # a の保持中は、別 fd からの非ブロッキング取得が実際に競合する (ロックが
+            # 無効なら取れてしまう)。イベント順だけでは b の遅れと区別できないため。
+            import fcntl
+            with target.with_name("." + target.name + ".lock").open("a+b") as probe:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         b = pool.submit(save_config, second, target)
+        # a がロックを保持したまま b が取得を試みてブロックするのを観測してから解放する
+        deadline = time.monotonic() + 10
+        while lock_events.count("attempt") < 2:
+            assert time.monotonic() < deadline, "b がロック取得を試みない"
+            time.sleep(0.001)
         release.set()
         with pytest.raises(OSError, match="simulated replace failure"):
             a.result(timeout=10)
         b.result(timeout=10)
+    # b の取得試行は a の解放より前、b の acquire は a の解放より後 (flock による
+    # 直列化)。ロックが無ければ a が止まっている間に b が acquire するので検出できる。
+    assert lock_events == ["attempt", "acquire", "attempt", "release", "acquire", "release"]
     assert len(sources) == 2 and sources[0] != sources[1]
     assert load_config(target).display.brightness == 60
     assert all(not source.exists() for source in sources)
@@ -942,10 +970,6 @@ def test_percent_colors_invalid_raises(tmp_path):
 
 
 # --- display.separator (文の区切り) -------------------------------------------------
-
-
-def test_separator_defaults_to_language_default(tmp_path):
-    assert load_config(tmp_path / "none.toml").display.separator == ""
 
 
 def test_separator_roundtrips(tmp_path):

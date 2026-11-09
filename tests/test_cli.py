@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from PIL import Image
 
 from quotacanvas import cli, keychain, providers
-from quotacanvas.config import load_config
+from quotacanvas.config import config_to_dict, load_config
 from quotacanvas.models import ProviderUsage, Window
 from quotacanvas.render import PanelSpec
 
@@ -124,7 +124,10 @@ def test_config_set_json_saves_and_echoes(monkeypatch, capsys, tmp_path):
     assert cfg.display.brightness == 55
     assert cfg.providers.windows == {"claude": ["weekly"], "glm": ["5h", "weekly"]}
     assert cfg.poll.interval == 300 and cfg.poll.redraw == 30
-    assert not target.with_name("config.toml.tmp").exists()  # 原子的な書き込み
+    # エコー (検証済み dict) は実際に保存して読み戻した内容と一致する
+    assert echoed == config_to_dict(cfg)
+    # 一時ファイル (.{name}.{random}.tmp) を残さない
+    assert not list(target.parent.glob("." + target.name + ".*.tmp"))
 
 
 def test_config_set_json_invalid_value(monkeypatch, capsys, tmp_path):
