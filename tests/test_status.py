@@ -61,25 +61,44 @@ def test_build_status_card_shape(tmp_path):
     assert status["errors"] == []
 
 
-def test_build_status_labels_match_pace(tmp_path):
+@pytest.mark.parametrize("status", [
+    PaceStatus.OVER,
+    PaceStatus.EXHAUSTED,
+    PaceStatus.TIGHT,
+    PaceStatus.ON_TRACK,
+    PaceStatus.SPARE,
+    PaceStatus.FRESH,
+    PaceStatus.UNKNOWN,
+])
+def test_build_status_labels_match_pace(tmp_path, status):
+    # status.json の status_label は画面表示 (render._badge) と同じ翻訳後の
+    # 文言でなければならない (文言キーそのものではない)。全状態を実際に
+    # build_status へ通して解決後の文字列を比較する。
+    from quotacanvas.render import _STATUS_BADGE, _badge
     cfg = _cfg(tmp_path)
     win = _win("claude", "weekly", 10.0)
     pu = ProviderUsage("claude", "Claude Max", [win], None, NOW)
-    status = build_status(cfg, [(pu, _pace(win))], [pu], NOW)
-    card = status["cards"][0]
-    assert card["status"] == PaceStatus.SPARE.value  # 10%/4日 → 予測 17.5% で余裕あり
-    assert card["status_label"] == "余裕あり"
+    pace = replace(_pace(win), status=status)
+    card = build_status(cfg, [(pu, pace)], [pu], NOW)["cards"][0]
+    assert card["status"] == status.value
+    assert card["status_label"] == _badge(status)
+    assert card["status_label"] != _STATUS_BADGE[status]  # 生のキーではない
 
 
 def test_build_status_skips_part_of_windows(tmp_path):
     # 内訳窓 (part_of 付き) は status.json の cards に入らない:
-    # ゲージの塗り分け (render.build_cards) 専用の窓なので
+    # ゲージの塗り分け (render.build_cards) 専用の窓なので。
+    # 内訳窓の pace は compute_pace の実計算 (ここでは SPARE) を使う。
+    # UNKNOWN 固定の入力だけだと「UNKNOWN の内訳窓だけ除外する」退行を
+    # 検出できないため、この入力で status に依らない除外を固定する。
     cfg = _cfg(tmp_path)
     main = _win("grok", "weekly", 22.0)
     build = Window("grok", "weekly_build", "週間 Build", 20.0, main.resets_at,
                    main.length, part_of="weekly")
     pu = ProviderUsage("grok", "Grok", [main, build], None, NOW)
-    status = build_status(cfg, [(pu, _pace(main)), (pu, _pace(build))], [pu], NOW)
+    build_pace = _pace(build)
+    assert build_pace.status is PaceStatus.SPARE  # 内訳窓が UNKNOWN ではない
+    status = build_status(cfg, [(pu, _pace(main)), (pu, build_pace)], [pu], NOW)
     assert [c["id"] for c in status["cards"]] == ["grok:weekly"]
 
 
@@ -102,18 +121,15 @@ def test_write_status_is_atomic_and_overwritable(tmp_path):
     path = tmp_path / "sub" / "status.json"
     write_status({"a": 1}, path)
     assert json.loads(path.read_text(encoding="utf-8")) == {"a": 1}
-    assert not path.with_name("status.json.tmp").exists()  # rename 後に残らない
+    # 一時ファイルの実際の命名 (.status.json.<32桁hex>.tmp) は成功後に
+    # ディレクトリへ残らない。status.json.tmp だけを見る旧 assert では
+    # 本番の命名と一致せず漏れを検出できない。
+    directory = path.parent
+    assert sorted(p.name for p in directory.iterdir()) == ["status.json"]
+    assert not list(directory.glob(f".{path.name}.*.tmp"))
     write_status({"a": 2}, path)
     assert json.loads(path.read_text(encoding="utf-8"))["a"] == 2
-
-
-def test_status_labels_match_render_wording():
-    # status.json の status_label は画面表示 (render.py) と同じ文言を保つ
-    from quotacanvas.render import _STATUS_BADGE
-    from quotacanvas.status import _STATUS_LABEL
-
-    for status, label in _STATUS_BADGE.items():
-        assert _STATUS_LABEL[status] == label
+    assert sorted(p.name for p in directory.iterdir()) == ["status.json"]
 
 
 def test_write_status_keeps_utf8_and_offset_strings(tmp_path):

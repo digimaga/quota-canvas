@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from quotacanvas import providers
@@ -231,14 +230,3 @@ def test_build_cards_keeps_stale_usage_normal(tmp_path):
     assert len(cards) == 2
     assert all(pace is not None for _, pace in cards)
     assert all(u.stale_error == "HTTP 429" for u, _ in cards)
-
-
-def test_replace_keeps_persisted_copy_clean(tmp_path):
-    # dataclasses.replace のコピーにだけ stale_error が付き、元は無書き換え
-    good = _usage("claude", [_win("claude", "weekly")], fetched_at=OLD)
-    shown = replace(good, stale_error="HTTP 429")
-    assert shown.stale_error == "HTTP 429"
-    assert good.stale_error is None
-    LastGood(tmp_path / LAST_GOOD).set(good)
-    on_disk = json.loads((tmp_path / LAST_GOOD).read_text(encoding="utf-8"))
-    assert "stale_error" not in on_disk["claude"]

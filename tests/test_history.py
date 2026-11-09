@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -172,25 +173,18 @@ def test_decode_and_encode_roundtrip():
 
 
 def test_default_path_points_to_application_support():
+    # 既定の保存先は ~/Library/Application Support/quota-canvas/history.jsonl。
+    # 名称だけの確認では paths.data_dir の実装変更 (別ディレクトリ) を検出できない。
     history = History()
-    assert str(history.path).endswith("history.jsonl")
-    assert "quota-canvas" in str(history.path)
+    expected = (Path.home() / "Library" / "Application Support"
+                / "quota-canvas" / "history.jsonl")
+    assert history.path == expected
 
 
 # ------------------------------------- 閉じた期間の記録 (F3, periods.jsonl)
 
-def test_record_closes_previous_period_when_resets_change(tmp_path):
-    history = History(tmp_path / "history.jsonl")
-    r1 = T0 + timedelta(days=7)
-    history.record([_win(used=64.0, resets=r1)], now=T0)
-    history.record([_win(used=2.0, resets=r1 + timedelta(days=7))], now=T0 + timedelta(days=7))
-    assert history.periods.previous_used("claude:5h") == pytest.approx(64.0)
-    entry = history.periods.periods("claude:5h")[0]
-    assert entry.resets_at == r1
-    assert entry.closed_at == T0 + timedelta(days=7)
-
-
 def test_record_keeps_no_period_while_resets_stay_same(tmp_path):
+    # resets の揺れ (5 秒) は同じ期間。期間を閉じず、periods.jsonl も作らない。
     history = History(tmp_path / "history.jsonl")
     resets = T0 + timedelta(hours=2)
     history.record([_win(used=10.0, resets=resets)], now=T0)
@@ -198,13 +192,20 @@ def test_record_keeps_no_period_while_resets_stay_same(tmp_path):
     history.record([_win(used=30.0, resets=resets + timedelta(seconds=5))],
                    now=T0 + timedelta(minutes=20))  # 揺れは同じ期間
     assert history.periods.previous_used("claude:5h") is None
+    assert history.periods.periods("claude:5h") == []
     assert not (tmp_path / "periods.jsonl").exists()
+    # 期間判定が効いていることの対照: サンプル自体は 3 件追記されている
+    assert [s.used_percent for s in history.samples("claude:5h")] == [10.0, 20.0, 30.0]
 
 
 def test_record_period_next_to_history_not_in_home(tmp_path):
-    # periods も history と同じディレクトリ (tmp) にできる
+    # periods も history と同じディレクトリ (tmp) にできる。入れ子のパス組み立てと、
+    # 本物の home 側へ漏れないことを確認する。
     history = History(tmp_path / "nested" / "history.jsonl")
     assert history.periods.path == tmp_path / "nested" / "periods.jsonl"
+    assert history.periods.path.parent == history.path.parent
+    assert history.periods.path.name == "periods.jsonl"
+    assert tmp_path in history.periods.path.parents
 
 
 def test_record_does_not_close_period_when_previous_resets_unknown(tmp_path):

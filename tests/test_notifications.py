@@ -38,6 +38,11 @@ def test_same_status_new_period_and_fallback_id():
     candidates = plan({'cards': []}, current, NOW, set())
     assert candidates[0]['key'].startswith('status|||')
     assert plan(current, current, NOW, set()) == []
+    # 同じ status のまま resets だけ変わった (= 新しい期間) は status 通知を出す。
+    # ここを通さないと notifications.py の not _same_reset(...) 条件を削っても緑になる。
+    previous = {'cards': [{'provider': '', 'label': '', 'status': 'exhausted',
+                           'resets_at': '2026-01-01T00:00:00+00:00'}]}
+    assert [c['kind'] for c in plan(previous, current, NOW, set())] == ['status', 'reset']
 
 
 @pytest.mark.parametrize('expires, count', [
