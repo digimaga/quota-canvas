@@ -45,10 +45,20 @@ if [[ "$1" == kickstart && -f "$TEST_DIR/fail_restart" ]]; then exit 1; fi
         return path.read_text() if path.exists() else ''
 
     def test_plists_escape_paths_and_headless_arguments(self):
-        for script, args, label in [
-            ('install-agent.sh', (), 'com.digimaga.quota-canvas'),
-            ('install-agent.sh', ('--no-screen',), 'com.digimaga.quota-canvas-headless'),
-            ('install-auto-update.sh', (), 'com.digimaga.quota-canvas-autoupdate'),
+        logdir = self.home / 'Library/Logs/quota-canvas'
+        agent_keys = {'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 30}
+        binary = self.repo / '.venv/bin/quota-canvas'
+        updater = self.repo / 'scripts/auto-update.sh'
+        for script, args, label, arguments, keys, env_vars, logs in [
+            ('install-agent.sh', (), 'com.digimaga.quota-canvas',
+             [str(binary), 'run'], agent_keys, None, ('out.log', 'err.log')),
+            ('install-agent.sh', ('--no-screen',), 'com.digimaga.quota-canvas-headless',
+             [str(binary), '--no-screen', 'run'], agent_keys, None,
+             ('headless.out.log', 'headless.err.log')),
+            ('install-auto-update.sh', (), 'com.digimaga.quota-canvas-autoupdate',
+             ['/bin/bash', str(updater)], {'RunAtLoad': True, 'StartInterval': 600},
+             {'PATH': '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'},
+             ('autoupdate.log', 'autoupdate.log')),
         ]:
             with self.subTest(label=label):
                 result = self.run_script(script, *args)
@@ -59,13 +69,42 @@ if [[ "$1" == kickstart && -f "$TEST_DIR/fail_restart" ]]; then exit 1; fi
                 with plist.open('rb') as f:
                     data = plistlib.load(f)
                 self.assertEqual(data['Label'], label)
-                executable = data['ProgramArguments'][1 if script == 'install-auto-update.sh' else 0]
-                self.assertTrue(Path(executable).resolve().is_relative_to(self.repo.resolve()))
-                self.assertTrue(data['StandardOutPath'].startswith(str(self.home)))
-                if args:
-                    self.assertEqual(data['ProgramArguments'][1:], ['--no-screen', 'run'])
-                elif script == 'install-agent.sh':
-                    self.assertEqual(data['ProgramArguments'][1:], ['run'])
+                program = data['ProgramArguments']
+                self.assertEqual(len(program), len(arguments))
+                for got, want in zip(program, arguments):
+                    if want.startswith('/'):
+                        self.assertEqual(Path(got).resolve(), Path(want).resolve())
+                        self.assertTrue(Path(got).resolve().is_relative_to(
+                            self.repo.resolve()) or got == want)
+                    else:
+                        self.assertEqual(got, want)
+                for key, value in keys.items():
+                    self.assertEqual(data[key], value)
+                if env_vars is None:
+                    self.assertNotIn('EnvironmentVariables', data)
+                else:
+                    self.assertEqual(data['EnvironmentVariables'], env_vars)
+                self.assertEqual(data['StandardOutPath'], str(logdir / logs[0]))
+                self.assertEqual(data['StandardErrorPath'], str(logdir / logs[1]))
+                self.assertTrue(str(logdir).startswith(str(self.home)))
+
+    def test_installer_uninstall_boots_out_and_removes_plist(self):
+        for script, args, label in [
+            ('install-agent.sh', (), 'com.digimaga.quota-canvas'),
+            ('install-agent.sh', ('--no-screen',), 'com.digimaga.quota-canvas-headless'),
+            ('install-auto-update.sh', (), 'com.digimaga.quota-canvas-autoupdate'),
+        ]:
+            with self.subTest(label=label):
+                self.assertEqual(self.run_script(script, *args).returncode, 0)
+                plist = self.home / 'Library/LaunchAgents' / f'{label}.plist'
+                self.assertTrue(plist.exists())
+                before = self.launch_log()
+                result = self.run_script(script, *args, '--uninstall')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f'removed {label}', result.stdout)
+                self.assertFalse(plist.exists())
+                added = self.launch_log()[len(before):]
+                self.assertIn(f'bootout gui/{os.getuid()}/{label}', added)
 
     def test_invalid_plist_does_not_stop_or_replace_agent(self):
         for script, label in [('install-agent.sh', 'com.digimaga.quota-canvas'),
@@ -106,17 +145,25 @@ printf 'pip\\n' >> "$TEST_DIR/pip.log"
     def test_update_retries_failed_install_after_head_advanced(self):
         self.update_stubs()
         base = Path(self.env['TEST_DIR'])
+        state_dir = self.home / 'Library/Application Support/quota-canvas'
         (base / 'fail_pip').touch()
-        self.assertNotEqual(self.run_script('auto-update.sh').returncode, 0)
+        first = self.run_script('auto-update.sh')
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn('warn: reinstall failed', first.stdout)
         self.assertEqual((base / 'head').read_text(), 'new')
-        self.assertEqual(self.launch_log(), '')
+        pending = list(state_dir.glob('*.reinstall-pending'))
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(self.launch_log().count('kickstart'), 2)
         (base / 'fail_pip').unlink()
-        self.assertEqual(self.run_script('auto-update.sh').returncode, 0)
+        second = self.run_script('auto-update.sh')
+        self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual((base / 'pip.log').read_text().count('pip\n'), 2)
-        self.assertEqual(self.launch_log().count('kickstart'), 2)
-        self.assertEqual(self.run_script('auto-update.sh').returncode, 0)
+        self.assertFalse(pending[0].exists())
+        self.assertEqual(self.launch_log().count('kickstart'), 4)
+        third = self.run_script('auto-update.sh')
+        self.assertEqual(third.returncode, 0, third.stderr)
         self.assertEqual((base / 'pip.log').read_text().count('pip\n'), 2)
-        self.assertEqual(self.launch_log().count('kickstart'), 2)
+        self.assertEqual(self.launch_log().count('kickstart'), 4)
 
     def test_update_retries_failed_restart(self):
         self.update_stubs()

@@ -97,8 +97,8 @@ if [[ -n "$applied" ]] && git cat-file -e "$applied^{commit}" 2>/dev/null &&
     else
         reinstall=false
     fi
-elif [[ -n "$applied" ]]; then
-    deps_changed=true  # 基準が使えない (force push など) ので依存が変わったとみなす
+else
+    deps_changed=true  # 基準が無い・使えない (初回実行・force push など) ので依存が変わったとみなす
 fi
 if [[ -f "$PENDING_FILE" ]]; then
     reinstall=true  # 前回入れ直せなかった分をこの回でやり直す
