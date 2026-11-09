@@ -328,6 +328,78 @@ struct RegressionTests {
         check(menuOrder.map(\.isSub) == [false, false, true, false, false, false], "menu sub cards marked")
         check(MenuPopoverView.orderedCards(menuCards, layout: nil).map { $0.card.id ?? "" } ==
               menuCards.map { $0.id ?? "" }, "menu keeps card order without layout")
+        check(menuOrder.map(\.inLayout) == [true, true, true, true, true, false],
+              "menu marks cards outside the layout for the compact list")
+        check(MenuPopoverView.orderedCards(menuCards, layout: nil).map(\.inLayout).allSatisfy { $0 }
+              && MenuPopoverView.orderedCards(menuCards, layout: []).map(\.inLayout).allSatisfy { $0 },
+              "empty or missing layout puts every card on screen")
+        let staleMenuLayout = try JSONDecoder().decode([LayoutPanel].self, from: Data(#"[{"main":"gone:weekly","subs":[]}]"#.utf8))
+        let staleMenuOrder = MenuPopoverView.orderedCards(menuCards, layout: staleMenuLayout)
+        check(staleMenuOrder.map(\.inLayout).allSatisfy { !$0 }, "a layout matching no card leaves them all off screen")
+        let compactReference = ISO8601Support.parse("2026-01-01T00:00:00Z")!
+        let compactReset = compactReference.addingTimeInterval(3600)
+        check(CompactCardRow.resetRemainingText(nil, now: compactReference) == nil, "compact row hides unknown reset time")
+        check(CompactCardRow.resetRemainingText(compactReference.addingTimeInterval(-1), now: compactReference)
+              == String(localized: "リセット済み"), "compact row labels an elapsed reset")
+        check(CompactCardRow.resetRemainingText(compactReset, now: compactReference)
+              == RelativeDateTimeFormatter().localizedString(for: compactReset, relativeTo: compactReference),
+              "compact reset keeps the relative time")
+        // provider ID の主枠は描画側（render.py の _main_rank）と同じ「一番長い窓、
+        // 同長は key=="weekly"、取得失敗中は後回し」に当てる。窓の長さは status.json
+        // の "windows" の length（秒）。カード順が 5h→weekly でも画面と同じ weekly を出す。
+        let multiCards = try JSONDecoder().decode([StatusCard].self, from: Data("""
+            [{"id":"claude:5h","provider":"claude"},{"id":"claude:weekly","provider":"claude"}]
+            """.utf8))
+        let multiWindows = try JSONDecoder().decode([StatusWindow].self, from: Data("""
+            [{"id":"claude:5h","provider":"claude","key":"5h","length":18000},
+             {"id":"claude:weekly","provider":"claude","key":"weekly","length":604800}]
+            """.utf8))
+        let claudeLayout = try JSONDecoder().decode([LayoutPanel].self, from: Data(#"[{"main":"claude","subs":[]}]"#.utf8))
+        let resolved = MenuPopoverView.orderedCards(multiCards, layout: claudeLayout, windows: multiWindows)
+        check(resolved.first?.card.id == "claude:weekly", "provider main resolves to the longest window like render")
+        check(resolved.map(\.inLayout) == [true, false], "the shorter window stays an extra card")
+        check(MenuPopoverView.mainWindowRank(multiCards[0], windows: multiWindows)
+              < MenuPopoverView.mainWindowRank(multiCards[1], windows: multiWindows),
+              "a longer window outranks a shorter one")
+        check(MenuPopoverView.orderedCards(multiCards, layout: claudeLayout, windows: nil)
+              .first?.card.id == "claude:weekly", "unknown window lengths still prefer the weekly key")
+        let tieCards = try JSONDecoder().decode([StatusCard].self, from: Data("""
+            [{"id":"sun:daily","provider":"sun"},{"id":"sun:weekly","provider":"sun"}]
+            """.utf8))
+        let tieWindows = try JSONDecoder().decode([StatusWindow].self, from: Data("""
+            [{"id":"sun:daily","provider":"sun","key":"daily","length":86400},
+             {"id":"sun:weekly","provider":"sun","key":"weekly","length":86400}]
+            """.utf8))
+        let sunLayout = try JSONDecoder().decode([LayoutPanel].self, from: Data(#"[{"main":"sun","subs":[]}]"#.utf8))
+        check(MenuPopoverView.orderedCards(tieCards, layout: sunLayout, windows: tieWindows)
+              .first?.card.id == "sun:weekly", "equal lengths prefer the weekly key")
+        let staleCards = try JSONDecoder().decode([StatusCard].self, from: Data("""
+            [{"id":"codex:weekly","provider":"codex","stale_error":"HTTP 429"},{"id":"codex:5h","provider":"codex"}]
+            """.utf8))
+        let staleWindows = try JSONDecoder().decode([StatusWindow].self, from: Data("""
+            [{"id":"codex:weekly","provider":"codex","key":"weekly","length":604800},
+             {"id":"codex:5h","provider":"codex","key":"5h","length":18000}]
+            """.utf8))
+        let codexLayout = try JSONDecoder().decode([LayoutPanel].self, from: Data(#"[{"main":"codex","subs":[]}]"#.utf8))
+        // stale_error（取得失敗中の最後の成功値）も描画側と同じく主枠候補。
+        // 描画側が候補から外すのは pu.error、つまり status.json の errors に載る provider だけ。
+        check(MenuPopoverView.orderedCards(staleCards, layout: codexLayout, windows: staleWindows)
+              .first?.card.id == "codex:weekly", "a stale last-good window stays a main candidate like render")
+        check(MenuPopoverView.orderedCards(staleCards, layout: codexLayout, windows: staleWindows,
+                                           errorProviders: ["codex"]).map(\.inLayout) == [false, false],
+              "a provider with a fetch error stays off screen like the render error panel")
+        check(MenuPopoverView.orderedCards(multiCards, layout: claudeLayout).first?.card.id == "claude:weekly",
+              "missing windows array still prefers the weekly key")
+        // main="claude:weekly" の次に main="claude" でも、描画側と同じく両方 weekly に
+        // 解決し、同じカードは最初の位置に 1 回だけ出る（5h は配置外のまま）。
+        let duplicateLayout = try JSONDecoder().decode([LayoutPanel].self, from: Data("""
+            [{"main":"claude:weekly","subs":[]},{"main":"claude","subs":[]}]
+            """.utf8))
+        let dedupedMenu = MenuPopoverView.orderedCards(multiCards, layout: duplicateLayout, windows: multiWindows)
+        let dedupedIds = dedupedMenu.map { $0.card.id ?? "" }
+        let dedupedFlags = dedupedMenu.map { $0.inLayout }
+        check(dedupedIds == ["claude:weekly", "claude:5h"] && dedupedFlags == [true, false],
+              "both panels resolve to the same window, shown once at the first slot")
 
         print("Regression checks: \(checks) passed")
     }

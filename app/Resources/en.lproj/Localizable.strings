@@ -26,6 +26,9 @@
 "リセット時刻: 不明" = "Reset time: unknown";
 "リセット済み" = "Reset";
 "リセットまで あと%@" = "Resets %@";
+"詳細表示" = "Detailed view";
+"他 %lld 件を表示" = "Show %lld more";
+"折りたたむ" = "Collapse";
 
 /* MARK: LayoutSettingsView */
 "設定を取得できませんでした" = "Could not load settings";
