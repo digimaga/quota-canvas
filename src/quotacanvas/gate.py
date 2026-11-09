@@ -181,6 +181,35 @@ def status_windows(status: Optional[dict]) -> List[dict]:
     return [w for w in windows if isinstance(w, dict)]
 
 
+# リセット済みとみなした窓で、リセット前の期間の値なので捨てるキー
+_PERIOD_KEYS = ("exhausts_at", "cautious_exhausts_at", "burst_exhausts_at",
+                "projected_leftover", "leftover_tolerance")
+
+
+def rolled_entry(entry: dict, now: datetime) -> dict:
+    """status.json の窓 1 枚。リセット時刻を過ぎていればリセット済み (使用 0%・fresh) にした写しを返す。
+
+    status.json はリセット直前の値のまま次の取得まで残るため、判定・表示の前に
+    その時点の now で直す。次のリセット時刻は resets_at + 窓の長さの倍数の推定値
+    (長さが無ければ不明)。ローカル枠・リセット時刻が未来や不明の窓はそのまま返す。
+    """
+    if entry.get("kind") == "local":
+        return entry
+    reset = parse_dt(entry.get("resets_at"))
+    if reset is None or reset > now:
+        return entry
+    rolled = {k: v for k, v in entry.items() if k not in _PERIOD_KEYS}
+    rolled.update(used=0.0, remaining=100.0, status="fresh", reset_estimated=True)
+    length = entry.get("length")
+    if (not isinstance(length, bool) and isinstance(length, (int, float))
+            and math.isfinite(length) and length > 0):
+        periods = int((now - reset).total_seconds() // length) + 1
+        rolled["resets_at"] = (reset + timedelta(seconds=length * periods)).isoformat()
+    else:
+        rolled["resets_at"] = None
+    return rolled
+
+
 def error_providers(status: Optional[dict]) -> Set[str]:
     """errors 配列に出てくる provider 名の集合 (canonical 名に整理する)。"""
     out: Set[str] = set()
@@ -696,7 +725,7 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
     窓が見つからない / provider がエラー / データが古いときは verdict "unknown"
     を返し、起動を止めない (fail-open)。
     """
-    windows = [w for w in status_windows(status)
+    windows = [rolled_entry(w, now) for w in status_windows(status)
                if w.get("provider") not in NON_ROUTING_PROVIDERS]
     errors = error_providers(status)
     floor = float(getattr(routing_cfg, "floor_percent", DEFAULT_FLOOR_PERCENT))

@@ -78,3 +78,22 @@ def test_submillisecond_credit_boundary():
     status = {'reset_credits': {'glm': [{'expires_at': expires}]}}
     assert len(plan(None, status, NOW.timestamp() - 0.0001, set())) == 1
     assert plan(None, status, NOW.timestamp(), set()) == []
+
+
+def test_estimated_reset_replaced_by_api_time_is_not_notified_again():
+    # リセット済みとみなした周回 (推定時刻) → API の実際の時刻: リセット通知は 1 回だけ
+    old = {**CARD, 'status': 'go', 'resets_at': '2026-01-01T00:00:00+00:00'}
+    estimated = {**CARD, 'status': 'fresh', 'resets_at': '2026-01-08T00:00:00+00:00',
+                 'reset_estimated': True}
+    actual = {**CARD, 'status': 'fresh', 'resets_at': '2026-01-08T00:20:00+00:00'}
+    first = plan({'cards': [old]}, {'cards': [estimated]}, NOW, set())
+    assert [c['kind'] for c in first] == ['reset']
+    assert plan({'cards': [estimated]}, {'cards': [actual]}, NOW, set()) == []
+
+
+def test_estimated_reset_already_passed_still_notifies_next_period():
+    # 推定した次回時刻も過ぎた (長いスリープ後など) なら、次の期間へのリセットは通知する
+    estimated = {**CARD, 'status': 'fresh', 'resets_at': '2025-12-31T00:00:00+00:00',
+                 'reset_estimated': True}
+    actual = {**CARD, 'status': 'fresh', 'resets_at': '2026-01-07T00:00:00+00:00'}
+    assert [c['kind'] for c in plan({'cards': [estimated]}, {'cards': [actual]}, NOW, set())] == ['reset']

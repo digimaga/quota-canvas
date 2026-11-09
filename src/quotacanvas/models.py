@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import List, Optional
@@ -19,6 +19,8 @@ class Window:
     resets_at: Optional[datetime]  # timezone-aware; None if unknown
     length: timedelta      # full window length (7d, 5h, ...)
     part_of: Optional[str] = None  # この窓が内訳として属する親窓の key。None なら独立した枠
+    # rolled_over でリセット済みにした窓 (resets_at は推定値か None)。API の値ではない
+    reset_estimated: bool = False
 
     @property
     def id(self) -> str:
@@ -31,6 +33,25 @@ class Window:
     @property
     def starts_at(self) -> Optional[datetime]:
         return self.resets_at - self.length if self.resets_at else None
+
+    def rolled_over(self, now: datetime) -> "Window":
+        """リセット時刻を過ぎた窓を、リセット済み (使用 0%・次のリセット時刻) にして返す。
+
+        API が古い期間の値を返し続ける間や、取得失敗で前回値を出している間も、
+        リセット時刻を過ぎたら実際には使えるため、上限超過のまま見せない。
+        次のリセット時刻は resets_at に窓の長さを足して now より後にした推定値
+        (長さが 0 以下なら不明 = None)。reset_estimated で推定であることを示す。
+        リセット時刻が未来・不明の窓はそのまま返す。
+        """
+        if self.resets_at is None or self.resets_at > now:
+            return self
+        length = self.length.total_seconds()
+        if length <= 0:
+            nxt = None
+        else:
+            periods = int((now - self.resets_at).total_seconds() // length) + 1
+            nxt = self.resets_at + self.length * periods
+        return replace(self, used_percent=0.0, resets_at=nxt, reset_estimated=True)
 
 
 @dataclass

@@ -137,7 +137,7 @@ def test_floor_applies_when_reset_missing_or_invalid(reset):
     assert (worker.verdict, worker.reason) == ("stop", "below_floor")
 
 
-@pytest.mark.parametrize("hours", [4, -1])
+@pytest.mark.parametrize("hours", [4, 1 / 60])
 def test_zero_floor_hours_always_applies_floor(hours):
     entry = win("glm:5h", "glm", "spare", 4, resets=NOW + timedelta(hours=hours))
     entry["length"] = 5 * 3600
@@ -539,7 +539,8 @@ def test_line_rounds_remaining_like_quota_gate():
 
 def test_line_without_remaining_shows_question_mark():
     now = datetime.now().astimezone()
-    data = status(win("glm:5h", "glm", "on_track", 50.0, fetched=now))
+    data = status(win("glm:5h", "glm", "on_track", 50.0, fetched=now,
+                      resets=now + timedelta(days=3)))
     del data["windows"][0]["remaining"]
     result = evaluate(data, cfg(workers={"glm": ["glm:5h"]}), {}, now)
     assert "=go(?%" in format_line(result, now, "ja")
@@ -1028,7 +1029,8 @@ def test_expired_hold_does_not_affect_judgment_or_idempotence():
     data = status(entry)
     previous = {"holds": {"glm:5h": entry["resets_at"]}}
     result = evaluate(data, cfg(), {}, NOW, previous=previous)
-    assert result.workers[0].verdict == "go"
+    # リセット時刻を過ぎた窓はリセット済み (boost/fresh) とみなし、保持も消す
+    assert (result.workers[0].verdict, result.workers[0].reason) == ("boost", "fresh")
     assert result.holds == {}
     assert evaluate(data, cfg(), {}, NOW, previous=result.to_dict()).to_dict() == result.to_dict()
 
@@ -1429,3 +1431,37 @@ def test_review_line_sorted_by_verdict_and_model_lines_unchanged():
     review = next(line for line in lines if line.startswith("review:"))
     # boost (r2) > go (r3) と unknown (r4) > reserve (r1)。同順位は台帳の順
     assert review.index("r2") < review.index("r3") < review.index("r4") < review.index("r1")
+
+
+# --- リセット時刻を過ぎた窓はリセット済み ----------------------------------------
+
+
+@pytest.mark.parametrize("pace,remaining", [("exhausted", 0.0), ("over", 30.0), ("spare", 2.0)])
+def test_reset_passed_window_is_treated_as_reset(pace, remaining):
+    # status.json がリセット前の値 (使い切り・超過・下限割れ) でも、リセット時刻を過ぎたら使える
+    entry = win("codex:weekly", "codex", pace, remaining, resets=NOW - timedelta(minutes=1))
+    entry["length"] = 7 * 24 * 3600
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("boost", "fresh")
+
+
+def test_reset_exactly_now_is_treated_as_reset():
+    entry = win("codex:weekly", "codex", "exhausted", 0.0, resets=NOW)
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("boost", "fresh")
+
+
+def test_reset_passed_window_reports_reset_values():
+    entry = win("codex:weekly", "codex", "exhausted", 0.0, resets=NOW - timedelta(minutes=14),
+                exhausts=NOW - timedelta(days=1))
+    entry["length"] = 7 * 24 * 3600
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.remaining, worker.status) == (100.0, "fresh")
+    assert worker.exhausts_at is None
+    assert parse_dt(worker.resets_at) == NOW - timedelta(minutes=14) + timedelta(days=7)
+
+
+def test_reset_passed_window_without_length_has_unknown_next_reset():
+    entry = win("codex:weekly", "codex", "exhausted", 0.0, resets=NOW - timedelta(minutes=1))
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.remaining, worker.resets_at) == ("boost", 100.0, None)

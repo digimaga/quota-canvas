@@ -373,3 +373,51 @@ def test_last_good_invalid_utf8_is_treated_as_corrupt(tmp_path, caplog):
     assert "壊れている" in caplog.text
     cache.set(_usage("claude", [_win("claude", "weekly")], fetched_at=NOW))
     assert "claude" in LastGood(path).data
+
+
+# ------------------------------------------------- リセット時刻を過ぎた窓の繰り越し
+
+def test_window_past_reset_is_rolled_over(tmp_path, monkeypatch):
+    # API がリセット後も古い期間 (100% 使用・過去のリセット時刻) を返し続けるケース
+    old = Window("codex", "weekly", "weekly", 100.0, NOW - timedelta(minutes=14),
+                 timedelta(days=7))
+    FakeFetch(monkeypatch, lambda pid, now: _usage(pid, [old], fetched_at=now)
+              if pid == "codex" else _other(pid, now))
+    poller = _poller(tmp_path)
+    codex = next(u for u in poller.fetch(NOW) if u.provider == "codex")
+    w = codex.windows[0]
+    assert w.used_percent == 0.0
+    assert w.resets_at == old.resets_at + timedelta(days=7)
+    # 保存する last-good は API の値のまま
+    assert LastGood(tmp_path / LAST_GOOD).data["codex"].windows[0].used_percent == 100.0
+
+
+def test_last_good_past_reset_is_rolled_over(tmp_path, monkeypatch):
+    old = Window("codex", "5h", "5h", 100.0, NOW - timedelta(hours=11), timedelta(hours=5))
+    state = {"ok": True}
+    FakeFetch(monkeypatch, lambda pid, now: (_usage(pid, [old], fetched_at=now) if state["ok"]
+              else _usage(pid, error="HTTP 500", fetched_at=now))
+              if pid == "codex" else _other(pid, now))
+    poller = _poller(tmp_path)
+    poller.fetch(NOW - timedelta(hours=12))
+    state["ok"] = False
+    codex = next(u for u in poller.fetch(NOW) if u.provider == "codex")
+    w = codex.windows[0]
+    assert codex.stale_error == "HTTP 500"
+    assert w.used_percent == 0.0
+    # 11 時間前のリセット + 5h * 3 = 4 時間後
+    assert w.resets_at == NOW + timedelta(hours=4)
+
+
+def test_future_reset_window_is_unchanged(tmp_path, monkeypatch):
+    FakeFetch(monkeypatch, _other)
+    poller = _poller(tmp_path)
+    for u in poller.fetch(NOW):
+        assert u.windows[0].used_percent == 10.0
+
+
+def test_zero_length_window_past_reset_is_reset_with_unknown_next():
+    w = Window("x", "k", "k", 100.0, NOW - timedelta(minutes=1), timedelta(0))
+    rolled = w.rolled_over(NOW)
+    assert (rolled.used_percent, rolled.resets_at, rolled.reset_estimated) == (0.0, None, True)
+    assert w.rolled_over(NOW - timedelta(minutes=2)) is w

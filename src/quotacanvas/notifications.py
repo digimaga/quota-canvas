@@ -55,7 +55,12 @@ def plan(previous: dict | None, current: dict, now: datetime | float, notified: 
                 key = f'status|{ident}|{period}|{status}'
                 if (status != _string(old.get('status')) or not _same_reset(old_reset, reset)) and key not in notified:
                     result.append({'key': key, 'kind': 'status', 'card': card})
-            if reset is not None and old_reset is not None and not _same_reset(reset, old_reset):
+            # 推定のリセット時刻 (reset_estimated) がまだ来ないうちに API の実際の時刻へ
+            # 変わっただけなら、同じ期間のリセットは前の周回で通知済みなので出さない
+            estimate_pending = (old.get('reset_estimated') is True and old_reset is not None
+                                and old_reset.timestamp() > now_seconds)
+            if (reset is not None and old_reset is not None and not _same_reset(reset, old_reset)
+                    and not estimate_pending):
                 key = f'reset|{ident}|{period}'
                 if key not in notified:
                     result.append({'key': key, 'kind': 'reset', 'card': card})

@@ -140,6 +140,14 @@ def all_window_paces(usages: List[ProviderUsage], history: History, now: datetim
             for u in usages for w in u.windows]
 
 
+def _rolled_usage(usage: ProviderUsage, now: datetime) -> ProviderUsage:
+    """usage の窓のうちリセット時刻を過ぎたものをリセット済みにする (Window.rolled_over)。"""
+    windows = [w.rolled_over(now) for w in usage.windows]
+    if all(a is b for a, b in zip(windows, usage.windows)):
+        return usage
+    return replace(usage, windows=windows)
+
+
 class Poller:
     def __init__(self, history: History, enabled: Optional[Set[str]] = None,
                  last_good_path: Optional[Path] = None, record: bool = True,
@@ -260,6 +268,9 @@ class Poller:
                     self.history.record([w for w in u.windows if w.part_of is None],
                                         now)
             result.append(u)
+        # リセット時刻を過ぎた窓はリセット済みとして返す (保存済みの last-good・
+        # 履歴は API の値のまま)。API が古い期間を返し続けても上限超過にしない。
+        result = [_rolled_usage(u, now) for u in result]
         if self.local:
             # ローカル LLM サーバーは last-good (通信失敗時の前回値) を使わず、
             # 今の状態または失敗をそのまま返す。空きは分単位で変わるため。
@@ -1619,7 +1630,8 @@ def main(argv=None) -> int:
             local_changed = before != _local_state(usages)
         # local:<名前> は providers.<名前> の有効判定とは別 ([providers.local]
         # 側の enabled で fetch_all が既に絞っている) のでそのまま通す。
-        visible_usages = [u for u in usages
+        # 取得の合間にリセット時刻をまたいでも、この周回の now でリセット済みにする
+        visible_usages = [_rolled_usage(u, now) for u in usages
                           if u.provider in cfg.providers.enabled()
                           or u.provider.startswith("local:")]
         cards = build_cards(visible_usages, history, now, order=_window_order(args, cfg),

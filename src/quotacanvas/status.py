@@ -55,6 +55,8 @@ def _card(pu: ProviderUsage, pace: Optional[Pace], now: datetime) -> Optional[Di
         "advice": advice_text(pace, False, now),
         "resets_at": _iso(win.resets_at),
     }
+    if win.reset_estimated:
+        item["reset_estimated"] = True  # リセット済みとみなした窓。resets_at は推定値
     if pu.fetched_at is not None:
         # この値を実際にサービスから取得した時刻。last-good 表示中や Mac の
         # スリープ中 (取得を止めて描き直しだけ続ける) は進まない。不明なら省略。
@@ -92,6 +94,8 @@ def _window_item(pu: ProviderUsage, pace: Pace) -> Dict[str, Any]:
         "resets_at": _iso(win.resets_at),
         "length": win.length.total_seconds(),
     }
+    if win.reset_estimated:
+        item["reset_estimated"] = True
     if pace.projected_leftover is not None:
         item["projected_leftover"] = pace.projected_leftover
         item["leftover_tolerance"] = pace.leftover_tolerance
