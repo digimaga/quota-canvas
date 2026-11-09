@@ -63,8 +63,14 @@ def test_write_readback_mismatch_raises(monkeypatch):
 
 
 def test_write_failure_returncode_raises(monkeypatch):
+    # 読み戻しは成功させておき、書込み側の rc 判定 (write_failed) だけを
+    # 検出する。_capture_run は全 subprocess 呼出に同じ rc を返すので、
+    # そのままだと読み戻しの read が同じ KeychainError を出して、書込側の
+    # 退行が隠れてしまう。
+    monkeypatch.setattr(keychain, "read",
+                        lambda account, service=keychain.SERVICE: "secret")
     _capture_run(monkeypatch, returncode=45, stderr="SecKeychainSearch")
-    with pytest.raises(KeychainError):
+    with pytest.raises(KeychainError, match="rc=45"):
         keychain.write("glm", "secret", service="quota-canvas-test")
 
 

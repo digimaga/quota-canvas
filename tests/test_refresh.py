@@ -144,7 +144,9 @@ def test_refresh_command_creates_request_file(capsys, tmp_path):
 def test_refresh_command_without_json_is_human_readable(capsys, tmp_path):
     assert cli.main(["refresh"]) == 0
     out = capsys.readouterr().out
+    assert out.strip()                       # 何も出力しない退行も落とす
     assert not out.lstrip().startswith("{")
+    assert str(refresh.REFRESH_REQUEST_PATH) in out  # 作ったパスを出力に含む
 
 
 # ------------------------------------------------------------------ run ループ
@@ -224,6 +226,9 @@ def test_run_refetches_when_request_is_30s_after_last_fetch(monkeypatch, tmp_pat
     calls = _run_loop(monkeypatch, tmp_path, FakeClock(limit=70),
                       plan=[(36.0, request.touch)])
     assert len(calls) == 2
+    # 取り直しは要求が届いた周回で即座に行われる (要求を無視して t=60 の
+    # 定期取得だけでも回数は合うので、時刻まで確認する)
+    assert 36.0 <= calls[1][0] < 45.0
     # 取り直した t=36 の次の定期取得は interval (60 秒) 後 = t=96。
     # limit=70 まで回しても 3 回目が起きないことで、ずれていることを確認する。
 

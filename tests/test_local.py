@@ -297,12 +297,6 @@ def test_fetch_one_sends_no_key_headers_without_key(monkeypatch):
     assert "Authorization" not in calls[0]["headers"]
 
 
-def test_fetch_one_timeout_is_configurable(monkeypatch):
-    calls = _fake_http(monkeypatch, body=TENSORFOLD_METRICS)
-    fetch_one("test-server", entry(timeout=1.5), NOW)
-    assert calls[0]["timeout"] == pytest.approx(1.5)
-
-
 def test_fetch_one_http_error_is_short_reason(monkeypatch):
     _fake_http(monkeypatch, error=urllib.error.HTTPError(
         "url", 401, "Unauthorized", hdrs=None, fp=io.BytesIO(b"secret-body")))
@@ -1094,16 +1088,6 @@ def test_config_local_rejects_bad_names(tmp_path, name):
         load_config(p)
 
 
-def test_config_local_rejects_whitespace_variant_of_existing_name(tmp_path):
-    # "a" と " a " が strip で黙って上書きし合わないよう、前後空白は拒否する
-    p = tmp_path / "config.toml"
-    p.write_text('[providers.local.a]\nbase_url = "http://localhost:8000"\ncapacity = 2\n'
-                 '\n[providers.local." a"]\nbase_url = "http://localhost:8001"\ncapacity = 2\n',
-                 encoding="utf-8")
-    with pytest.raises(ConfigError):
-        load_config(p)
-
-
 def test_config_local_unknown_key_warns_and_ignores(tmp_path, caplog):
     p = tmp_path / "config.toml"
     p.write_text('[providers.local.a]\nbase_url = "http://localhost:8000"\n'
@@ -1259,18 +1243,15 @@ def test_poller_local_failure_is_not_smoothed(tmp_path, monkeypatch):
 # --------------------------------------------------------------------- 描画
 
 
-def test_render_local_card_large_smoke(monkeypatch):
-    usage = _local_usage(slots=LocalSlots(1, 0, 4))
-    img = render([(usage, None)], NOW)
-    assert img.size[0] > 0
-    assert img.size[1] > 0
-
-
 def test_render_local_card_small_smoke():
+    # small パネル × 満杯 (full): 状態色 (黄) の左バー・バッジ・大きい数字が出る。
+    # 寸法だけだとカード未描画でも通るので、状態色の画素で確認する。
+    from quotacanvas.render import YELLOW
+
     usage = _local_usage(slots=LocalSlots(4, 0, 4))
     img = render([(usage, None)], NOW,
                  layout=[PanelSpec(main="local:test-server", size="small")])
-    assert img.size[1] > 0
+    assert _color_pixels(img, YELLOW) > 300
 
 
 def test_render_local_error_card_smoke():

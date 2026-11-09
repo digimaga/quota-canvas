@@ -245,12 +245,16 @@ def test_parse_muse_name(tier, expected):
     "",
     "not rsc at all",
     '0:{"a":"$@1"}',
-    '1:{"success":false,"subscription":{}}',
+    # success:false でも有効な subscription を含む行。success 判定を外すと
+    # 誤って解析成功してしまう ({} だと後段の no quota で隠れてしまう) ので、
+    # subscription は解析できる内容にして判定の退行を検出する。
+    '1:{"success":false,"subscription":%s}' % json.dumps(SUBSCRIPTION),
     '1:{"success":true}',                          # subscription 無し
     '1:{"success":true,"subscription":"broken"}',  # subscription が dict でない
 ])
 def test_parse_muse_without_success_line_is_error(text):
-    with pytest.raises(ValueError):
+    # success:true かつ dict の subscription を持つ行が無い = _NoSubscription
+    with pytest.raises(ValueError, match="no subscription"):
         muse.parse_muse(text, NOW)
 
 
@@ -296,13 +300,23 @@ def test_resolve_action_id_second_level(monkeypatch):
 
 
 def test_resolve_action_id_dedupes_chunks(monkeypatch):
-    _install_http(monkeypatch, {
+    # 同一 chunk が相対 2 回 + 絶対 URL 1 回で書かれていても 1 回だけ取得する。
+    # ID は後続の別 chunk にだけ置く: a.js を早期 return で飛び越えてしまう
+    # 入力だと重複除外を壊しても通ってしまうので、取得した URL 列まで観測する。
+    calls = _install_http(monkeypatch, {
         muse.MUSE_PAGE_URL: _html("/_next/static/chunks/a.js",
                                   "/_next/static/chunks/a.js",
-                                  "https://muse.ai/_next/static/chunks/a.js"),
-        "https://muse.ai/_next/static/chunks/a.js": _js_with_action(ACTION_ID),
+                                  "https://muse.ai/_next/static/chunks/a.js",
+                                  "/_next/static/chunks/b.js"),
+        "https://muse.ai/_next/static/chunks/a.js": "var x=1;",
+        "https://muse.ai/_next/static/chunks/b.js": _js_with_action(ACTION_ID),
     })
     assert muse._resolve_action_id() == ACTION_ID
+    assert [c[0] for c in calls["get"]] == [
+        muse.MUSE_PAGE_URL,
+        "https://muse.ai/_next/static/chunks/a.js",
+        "https://muse.ai/_next/static/chunks/b.js",
+    ]
 
 
 def test_resolve_action_id_not_found(monkeypatch):
