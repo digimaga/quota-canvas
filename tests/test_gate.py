@@ -328,6 +328,16 @@ def test_old_fetched_at_marks_unknown():
     assert result.workers[0].verdict == "boost"
 
 
+def test_fetched_at_exactly_stale_minutes_is_still_fresh():
+    # gate.py の (now - fetched) > stale_minutes: ちょうど stale_minutes 前は
+    # まだ新しい扱い (境界を超えたときだけ stale)
+    data = status(win("glm:5h", "glm", "spare", 50.0,
+                      fetched=NOW - timedelta(minutes=20)))
+    result = evaluate(data, cfg(), {}, NOW)  # 既定 stale_minutes=20
+    w = result.workers[0]
+    assert (w.verdict, w.reason, w.stale) == ("boost", "spare", False)
+
+
 def test_broken_fetched_at_marks_unknown():
     data = status(win("glm:5h", "glm", "spare", 50.0, fetched=NOW))
     data["windows"][0]["fetched_at"] = "not-a-date"
@@ -583,6 +593,9 @@ def test_stale_lines_match_quota_gate(tmp_path):
         == f"quota: stale（{gate.fmt_hhmm(old_at)}時点・古いので残量は判断に使わない）"
     assert format_stale_line("broken", tmp_path / "s.json", old, now, "ja") \
         == f"quota: stale（{gate.fmt_hhmm(old_at)}時点・読めないので残量は判断に使わない）"
+    # unreadable (ディレクトリ等) も broken と同じ「読めない」ラベル
+    assert format_stale_line("unreadable", tmp_path / "s.json", old, now, "ja") \
+        == f"quota: stale（{gate.fmt_hhmm(old_at)}時点・読めないので残量は判断に使わない）"
     # updated_at も無ければファイルの mtime に落ちる
     (tmp_path / "s.json").write_text("{}", encoding="utf-8")
     line = format_stale_line("broken", tmp_path / "s.json", None, now, "ja")
@@ -641,6 +654,8 @@ def test_load_status_states(tmp_path):
     # updated_at が無い → 検証できないので stale
     path.write_text(json.dumps({"cards": []}), encoding="utf-8")
     assert gate.load_status(path, 20, NOW)[2] == "broken"
+    # パスがディレクトリ → open が OSError (IsADirectoryError) → unreadable
+    assert gate.load_status(tmp_path, 20, NOW) == ("stale", None, "unreadable")
 
 
 def test_burn_store_clear_and_purge(tmp_path):

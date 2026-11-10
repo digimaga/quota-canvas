@@ -136,6 +136,20 @@ def test_pick_accepts_status_just_under_20_minutes(monkeypatch, capsys, tmp_path
     assert out.strip() == REC["text"]
 
 
+def test_status_recommendation_at_exactly_20_minutes_is_stale(tmp_path):
+    # cli.py の (now - updated) >= PICK_MAX_AGE (20分): ちょうど 20 分前は
+    # 「古い」扱いで _cmd_pick が取得し直す側に回る。now を直接渡して境界を
+    # 正確に固定する (cli.main 経由だと実行時刻との差で境界からずれる)。
+    now = datetime.now(UTC)
+    path = _status_file(tmp_path, now - timedelta(minutes=20))
+    assert cli._status_recommendation(now, path) == (False, None)
+    # 1µs でも新しければ status.json の recommendation をそのまま使う
+    path = _status_file(tmp_path, now - timedelta(minutes=20) + timedelta(microseconds=1))
+    fresh, rec = cli._status_recommendation(now, path)
+    assert fresh is True
+    assert rec == REC
+
+
 # ------------------------------------------------------------- 推奨なし
 
 def test_pick_json_none_when_nothing_usable(monkeypatch, capsys, tmp_path):
