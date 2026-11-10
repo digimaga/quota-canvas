@@ -69,29 +69,44 @@ def _other(pid, now):
 # ------------------------------------------------------- (A) last-good 永続化
 
 def test_success_saved_and_used_after_restart(tmp_path, monkeypatch):
-    good = _usage("claude", [_win("claude", "weekly", 30.0)], name="Claude Max")
+    good = {
+        "claude": _usage("claude", [_win("claude", "weekly", 30.0)],
+                         name="Claude Max"),
+        "codex": _usage("codex", [_win("codex", "weekly", 40.0)],
+                        name="Codex Pro"),
+    }
     state = {"ok": True}
 
     def behavior(pid, now):
-        return good if state["ok"] else _usage(pid, error="HTTP 500", fetched_at=now)
+        return good[pid] if state["ok"] \
+            else _usage(pid, error="HTTP 500", fetched_at=now)
 
     fake = FakeFetch(monkeypatch, behavior)
     poller = _poller(tmp_path)
-    assert poller.fetch(NOW)[0].error is None
-    assert (tmp_path / LAST_GOOD).exists()          # 成功のたびに保存
+    result = poller.fetch(NOW)
+    assert [u.provider for u in result] == ["claude", "codex"]
+    assert all(u.error is None for u in result)
+    on_disk = json.loads((tmp_path / LAST_GOOD).read_text(encoding="utf-8"))
+    assert on_disk["claude"]["name"] == "Claude Max"
+    assert on_disk["codex"]["name"] == "Codex Pro"  # provider ごとに保存
 
     restarted = _poller(tmp_path)                   # 新しい Poller で読み込み
-    assert restarted.last_good["claude"].name == "Claude Max"
-    assert restarted.last_good["claude"].windows == good.windows
+    for pid in ("claude", "codex"):
+        assert restarted.last_good[pid].name == good[pid].name
+        assert restarted.last_good[pid].windows == good[pid].windows
 
     state["ok"] = False
     fake.calls.clear()
     later = NOW + timedelta(minutes=30)
     result = restarted.fetch(later)
     assert fake.times_called("claude") == 1
-    assert result[0].error is None                  # 取得失敗時は last_good を返す
-    assert result[0].windows == good.windows
-    assert result[0].stale_error == "HTTP 500"      # 失敗中であることは stale_error で
+    assert fake.times_called("codex") == 1
+    by_pid = {u.provider: u for u in result}
+    for pid in ("claude", "codex"):
+        shown = by_pid[pid]
+        assert shown.error is None                  # 取得失敗時は last_good を返す
+        assert shown.windows == good[pid].windows   # 自分の last_good (取り違えない)
+        assert shown.stale_error == "HTTP 500"      # 失敗中であることは stale_error で
 
 
 @pytest.mark.parametrize("enabled", [{"claude", "codex"}, {"claude"}],

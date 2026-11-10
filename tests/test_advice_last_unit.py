@@ -97,6 +97,27 @@ def test_5h_bedtime_deadline_shows_until_bed():
         "残り91% · 寝るまで3時間"
 
 
+def test_5h_bedtime_over_keeps_heads():
+    # bedtime でも順調系以外は状態語の頭が付く (short_left_bedtime キー)
+    pace = _pace(95.0, timedelta(hours=4), timedelta(hours=5))
+    assert pace.status is PaceStatus.OVER
+    pace.bedtime_at = NOW + timedelta(hours=3)
+    assert advice_text(pace, compact=True, now=NOW) == \
+        "ペース超過 · 残り5% · 寝るまで3時間"
+    assert advice_text(pace, compact=False, now=NOW) == \
+        "ペースを約99%落とす · 残り5% · 寝るまで3時間"
+
+
+def test_5h_bedtime_tight_keeps_heads():
+    pace = _pace(19.5, timedelta(hours=4), timedelta(hours=5))
+    assert pace.status is PaceStatus.TIGHT
+    pace.bedtime_at = NOW + timedelta(hours=3)
+    assert advice_text(pace, compact=True, now=NOW) == \
+        "適正ペース · 残り81% · 寝るまで3時間"
+    assert advice_text(pace, compact=False, now=NOW) == \
+        "ほぼ使い切れる見込み · 残り81% · 寝るまで3時間"
+
+
 # --- 1日以上の窓 (週間など) は 1日単位の許容量のまま変わらない ----------------
 
 
