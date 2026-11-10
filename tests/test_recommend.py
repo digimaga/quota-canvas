@@ -146,6 +146,21 @@ def test_stale_error_service_alone_recommends_nothing(tmp_path):
     assert _rec([failing], tmp_path) is None
 
 
+def test_stale_error_takes_precedence_over_past_reset(tmp_path):
+    # stale_error と過去の resets_at を同時に持つときは「取得失敗中」を先に出す
+    ok = _usage("claude", "Claude Max",
+                [_win("claude", "weekly", 30.0, timedelta(days=4), timedelta(days=7), "週間")])
+    failing = _usage("glm", "GLM",
+                     [_win("glm", "5h", 30.0, timedelta(hours=-1), timedelta(hours=5), "5時間")],
+                     stale_error="HTTP 429")
+    rec = _rec([failing, ok], tmp_path)
+    assert rec is not None
+    assert rec.provider == "claude"
+    entry = next(e for e in rec.ranking if e["provider"] == "glm")
+    assert entry["usable"] is False
+    assert entry["reason"] == "取得失敗中"
+
+
 def test_service_without_independent_windows_is_skipped(tmp_path):
     # 内訳 (part_of 付き) だけのサービスは候補にならない
     claude = _usage("claude", "Claude Max", [
@@ -216,6 +231,58 @@ def test_credit_beyond_24h_does_not_boost(tmp_path):
     rec = _rec([codex], tmp_path)
     assert rec.ranking[0]["score"] == pytest.approx(52.5)
     assert "リセット権" not in rec.text
+
+
+def test_soon_credit_picks_earliest_valid_expiry(tmp_path):
+    # 期限切れ (負) と expires_at=None は除外し、候補のうち最短の失効までを使う
+    credits = [
+        ResetCredit("later", NOW - timedelta(days=1), NOW + timedelta(hours=20)),
+        ResetCredit("unknown", NOW - timedelta(days=1), None),
+        ResetCredit("expired", NOW - timedelta(days=2), NOW - timedelta(hours=1)),
+        ResetCredit("earliest", NOW - timedelta(days=1), NOW + timedelta(hours=3)),
+    ]
+    codex = _usage("codex", "Codex",
+                   [_win("codex", "weekly", 30.0, timedelta(days=4), timedelta(days=7), "週間")],
+                   credits=credits)
+    rec = _rec([codex], tmp_path)
+    assert rec.ranking[0]["score"] == pytest.approx(52.5 * 1.5)
+    assert "リセット権が 3時間で失効" in rec.text
+
+
+def test_credit_expiring_exactly_24h_still_boosts(tmp_path):
+    # ちょうど 24 時間は「24 時間以内」に含める (境界は <=)
+    credit = ResetCredit("Full reset", NOW - timedelta(days=1), NOW + timedelta(hours=24))
+    codex = _usage("codex", "Codex",
+                   [_win("codex", "weekly", 30.0, timedelta(days=4), timedelta(days=7), "週間")],
+                   credits=[credit])
+    rec = _rec([codex], tmp_path)
+    assert rec.ranking[0]["score"] == pytest.approx(52.5 * 1.5)
+    assert "リセット権が 1日で失効" in rec.text
+
+
+def test_expired_and_unexpiring_credits_do_not_boost(tmp_path):
+    credits = [
+        ResetCredit("expired", NOW - timedelta(days=2), NOW - timedelta(minutes=1)),
+        ResetCredit("unknown", NOW - timedelta(days=1), None),
+    ]
+    codex = _usage("codex", "Codex",
+                   [_win("codex", "weekly", 30.0, timedelta(days=4), timedelta(days=7), "週間")],
+                   credits=credits)
+    rec = _rec([codex], tmp_path)
+    assert rec.ranking[0]["score"] == pytest.approx(52.5)
+    assert "リセット権" not in rec.text
+
+
+def test_representative_window_on_tied_resets_is_first(tmp_path):
+    # resets_at が同じ独立窓が 2 つあるとき、max() は最初の窓を代表にする
+    claude = _usage("claude", "Claude Max", [
+        _win("claude", "weekly", 30.0, timedelta(days=4), timedelta(days=7), "週間"),
+        _win("claude", "weekly_alt", 20.0, timedelta(days=4), timedelta(days=7), "週間 2"),
+    ])
+    rec = _rec([claude], tmp_path)
+    assert rec is not None
+    assert rec.window_id == "claude:weekly"
+    assert rec.ranking[0]["score"] == pytest.approx(52.5)
 
 
 def test_unusable_service_is_never_recommended_even_with_high_score(tmp_path):

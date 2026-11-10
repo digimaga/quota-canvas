@@ -68,6 +68,19 @@ def test_duplicate_resets_at_not_recorded_twice(tmp_path):
     assert periods.previous_used("claude:5h") == pytest.approx(64.0)
 
 
+def test_reset_tolerance_is_inclusive_60_seconds(tmp_path):
+    periods = Periods(tmp_path / "periods.jsonl")
+    periods.record_closed("claude:5h", T0, 10.0, T0)
+    # ちょうど 60 秒差は API の揺れとみなして重複記録しない
+    periods.record_closed("claude:5h", T0 + timedelta(seconds=60), 20.0,
+                          T0 + timedelta(hours=1))
+    assert len(periods.periods("claude:5h")) == 1
+    # 61 秒差は別の期間として記録する
+    periods.record_closed("claude:5h", T0 + timedelta(seconds=61), 30.0,
+                          T0 + timedelta(hours=2))
+    assert [p.used for p in periods.periods("claude:5h")] == [10.0, 30.0]
+
+
 def test_keeps_latest_20_per_window(tmp_path):
     periods = Periods(tmp_path / "periods.jsonl")
     for i in range(25):
@@ -88,6 +101,14 @@ def test_none_resets_at_roundtrip(tmp_path):
     periods.record_closed("claude:5h", None, 36.0, T0 + timedelta(hours=5))
     entry = periods.periods("claude:5h")[0]
     assert entry.resets_at is None
+    assert periods.previous_used("claude:5h") == pytest.approx(36.0)
+
+
+def test_none_resets_at_not_recorded_twice(tmp_path):
+    periods = Periods(tmp_path / "periods.jsonl")
+    periods.record_closed("claude:5h", None, 36.0, T0)
+    periods.record_closed("claude:5h", None, 40.0, T0 + timedelta(hours=5))
+    assert len(periods.periods("claude:5h")) == 1
     assert periods.previous_used("claude:5h") == pytest.approx(36.0)
 
 
