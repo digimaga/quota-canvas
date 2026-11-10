@@ -110,7 +110,8 @@ CREDITS_PAYLOAD = {
 
 @pytest.fixture()
 def fresh_cache(monkeypatch):
-    monkeypatch.setattr(codex, "_RESET_CACHE", {"at": None, "credits": None})
+    monkeypatch.setattr(codex, "_RESET_CACHE",
+                        {"at": None, "credits": None, "account_id": None})
 
 
 @pytest.fixture()

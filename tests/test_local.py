@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from quotacanvas import cli, gate, i18n, providers
+from quotacanvas import cli, gate, i18n, keychain, providers
 from quotacanvas.config import (
     ConfigError,
     LocalProvider,
@@ -53,6 +53,9 @@ from quotacanvas.render import PanelSpec, render
 
 NOW = datetime(2026, 10, 31, 9, 0, 0, tzinfo=timezone.utc)
 LOCAL_KEY = "local:test-server"
+# autouse フィクスチャ (_no_real_local_keychain) が差し替える前の本物。
+# 実キーチェーンを使わせずに本物の read を通すテストで使う。
+_REAL_KEYCHAIN_READ = keychain.read
 
 TENSORFOLD_METRICS = """\
 # HELP tensorfold:num_requests_running requests being processed
@@ -268,6 +271,22 @@ def test_fetch_one_label_is_used_as_display_name(monkeypatch):
 
 
 def test_fetch_one_sends_key_from_keychain_in_both_headers(monkeypatch):
+    """キーチェーンのキーを x-api-key / Authorization の両方のヘッダーで送る。
+
+    読み出しは本物の keychain.read を通し、security コマンドの起動だけを
+    差し替えて (実キーチェーンには触れない)、service "quota-canvas" /
+    account "local:<名前>" が渡ることを固定する。"""
+    import subprocess
+    from types import SimpleNamespace
+
+    security_calls = []
+
+    def fake_security_run(args, **kwargs):
+        security_calls.append(list(args))
+        return SimpleNamespace(returncode=0, stdout="test-dummy-key\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_security_run)
+    monkeypatch.setattr(keychain, "read", _REAL_KEYCHAIN_READ)
     calls = _fake_http(monkeypatch, body=TENSORFOLD_METRICS)
     fetch_one("test-server", entry(), NOW)
     headers = calls[0]["headers"]
@@ -275,6 +294,10 @@ def test_fetch_one_sends_key_from_keychain_in_both_headers(monkeypatch):
     assert headers["Authorization"] == "Bearer test-dummy-key"
     assert calls[0]["url"] == "http://localhost:8000/metrics"
     assert calls[0]["timeout"] == pytest.approx(3.0)
+    assert security_calls == [[
+        "security", "find-generic-password",
+        "-a", LOCAL_KEY, "-s", "quota-canvas", "-w",
+    ]]
 
 
 def test_fetch_one_env_var_key_when_keychain_empty(monkeypatch):

@@ -72,6 +72,9 @@ def test_get_and_post_share_the_guarded_opener(monkeypatch):
         return Response()
 
     monkeypatch.setattr(_base._OPENER, "open", open_request)
+    # _OPENER は同一 origin へのリダイレクトしか許さないハンドラを持つ
+    assert any(isinstance(h, _base._SameOriginRedirectHandler)
+               for h in _base._OPENER.handlers)
     assert _base.http_get_json("https://api.example.test/usage",
                                {"Authorization": "Bearer get"}, timeout=3.0) == {"ok": True}
     assert gemini.http_post_json("https://api.example.test/usage",

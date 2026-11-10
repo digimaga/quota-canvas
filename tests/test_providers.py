@@ -532,6 +532,81 @@ def test_glm_detect_sources(monkeypatch):
     assert det.detected is False and det.error == "API キーが未設定"
 
 
+# ------------------------------------- 認証情報ファイル / キーチェーンの解析
+
+def test_grok_read_entry_extracts_key_and_expires_at(tmp_path, monkeypatch):
+    """$GROK_HOME/auth.json の最初の key 持ちエントリから (key, expires_at)
+    を取る。key を持たないエントリは飛ばす。"""
+    import json
+
+    grok_home = tmp_path / "grok-home"
+    grok_home.mkdir()
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    (grok_home / "auth.json").write_text(json.dumps({
+        "memo": {"unrelated": True},  # key を持たないエントリは飛ばす
+        "login": {"key": "grok-token-1", "expires_at": "2026-11-05T12:34:56Z"},
+    }), encoding="utf-8")
+
+    token, expires_at = providers.grok._read_entry()
+    assert token == "grok-token-1"
+    assert expires_at == datetime(2026, 11, 5, 12, 34, 56, tzinfo=UTC)
+
+
+def test_codex_read_auth_state_reads_token_and_last_refresh(tmp_path, monkeypatch):
+    """~/.codex/auth.json の (tokens.access_token, last_refresh)。last_refresh は
+    ISO 文字列と epoch 秒の数値の両方を aware datetime にする。読めなければ
+    (None, None)。"""
+    import json
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    auth_dir = tmp_path / ".codex"
+    auth_dir.mkdir()
+    auth = auth_dir / "auth.json"
+
+    auth.write_text(json.dumps({
+        "tokens": {"access_token": "codex-tok-iso"},
+        "last_refresh": "2026-10-20T01:02:03Z",
+    }), encoding="utf-8")
+    assert providers.codex._read_auth_state() == (
+        "codex-tok-iso", datetime(2026, 10, 20, 1, 2, 3, tzinfo=UTC))
+
+    epoch = 1760968923
+    auth.write_text(json.dumps({
+        "tokens": {"access_token": "codex-tok-epoch"},
+        "last_refresh": epoch,
+    }), encoding="utf-8")
+    assert providers.codex._read_auth_state() == (
+        "codex-tok-epoch", datetime.fromtimestamp(epoch, tz=UTC))
+
+    auth.unlink()
+    assert providers.codex._read_auth_state() == (None, None)
+
+
+def test_claude_keychain_expires_at_epoch_millis_to_datetime(monkeypatch):
+    """claudeAiOauth.expiresAt (epoch ミリ秒) を aware datetime に変換し、
+    _last_expiry にも記録する。"""
+    import json
+    import subprocess
+    from types import SimpleNamespace
+    from quotacanvas.providers import claude as claude_mod
+
+    millis = 1793318400123
+    out = json.dumps({"claudeAiOauth": {
+        "accessToken": "claude-tok",
+        "expiresAt": millis,
+    }})
+    monkeypatch.setattr(claude_mod, "_last_expiry", None)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k:
+                        SimpleNamespace(returncode=0, stdout=out))
+
+    token, subscription, expires_at = claude_mod._read_keychain_payload()
+    assert token == "claude-tok"
+    assert subscription is None
+    expected = datetime.fromtimestamp(millis / 1000, tz=UTC)
+    assert expires_at == expected
+    assert claude_mod._known_expiry() == expected
+
+
 # ------------------------------------------------- 英語表示 (i18n / en)
 
 def test_window_labels_english():
