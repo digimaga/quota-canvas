@@ -19,6 +19,7 @@ routing hook も line / check と同じく絶対にサービスへ取得しな�
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -140,6 +141,9 @@ def test_hook_missing_status_puts_stale_line(tmp_path):
     assert rc == 0 and err == ""
     ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
     assert "stale" in ctx and "quota:" in ctx
+    # detail 固有の文言: missing は「status.json なし」の行そのもの (ja)。
+    # 期待値に format_stale_line は使わず固定文言で比べる。
+    assert ctx == "quota: stale（status.json なし）"
 
 
 def test_hook_old_status_puts_stale_line(tmp_path):
@@ -147,7 +151,12 @@ def test_hook_old_status_puts_stale_line(tmp_path):
     _write_status(status, [_win("glm:5h", "glm", "spare", 70.0)], age_seconds=3600)
     rc, out, _ = _hook(tmp_path, status=status)
     assert rc == 0
-    assert "stale" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "stale" in ctx
+    # detail 固有の文言: old は「古いので残量は判断に使わない」。
+    # broken の「読めないので…」と取り違えると赤くなる。
+    assert re.fullmatch(
+        r"quota: stale（\d\d:\d\d時点・古いので残量は判断に使わない）", ctx)
 
 
 def test_hook_broken_status_puts_stale_line(tmp_path):
@@ -155,7 +164,11 @@ def test_hook_broken_status_puts_stale_line(tmp_path):
     status.write_text("{ broken", encoding="utf-8")
     rc, out, _ = _hook(tmp_path, status=status)
     assert rc == 0
-    assert "stale" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "stale" in ctx
+    # detail 固有の文言: broken/unreadable は「読めないので残量は判断に使わない」。
+    assert re.fullmatch(
+        r"quota: stale（\d\d:\d\d時点・読めないので残量は判断に使わない）", ctx)
 
 
 # ------------------------------------------------------------------ 文言 ja/en

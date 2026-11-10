@@ -50,6 +50,16 @@ def _japanese_ui():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_routing_environment(monkeypatch):
+    """routing の status パスや強制フラグを実行環境から引き継がない (実 HOME の
+    status.json を予備として読んだり、判定を強制したりしないため)。必要なテストは
+    自分で設定する。"""
+    for variable in ("QUOTA_STATUS_PATH", "QUOTA_STATUS_FALLBACK", "QUOTA_GATE_FORCE",
+                     "QUOTA_CANVAS_EXAMPLE_CONFIG"):
+        monkeypatch.delenv(variable, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_balance_credentials(monkeypatch):
     """The suite must never read or use real credentials for new API providers."""
     from quotacanvas import keychain
