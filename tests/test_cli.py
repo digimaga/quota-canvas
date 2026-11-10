@@ -747,3 +747,67 @@ def test_muse_ingest_clear_delete_error(monkeypatch, capsys, tmp_path):
     rc, out = _run(monkeypatch, capsys, ["muse-ingest", "--clear"])
     assert rc != 0
     assert json.loads(out)["error"]
+
+
+# ------------------------------------------- config テキスト出力 (窓 ID 一覧)
+
+def test_config_text_lists_window_ids_per_provider(monkeypatch, capsys, tmp_path):
+    """--json でない config は TOML のあと、fetch_all の結果から窓 ID 一覧を出す。"""
+    captured = {}
+
+    def fetch_all(now=None, enabled=None):
+        captured["enabled"] = enabled
+        return [
+            ProviderUsage("claude", "Claude Max", [
+                Window("claude", "weekly", "週間", 30.0,
+                       NOW + timedelta(days=5), timedelta(days=7)),
+                Window("claude", "5h", "5時間", 10.0,
+                       NOW + timedelta(hours=4), timedelta(hours=5))], None, NOW),
+            ProviderUsage("codex", "Codex", [], "boom", NOW),   # 取得失敗
+            ProviderUsage("grok", "Grok", [], None, NOW),       # 窓ゼロ
+            # 残りの provider は usages に無い -> not_fetched
+        ]
+
+    monkeypatch.setattr(providers, "fetch_all", fetch_all)
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('[display]\nlanguage = "ja"\n[providers.glm]\nenabled = false\n',
+                        encoding="utf-8")
+    rc, out = _run(monkeypatch, capsys, ["--config", str(cfg_path), "config"])
+    assert rc == 0
+    assert "glm" not in captured["enabled"]              # disabled は取得しない
+    assert out.index("[display]") < out.index("窓 ID")    # 先に設定 TOML、次に窓 ID 一覧
+    assert "claude:weekly  claude:5h" in out             # 窓 ID は空白区切りで並ぶ
+    assert "codex   取得エラー: boom" in out              # usage.error -> エラー行
+    assert "grok    (利用枠なし)" in out                  # 窓ゼロ -> no_windows
+    assert "glm     (providers.glm.enabled = false のため取得しません)" in out
+    assert "(取得されませんでした)" in out                # enabled だが usages に無い provider
+
+
+# ----------------------------------------------------------- config --init
+
+def test_config_init_fails_when_example_missing(monkeypatch, capsys, tmp_path):
+    """example が見つからないとき --init は rc=1 で stderr に出し、ファイルを作らない。"""
+    target = tmp_path / "config.toml"
+    monkeypatch.setenv("QUOTA_CANVAS_EXAMPLE_CONFIG", str(tmp_path / "missing.toml"))
+    rc = cli.main(["--config", str(target), "config", "--init"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "config.example.toml" in err
+    assert not target.exists()
+
+
+def test_config_init_finds_example_in_cwd(monkeypatch, tmp_path):
+    """リポジトリ直下 (here.parents[2]) に example が無いときは実行ディレクトリから探す。"""
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    example_text = "# from cwd\n[display]\n"
+    (cwd / "config.example.toml").write_text(example_text, encoding="utf-8")
+    monkeypatch.delenv("QUOTA_CANVAS_EXAMPLE_CONFIG", raising=False)
+    # cli.py が tmp_path/pkg/a/b/ にあることにして parents[2] (= pkg/a) には
+    # config.example.toml が無い状態を作る。
+    monkeypatch.setattr(cli, "__file__", str(tmp_path / "pkg" / "a" / "b" / "cli.py"))
+    monkeypatch.chdir(cwd)
+    target = tmp_path / "out" / "config.toml"
+    rc = cli.main(["--config", str(target), "config", "--init"])
+    assert rc == 0
+    assert target.read_text(encoding="utf-8") == example_text

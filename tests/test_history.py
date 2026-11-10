@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from quotacanvas.history import History, decode_line, encode_sample
-from quotacanvas.models import Window
+from quotacanvas.models import Sample, Window
 
 UTC = timezone.utc
 T0 = datetime(2026, 10, 24, 9, 0, 0, tzinfo=UTC)
@@ -170,6 +171,29 @@ def test_decode_and_encode_roundtrip():
     assert sample.resets_at == resets
     assert decode_line("garbage") is None
     assert decode_line('{"w": "a", "t": "bad", "u": 1, "r": null}') is None
+
+
+def test_encode_sample_and_decode_line_roundtrip():
+    # 監査 [24]: test_decode_and_encode_roundtrip はテスト内 encode_line を使う
+    # ため本番エンコーダ (encode_sample) を通らない。本番の encode_sample が
+    # 書いた行を decode_line が無損失で読み戻せることを固定する。
+    resets = T0 + timedelta(hours=5)
+    sample = Sample("claude:5h", T0, 42.5, resets)
+    decoded = decode_line(encode_sample(sample))
+    assert decoded is not None
+    assert decoded.window_id == "claude:5h"
+    assert decoded.at == T0
+    assert decoded.used_percent == 42.5
+    assert decoded.resets_at == resets
+    # 保存形式そのもの (キー名と ISO 文字列) も固定する。decode_line は "r" の
+    # 欠落や空文字も None に戻すので、往復だけでは形式の変化を検出できない
+    assert json.loads(encode_sample(sample)) == {
+        "w": "claude:5h", "t": T0.isoformat(), "u": 42.5, "r": resets.isoformat()}
+    unknown = encode_sample(Sample("glm:5h", T0, 0.0, None))
+    assert json.loads(unknown) == {"w": "glm:5h", "t": T0.isoformat(), "u": 0.0, "r": None}
+    # "r" が null (resets_at 不明) の行も同じ経路で往復する
+    decoded = decode_line(unknown)
+    assert decoded == Sample("glm:5h", T0, 0.0, None)
 
 
 def test_default_path_points_to_application_support():

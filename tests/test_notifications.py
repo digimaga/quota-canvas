@@ -61,6 +61,31 @@ def test_notifications_cli(monkeypatch, capsys, tmp_path):
     assert json.loads(capsys.readouterr().out)['candidates'][0]['kind'] == 'credit'
 
 
+_VALID_PAYLOAD = {'previous': None, 'current': {'reset_credits': {'glm': [CREDIT]}},
+                  'now': NOW.isoformat(), 'notified': []}
+
+
+@pytest.mark.parametrize('payload', [
+    {'previous': None, 'now': NOW.isoformat(), 'notified': []},   # current 欠落
+    {**_VALID_PAYLOAD, 'current': 'bad'},                         # current が非 object
+    {**_VALID_PAYLOAD, 'previous': 'bad'},                        # previous が非 object
+    {**_VALID_PAYLOAD, 'now': 'bad'},                             # now が ISO でも数値でもない
+    {**_VALID_PAYLOAD, 'now': True},                              # now が bool (数値扱いしない)
+    {**_VALID_PAYLOAD, 'now': float('nan')},                      # now が非有限
+    {**_VALID_PAYLOAD, 'notified': 'not-a-list'},                 # notified が配列でない
+    {**_VALID_PAYLOAD, 'notified': ['k', 1]},                     # notified に非文字列
+])
+def test_notifications_cli_rejects_bad_input(monkeypatch, capsys, tmp_path, payload):
+    import io
+    monkeypatch.setattr('sys.stdin', io.StringIO(json.dumps(payload)))
+    rc = cli.main(['--config', str(tmp_path / 'config.toml'), 'notifications-plan'])
+    assert rc != 0
+    error = json.loads(capsys.readouterr().out)['error']
+    # 入力検証そのもので弾かれたことを文言で確認する (検証が抜けても plan 内の
+    # TypeError が error JSON になるため、非0終了だけでは区別できない)
+    assert any(word in error for word in ('current', 'previous', 'now', 'notified'))
+
+
 def test_legacy_swift_planner_fixture():
     # Keys captured from the original Swift NotificationPlanner for these snapshots.
     previous = {'cards': [{**CARD, 'status': 'go', 'resets_at': '2026-01-01T23:58:59+00:00'}]}

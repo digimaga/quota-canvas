@@ -194,6 +194,28 @@ def test_render_large_and_small_together_with_stale_error(monkeypatch):
     assert len(marks) == 2
 
 
+def test_stale_warning_text_is_actually_drawn(monkeypatch):
+    # 監査 [23]: _draw_stale_mark への配線確認 (spy の記録) だけでは本体の
+    # s.text(...) を削除しても赤にならない。stale の警告文言が実際に
+    # (YELLOW・右寄せ anchor="rt" で) 描かれることを _S.text への呼び出しで
+    # 固定する。位置や画素までは見ない。
+    texts = []
+    orig = render_mod._S.text
+
+    def spy(s, xy, txt, font, fill, anchor=None):
+        texts.append((txt, fill, anchor))
+        orig(s, xy, txt, font, fill, anchor)
+
+    monkeypatch.setattr(render_mod._S, "text", spy)
+    stale_txt = render_mod._stale_text(OLD)
+    img = render(_stale_cards(), NOW_L,
+                 layout=[PanelSpec("claude:weekly"),
+                         PanelSpec("claude:weekly", size="small")])
+    assert img.size == (1920, 462)
+    # 大きいカードと small パネルのそれぞれで 1 回、同じ文言が描かれる
+    assert texts.count((stale_txt, render_mod.YELLOW, "rt")) == 2
+
+
 def test_render_healthy_card_has_no_stale_mark(monkeypatch):
     marks = _spy_stale_mark(monkeypatch)
     pu = ProviderUsage("claude", "Claude Max", [_win("claude", "weekly")],
