@@ -135,6 +135,24 @@ def test_exhausts_at_skips_sleep_band():
     assert abs((pace.exhausts_at - expected).total_seconds()) < 1
 
 
+def test_cautious_exhausts_at_skips_sleep_band():
+    # 整数使用率の cautious (used+1%) も睡眠帯を飛ばす。リセット 10-26 13:00、
+    # now 21:00、used 92% (整数): 起きている経過は 104h (壁 152h - 睡眠 48h)。
+    # 本体の rate = 92*24/104 だと予測 99.08% でリセット前に尽きないが、
+    # used+1 の cautious rate = 93*24/104 だと起きている 728/93h で尽きる:
+    # 21:00 + 3h (0 時まで) + 睡眠 8h を飛ばし + 449/93h = 翌朝 08:00 起点の
+    # 10-26 12:49:40 (リセット 13:00 の直前)。壁時計で進めると 04:49 (睡眠中)。
+    reset = datetime(2026, 10, 26, 13, 0, 0, tzinfo=UTC)
+    pace = compute_pace(grok_weekly(92.0, reset), [], NOW, tz=UTC, sleep=SLEEP)
+    assert pace.exhausts_at is None  # 本体の rate では尽きない
+    assert pace.status is not PaceStatus.OVER
+    assert pace.cautious_exhausts_at is not None
+    expected = datetime(2026, 10, 26, 8, 0, 0, tzinfo=UTC) + timedelta(hours=449 / 93)
+    assert abs((pace.cautious_exhausts_at - expected).total_seconds()) < 1
+    # 翌朝以降 (睡眠帯 00:00-08:00 の中や前の夜に落ちない)
+    assert pace.cautious_exhausts_at > datetime(2026, 10, 26, 8, 0, 0, tzinfo=UTC)
+
+
 # --- 睡眠中にリセットを迎える --------------------------------------------------
 
 
@@ -330,6 +348,30 @@ def test_recent_rate_lookback_clamped_by_wall_elapsed():
     pace = compute_pace(win, samples, now, tz=UTC, sleep=SLEEP)
     # rate = 0.5 * rate_win(40*24/13) + 0.5 * recent(35*24/13): 基準は 05:00
     assert pace.rate_per_day == pytest.approx(75 * 12 / 13)
+
+
+# --- daily_used は sleep があっても窓開始から 24 時間区切り (壁時計) ------------
+
+
+def test_daily_used_with_sleep_keeps_wall_clock_day_chunks():
+    # sleep があっても daily_used は窓開始 (04:00) から 24 時間ずつの区切り。
+    # 暦日 0 時区切りでも起きている時間区切りでもない。日替わり位置を固定する
+    # ために、10-21 04:00 (24%) から 32 時間後の 10-22 12:00 (48%) へ飛ぶ履歴を置く。
+    # 間は線形補間なので、04:00 区切りの 10-21 04:00-10-22 04:00 の日は
+    # 32 時間の増分 24% のうち 24 時間分 = 18%。
+    samples = [
+        samp(datetime(2026, 10, 20, 4, 0, tzinfo=UTC), 12.0),
+        samp(datetime(2026, 10, 21, 4, 0, tzinfo=UTC), 24.0),
+        samp(datetime(2026, 10, 22, 12, 0, tzinfo=UTC), 48.0),
+        samp(datetime(2026, 10, 23, 4, 0, tzinfo=UTC), 54.0),
+        samp(datetime(2026, 10, 24, 4, 0, tzinfo=UTC), 60.0),
+        samp(datetime(2026, 10, 25, 4, 0, tzinfo=UTC), 66.0),
+    ]
+    pace = compute_pace(grok_weekly(71.0), samples, NOW, tz=UTC, sleep=SLEEP)
+    # 窓開始 10-19 04:00 から 7 区画 (経過 161h = 6日+17h なので最後は 17h 分)。
+    # 履歴が 10-20 04:00 (初日の終わり) からあるので全日が埋まる。
+    assert pace.daily_used == [12.0, 12.0, 18.0, 12.0, 6.0, 6.0, 5.0]
+    assert len(pace.daily_used) == 7
 
 
 # --- config: start / end は必須 -------------------------------------------------
@@ -663,3 +705,32 @@ def test_sleep_across_dst_spring_forward():
     sleep = (time(0), time(8))
     assert _active_span(start, end, sleep, zone) == timedelta(hours=34)
     assert _advance_active(start, 34 / 24, sleep, zone).astimezone(UTC) == end.astimezone(UTC)
+
+
+def test_compute_pace_across_dst_fall_back_end_to_end():
+    # DST 切替 (2026-11-01 の America/New_York 秋の巻き戻し) をまたぐ週間窓で
+    # compute_pace 全体を通す。睡眠帯 00:00-08:00 の切替日 (11-01) だけは
+    # UTC タイムライン上で 9h (04:00-13:00 UTC) になる。
+    from zoneinfo import ZoneInfo
+
+    zone = ZoneInfo("America/New_York")
+    resets = datetime(2026, 11, 2, 20, 0, tzinfo=zone)   # EST (UTC-5) = 11-03 01:00 UTC
+    now = datetime(2026, 11, 1, 12, 0, tzinfo=zone)      # 切替後 EST = 11-01 17:00 UTC
+    win = Window("claude", "weekly", "週間", 85.0, resets, timedelta(days=7))
+    pace = compute_pace(win, [], now, tz=zone, sleep=SLEEP)
+    # 窓の開始は UTC 基準で 7 日前 (10-27 01:00 UTC = 10-26 21:00 EDT)。
+    # start->now の壁 136h から睡眠 49h (10-27..31 の 8h×5 + 切替日の 9h) を引き
+    # 起きている 87h。窓全体は壁 168h - 睡眠 57h (切替日 9h を含む) = 111h。
+    assert pace.elapsed_fraction == pytest.approx(87 / 111)
+    # now->resets は壁 32h から睡眠 8h (11-02 分) を引いて起きている 24h。
+    assert pace.rate_per_day == pytest.approx(85 * 24 / 87)
+    assert pace.projected_end_percent == pytest.approx(85 + 85 * 24 / 87 * 1.0)
+    assert pace.sustainable_per_day == pytest.approx(15.0)
+    # 尽きるのは起きている 15*87/(85*24) 日先: 11-01 17:00 UTC から 12h で
+    # 11-02 の睡眠帯 (05:00-13:00 UTC) に入り、明けて 13:00 UTC + 57/17h =
+    # 11-02 16:21:10.6 UTC (= 11:21 EST)。固定オフセットで 8h 帯と数えると
+    # 経過が変わり (88h 分母)、この時刻はずれる。
+    assert pace.status is PaceStatus.OVER
+    assert pace.exhausts_at is not None
+    expected = datetime(2026, 11, 2, 13, 0, 0, tzinfo=UTC) + timedelta(hours=57 / 17)
+    assert abs((pace.exhausts_at - expected).total_seconds()) < 1
