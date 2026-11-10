@@ -77,14 +77,34 @@ def test_resolve_panel_collects_parts_in_order():
 # ------------------------------------------------------------------ 描画
 
 @pytest.mark.parametrize("gauge", ["remaining", "used"])
-def test_render_grok_with_parts_smoke(gauge):
-    """大パネル / 小パネルの両方で例外なく 1920x462 の画像が出る。"""
+def test_render_grok_with_parts_smoke(gauge, monkeypatch):
+    """大パネル / 小パネルの両方で例外なく 1920x462 の画像が出る。
+    small 側は内訳付きで実際に描かれることまで確認する。"""
+    from quotacanvas import render as render_mod
+
+    calls = []
+    orig = render_mod._draw_small_panel
+
+    def spy(s, box, name, main_item, now, gauge_, theme, **kw):
+        calls.append((tuple(box), name, gauge_, kw.get("parts") or []))
+        return orig(s, box, name, main_item, now, gauge_, theme, **kw)
+
+    monkeypatch.setattr(render_mod, "_draw_small_panel", spy)
     img = render(_grok_cards(), NOW, gauge=gauge, layout=[
         PanelSpec("grok:weekly",
                   subs=["grok:weekly_build", "grok:weekly_tasks"]),
         PanelSpec("grok:weekly", size="small"),
     ])
     assert img.size == (1920, 462)
+
+    # small 段の Grok が内訳 (Build / Tasks) 付きで描かれた
+    assert len(calls) == 1
+    _box, name, small_gauge, parts = calls[0]
+    assert name == "Grok"
+    assert small_gauge == gauge
+    assert [w.id for w, _c in parts] == \
+        ["grok:weekly_build", "grok:weekly_tasks"]
+    assert [c for _w, c in parts] == _PART_COLORS[:2]
 
 
 @pytest.fixture()

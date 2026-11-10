@@ -354,7 +354,25 @@ def _render_cards(n=3):
     return cards
 
 
-def test_render_calendar_large_and_small():
+def _spy_calendar_calls(monkeypatch):
+    """render 中に _draw_calendar が呼ばれた (box, small, week_start) を記録する。"""
+    from quotacanvas import render as render_mod
+
+    calls = []
+    orig = render_mod._draw_calendar
+
+    def spy(s, box, *args, **kwargs):
+        calls.append((tuple(box), kwargs.get("small", False),
+                      args[3] if len(args) > 3 else kwargs.get("week_start")))
+        return orig(s, box, *args, **kwargs)
+
+    monkeypatch.setattr(render_mod, "_draw_calendar", spy)
+    return calls
+
+
+def test_render_calendar_large_and_small(monkeypatch):
+    calls = _spy_calendar_calls(monkeypatch)
+    texts = _drawn_texts(monkeypatch)
     cards = _render_cards()
     layout = [PanelSpec(CALENDAR_MAIN),
               PanelSpec("p0:weekly"),
@@ -362,6 +380,20 @@ def test_render_calendar_large_and_small():
               PanelSpec("p1:weekly", size="small")]
     img = render(cards, NOW, layout=layout)
     assert img.size == (CANVAS_W, CANVAS_H)
+
+    # 2 列レイアウト: 1 列目の large と 2 列目上段の small が両方実際に描かれる
+    assert len(calls) == 2
+    assert [small for _box, small, _ws in calls] == [False, True]
+    large_box, _small, _ws = calls[0]
+    small_box, _small, _ws = calls[1]
+    assert large_box[1] == AREA_TOP and large_box[3] == AREA_BOTTOM
+    assert small_box[1] == AREA_TOP and small_box[3] < large_box[3]
+
+    # 見出し (年月) が large / small の 2 か所に描かれている
+    from quotacanvas import i18n
+    title = i18n.t("render.calendar.title", year=2026,
+                   month=i18n.t("render.month.oct"))
+    assert [r[1] for r in texts].count(title) == 2
 
 
 def test_render_calendar_in_five_columns(monkeypatch):
@@ -402,14 +434,41 @@ def test_render_calendar_in_five_columns(monkeypatch):
     assert calls == [(large_box, False), (small_box, True)]
 
 
-def test_render_calendar_with_monday_start():
+def test_render_calendar_with_monday_start(monkeypatch):
+    calls = _spy_calendar_calls(monkeypatch)
+    texts = _drawn_texts(monkeypatch)
+    from quotacanvas import i18n
+
     cards = _render_cards(2)
     layout = [PanelSpec(CALENDAR_MAIN), PanelSpec("p0:weekly"),
               PanelSpec(CALENDAR_MAIN, size="small"),
               PanelSpec("p1:weekly", size="small")]
+    title = i18n.t("render.calendar.title", year=2026,
+                   month=i18n.t("render.month.oct"))
+    orders = {
+        "monday": ("mon", "tue", "wed", "thu", "fri", "sat", "sun"),
+        "sunday": ("sun", "mon", "tue", "wed", "thu", "fri", "sat"),
+    }
     for week_start in ("monday", "sunday"):
+        start = len(texts)
         img = render(cards, NOW, layout=layout, week_start=week_start)
         assert img.size == (CANVAS_W, CANVAS_H)
+
+        # _draw_calendar が呼ばれただけでなく、中身 (年月・曜日・日付) が
+        # large / small の両方で実際に描かれていること。
+        drawn = [r[1] for r in texts[start:]]
+        assert drawn.count(title) == 2
+        expected = [i18n.t("render.weekday." + k)
+                    for k in orders[week_start]]
+        weekdays = [t for t in drawn if t in set(expected)]
+        assert weekdays == expected * 2
+        assert {str(d) for d in range(1, 32)} <= set(drawn)
+
+    # 各週の始まりで large / small の両方が、指定した week_start で描かれる
+    assert len(calls) == 4
+    assert [small for _box, small, _ws in calls] == [False, True, False, True]
+    assert [ws for _box, _small, ws in calls] == \
+        ["monday", "monday", "sunday", "sunday"]
 
 
 def test_render_rejects_invalid_week_start():
@@ -428,13 +487,31 @@ def test_render_monday_start_changes_pixels():
     assert a.tobytes() != b.tobytes()
 
 
-def test_render_calendar_only_with_no_windows_marked():
+def test_render_calendar_only_with_no_windows_marked(monkeypatch):
     # 印が 1 つもない (リセット不明) ときも描ける
+    calls = _spy_calendar_calls(monkeypatch)
+    texts = _drawn_texts(monkeypatch)
+    from quotacanvas import i18n
+
     win = Window("p0", "weekly", "週間", 10.0, None, timedelta(days=7))
     pu = ProviderUsage("p0", "P0", [win], None, NOW)
     cards = [(pu, compute_pace(win, [], NOW))]
     img = render(cards, NOW, layout=[PanelSpec(CALENDAR_MAIN)])
     assert img.size == (CANVAS_W, CANVAS_H)
+    # 印が無くてもカレンダー本体 (large) が 1 回描かれる
+    assert len(calls) == 1
+    assert calls[0][1] is False
+
+    # 印が空でも早期 return せず、年月・曜日・日付が描かれている
+    drawn = [r[1] for r in texts]
+    title = i18n.t("render.calendar.title", year=2026,
+                   month=i18n.t("render.month.oct"))
+    assert drawn.count(title) == 1
+    expected = [i18n.t("render.weekday." + k)
+                for k in ("sun", "mon", "tue", "wed", "thu", "fri", "sat")]
+    weekdays = [t for t in drawn if t in set(expected)]
+    assert weekdays == expected
+    assert {str(d) for d in range(1, 32)} <= set(drawn)
 
 
 # ------------------------------------------------- 描画の見た目 (ヘッダ余白・印)
