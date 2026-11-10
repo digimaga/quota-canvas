@@ -315,6 +315,26 @@ def test_both_stale_reports_stale(tmp_path):
     assert rc == 0 and "stale" in out
 
 
+def test_both_bad_line_keeps_primary_old_not_fallback_broken(tmp_path):
+    """主 old・予備 broken のとき予備は ok ではないので主の結果を返す。
+    「stale」の包含だけでなく、主 old 固有の語 (「古いので残量は判断に使わない」)
+    と主の updated_at の時点で、予備 (broken →「読めない」+ ファイル mtime) との
+    取り違えを検出する。"""
+    primary = tmp_path / "primary.json"
+    fallback = tmp_path / "fallback.json"
+    data = _write_status(primary, [_win("glm:5h", "glm", "spare", 70.0)], age_seconds=3600)
+    fallback.write_text("{ broken", encoding="utf-8")
+    rc, out, err = _run(tmp_path, ["routing", "line"], status=primary,
+                        env={"QUOTA_STATUS_FALLBACK": str(fallback)})
+    assert rc == 0 and err == ""
+    assert "stale" in out
+    assert "古いので残量は判断に使わない" in out  # 主の old 由来 (予備 broken なら「読めないので」)
+    assert "読めない" not in out
+    # 主の updated_at の時点 (予備側を使ったなら broken データに時刻は無くファイル mtime になる)
+    primary_at = datetime.fromisoformat(data["updated_at"]).astimezone().strftime("%H:%M")
+    assert "（%s時点" % primary_at in out
+
+
 # ------------------------------------------------------------------ routing burn
 
 
@@ -645,6 +665,19 @@ def test_routing_mode_list_settings_and_legacy_burn_exclusivity(tmp_path, burn_p
     assert "grok" not in gate.load_burn(burn_path)
     assert run("mode", "invalid", "off")[0] == 2
     assert run("mode", "grok", "off", "--until", "23:59")[0] == 2
+
+
+def test_mode_text_lists_standard_and_burn_with_until(tmp_path, burn_path):
+    """--json なしの一覧: 通常ワーカーは「name: standard」、burn 中は
+    「name: burn (~ISO期限)」の形で 1 行ずつ出る。"""
+    until = (datetime.now().astimezone() + timedelta(hours=2)).replace(microsecond=0)
+    gate.store_burn(gate.BURN_PATH, "grok", until)
+    rc, out, err = _run(tmp_path, ["routing", "mode"])
+    assert rc == 0 and err == ""
+    expected = ["%s: burn (~%s)" % (name, until.astimezone().isoformat()) if name == "grok"
+                else "%s: standard" % name
+                for name in sorted(gate.KNOWN_PROVIDERS)]
+    assert out.splitlines() == expected
 
 
 def test_monitor_only_check_and_line_with_missing_or_stale_status(tmp_path):
