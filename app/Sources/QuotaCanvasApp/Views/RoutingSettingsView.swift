@@ -554,6 +554,8 @@ struct RoutingSettingsView: View {
         }
     }
 
+    /// 判定スナップショットの表示鮮度。エンジン停止の判定 (StatusStore.staleInterval) と
+    /// 同じ 5 分固定で、routing.stale_minutes (判定材料の古さ) とは意図的に連動させない。
     static func verdictIsStale(_ timestamp: Date?, now: Date) -> Bool {
         guard let timestamp else { return true }
         return now.timeIntervalSince(timestamp) > 5 * 60

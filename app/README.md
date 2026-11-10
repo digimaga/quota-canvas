@@ -78,6 +78,8 @@ SwiftPM で実行ファイルをビルドし、リソースと Info.plist を .a
     「現在の判定」は status.json の `routing.workers` の一覧（判定ラベルは色付き:
     stop=赤 / reserve=黄 / go=紫 / boost=緑 / unknown=灰、残り %、理由の短い文）。
     表示中は 60 秒ごとに読み直し、判定時刻が 5 分より古いか不明なら警告する。
+    この 5 分はエンジン停止の判定（status.json の 5 分）と同じ固定値で、判定の材料が
+    古いとみなす `routing.stale_minutes` とは別のもの（設定を変えても連動しない）。
     行ごとの Picker で「標準」「使い切り」「監視のみ」を選ぶ。`routing mode --json`
     の一覧を真実値とし、変更後は `refresh` と 2 秒後の再読込で判定を更新する。
     使い切りの既定期限は次の 23:59。監視のみは取得を続け、振り分けでは stop にする。
