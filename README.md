@@ -324,6 +324,11 @@ In an agent instruction file such as `CLAUDE.md` or `AGENTS.md`, you can write: 
 
 This project is developed with AI coding agents: Claude Code (Claude), Codex, and GLM. Commits they helped write carry `Co-Authored-By` trailers.
 
+There are two separate test entry points, and neither runs the other (there is no CI):
+
+- `.venv/bin/pytest` runs the Python tests in `tests/` and the helper-script tests in `scripts/tests/`.
+- `app/scripts/test.sh` runs the menu bar app checks: localization keys and format specifiers, UI wiring, and the Swift regression checks. It compiles the app sources without `QuotaCanvasApp.swift`, so it is not a full app build.
+
 ## License
 
 MIT ([LICENSE](LICENSE)). TURZX communication uses [phstudy/turing-smart-screen-cli](https://github.com/phstudy/turing-smart-screen-cli) (MIT), pinned to a commit. The quota display was inspired by [nuitsjp/token-dashboard](https://github.com/nuitsjp/token-dashboard) for Windows.
