@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Guard the view wiring that cannot be exercised without launching a GUI."""
+import plistlib
 import re
+import subprocess
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 display = (root / 'Sources/QuotaCanvasApp/Views/SettingsView.swift').read_text()
 routing = (root / 'Sources/QuotaCanvasApp/Views/RoutingSettingsView.swift').read_text()
-en = (root / 'Resources/en.lproj/Localizable.strings').read_text()
+en_path = root / 'Resources/en.lproj/Localizable.strings'
+en = en_path.read_text()
+# Parsed declarations: a commented-out '/* "k" = "v"; */' is not a translation.
+en_values = plistlib.loads(subprocess.run(
+    ['plutil', '-convert', 'xml1', '-o', '-', '--', str(en_path)],
+    capture_output=True, check=True).stdout)
 app = (root / 'Sources/QuotaCanvasApp/QuotaCanvasApp.swift').read_text()
 
 
@@ -159,9 +166,255 @@ def const_true(arg):
     return arg == 'true'
 
 
+def split_top(cond, op):
+    """Split cond at `op` ('||' / '&&') outside parentheses and brackets."""
+    parts, depth, last, i = [], 0, 0, 0
+    while i < len(cond):
+        c = cond[i]
+        if c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+        elif depth == 0 and cond.startswith(op, i):
+            parts.append(cond[last:i])
+            last = i + len(op)
+            i += len(op)
+            continue
+        i += 1
+    parts.append(cond[last:])
+    return parts
+
+
+def const_bool(cond):
+    """True / False when the condition is a constant ('false', '(false)',
+    '!true', 'x && false', 'true || x', '(false && x) || false'); None
+    otherwise. '||' binds looser than '&&', so it is split first."""
+    cond = cond.strip()
+    while cond.startswith('('):
+        try:
+            if matching_paren(cond, 0) != len(cond) - 1:
+                break
+        except ValueError:
+            break
+        cond = cond[1:-1].strip()
+    if cond == 'true':
+        return True
+    if cond == 'false':
+        return False
+    ors = split_top(cond, '||')
+    if len(ors) > 1:
+        values = [const_bool(p) for p in ors]
+        if True in values:
+            return True
+        return False if all(v is False for v in values) else None
+    ands = split_top(cond, '&&')
+    if len(ands) > 1:
+        values = [const_bool(p) for p in ands]
+        if False in values:
+            return False
+        return True if all(v is True for v in values) else None
+    if cond.startswith('!'):
+        inner = const_bool(cond[1:])
+        return None if inner is None else not inner
+    return None
+
+
+def header_start(skeleton, open_index):
+    """Start of the 'if' / 'while' / 'else' / 'guard' statement whose body
+    opens at open_index, or None. The keyword must begin a statement (after a
+    newline, ';', '{', '}' or closure parameters 'x in'); 'else' directly in
+    front of an 'if' (even across a newline) is kept. Braces between the
+    keyword and the body are allowed only inside parentheses, as in
+    'if items.contains(where: { $0.on }) && false {'."""
+    opens = enclosing_braces(skeleton, open_index)
+    lo = opens[-1] + 1 if opens else 0
+    for m in reversed(list(re.finditer(r'\b(?:if|while|else|guard)\b',
+                                       skeleton[lo:open_index]))):
+        c = lo + m.start()
+        paren = brace = 0
+        ok = True
+        for ch in skeleton[c:open_index]:
+            if ch in '([':
+                paren += 1
+            elif ch in ')]':
+                paren -= 1
+            elif ch == '{':
+                if paren == 0:
+                    ok = False
+                    break
+                brace += 1
+            elif ch == '}':
+                brace -= 1
+            if paren < 0 or brace < 0:
+                ok = False
+                break
+        if not ok or paren or brace:
+            continue
+        before = skeleton[lo:c].rstrip(' \t')
+        if not (before == '' or before[-1] in '\n;{}'
+                or re.search(r'\bin$', before)
+                or re.search(r'\belse$', before.rstrip())):
+            continue
+        if m.group(0) == 'if':
+            e = re.search(r'\belse\s*$', skeleton[lo:c])
+            if e:
+                return lo + e.start()
+        return c
+    return None
+
+
+def block_header(skeleton, open_index):
+    """The statement text that opens the '{' at open_index ('' if none)."""
+    start = header_start(skeleton, open_index)
+    return '' if start is None else skeleton[start:open_index].strip()
+
+
+def previous_block_open(skeleton, open_index):
+    """'{' of the if-body whose '}' is directly (only whitespace between)
+    in front of the 'else' that opens the block at open_index, or None
+    ('guard c\n else {' after an unrelated 'if' block is not a chain)."""
+    start = header_start(skeleton, open_index)
+    if start is None:
+        return None
+    k = start - 1
+    while k >= 0 and skeleton[k] in ' \t\n':
+        k -= 1
+    if k < 0 or skeleton[k] != '}':
+        return None
+    depth = 0
+    for j in range(k, -1, -1):
+        if skeleton[j] == '}':
+            depth += 1
+        elif skeleton[j] == '{':
+            depth -= 1
+            if depth == 0:
+                return j
+    return None
+
+
+def block_never_runs(skeleton, open_index):
+    """The block opened at open_index is an 'if'/'while' body whose condition
+    is constantly false, or an 'else' / 'else if' after a branch of the same
+    chain whose condition is constantly true."""
+    header = block_header(skeleton, open_index)
+    m = re.fullmatch(r'(?:else\s+)?(?:if|while)\s+(.+)', header, re.S)
+    if m and const_bool(m.group(1)) is False:
+        return True
+    while re.match(r'else\b', header):
+        prev_open = previous_block_open(skeleton, open_index)
+        if prev_open is None:
+            return False
+        header = block_header(skeleton, prev_open)
+        prev = re.fullmatch(r'(?:else\s+)?if\s+(.+)', header, re.S)
+        if not prev:
+            return False
+        if const_bool(prev.group(1)) is True:
+            return True
+        open_index = prev_open  # keep walking up an 'else if' chain
+    return False
+
+
+def inside_false_conditional(skeleton, index):
+    """index lies in an inactive '#if false' / '#if 0' (or the '#else' of
+    '#if true') compilation block."""
+    stack = []
+    for m in re.finditer(r'^[ \t]*#(if|elseif|else|endif)\b(.*)$',
+                         skeleton[:index], re.M):
+        kind, cond = m.group(1), m.group(2).strip()
+        value = {'true': True, '1': True, 'false': False, '0': False}.get(cond)
+        if kind == 'if':
+            stack.append([value is False, value is True])  # [dead, taken]
+        elif not stack:
+            continue
+        elif kind == 'elseif':
+            stack[-1] = [stack[-1][1] or value is False,
+                         stack[-1][1] or value is True]
+        elif kind == 'else':
+            stack[-1] = [stack[-1][1], True]
+        else:
+            stack.pop()
+    return any(dead for dead, _ in stack)
+
+
+def guard_else_block(skeleton, guard_end):
+    """(condition, else '{', else '}') of the guard whose keyword ends at
+    guard_end. Braces and parentheses inside the condition (closures,
+    'if c {a} else {b}' expressions) are skipped; an 'else' that belongs to
+    such an inner 'if' is not the guard's."""
+    depth, pending_ifs, k = 0, 0, guard_end
+    while k < len(skeleton):
+        c = skeleton[k]
+        if c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+            if depth < 0:
+                break
+        elif depth == 0:
+            word = re.match(r'\b(if|else)\b', skeleton[k:])
+            if word and (k == 0 or not (skeleton[k - 1].isalnum()
+                                         or skeleton[k - 1] == '_')):
+                if word.group(1) == 'if':
+                    pending_ifs += 1
+                elif pending_ifs:
+                    pending_ifs -= 1
+                else:
+                    b = re.match(r'else\s*\{', skeleton[k:])
+                    if not b:
+                        break
+                    open_ = k + b.end() - 1
+                    return (skeleton[guard_end:k], open_,
+                            matching_brace(skeleton, open_))
+                k += len(word.group(1))
+                continue
+        k += 1
+    raise ValueError('guard without else block')
+
+
+def guard_false_before(skeleton, index):
+    """A live 'guard false else { ... }' finished before index at the top
+    level of an enclosing block always leaves the scope, so code after it
+    never runs. Code inside the guard's own else-block does run, and a guard
+    inside an inactive '#if false' is ignored."""
+    for o in enclosing_braces(skeleton, index):
+        depth, k = 0, o + 1
+        while k < index:
+            c = skeleton[k]
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+            elif depth == 0:
+                g = re.match(r'guard\b', skeleton[k:])
+                if g and not (skeleton[k - 1].isalnum() or skeleton[k - 1] == '_'):
+                    try:
+                        cond, _, else_close = guard_else_block(skeleton, k + g.end())
+                    except ValueError:
+                        k += g.end()
+                        continue
+                    if (else_close < index and const_bool(cond) is False
+                            and not inside_false_conditional(skeleton, k)):
+                        return True
+                    k = else_close + 1
+                    continue
+            k += 1
+    return False
+
+
+def unreachable(skeleton, index):
+    """Code at index sits in a branch that can never run."""
+    return (inside_false_conditional(skeleton, index)
+            or guard_false_before(skeleton, index)
+            or any(block_never_runs(skeleton, o)
+                   for o in enclosing_braces(skeleton, index)))
+
+
 def dead_modifier(skeleton, start, end):
     """A '.disabled(true)' or '.hidden()' trailing the expression ending at
-    `end`, or trailing a block enclosing `start`, makes it unreachable."""
+    `end`, or trailing a block enclosing `start`, makes it unreachable. So
+    does an enclosing branch that never runs ('if false', '#if false')."""
+    if unreachable(skeleton, start):
+        return True
     try:
         positions = [end] + [matching_brace(skeleton, o) + 1
                              for o in enclosing_braces(skeleton, start)]
@@ -221,6 +474,7 @@ def set_closure_calls(text, callee):
         # A real call (not just the name), not preceded by an unconditional
         # 'return' at the closure's top level ('return; setMode(...)').
         return any(not return_on_path(set_body, c.start())
+                   and not unreachable(set_body, c.start())
                    for c in re.finditer(r'\b%s\s*\(' % re.escape(callee), set_body))
     except (ValueError, AttributeError):
         return False
@@ -247,6 +501,8 @@ def off_option(source, skeleton):
     for m in re.finditer(r'Text\s*\(\s*"監視のみ"\s*\)', source):
         if not skeleton[m.start():m.start() + 4] == 'Text':
             continue  # inside a string literal, not code
+        if unreachable(skeleton, m.start()):
+            continue  # e.g. 'if false { Text("監視のみ").tag("off") }'
         try:
             pos = m.end()
             while True:
@@ -285,9 +541,10 @@ def selection_routes_to_setmode(args, skeleton):
 
 
 def app_starts_status_store():
-    m = re.search(code_pattern('store.start()'), app_skel)
-    return (m is not None
-            and not early_return_before(app_skel, m.start())
+    live = any(not early_return_before(app_skel, m.start())
+               and not unreachable(app_skel, m.start())
+               for m in re.finditer(code_pattern('store.start()'), app_skel))
+    return (live
             and has_code(app_skel, '@StateObject private var statusStore: StatusStore')
             and has_code(app_skel, 'let store = StatusStore()')
             and has_code(app_skel, '_statusStore = StateObject(wrappedValue: store)')
@@ -320,32 +577,36 @@ def engine_settings_outside_config_form():
 
 
 def engine_path_can_reload():
-    m = re.search(code_pattern('Button("再読み込み") { Task { await load() } }'),
-                  display_skel)
-    return m is not None and not dead_modifier(display_skel, m.start(), m.end())
+    return any(not dead_modifier(display_skel, m.start(), m.end())
+               for m in re.finditer(code_pattern(
+                   'Button("再読み込み") { Task { await load() } }'), display_skel))
 
 
 def worker_editor_appends_row():
-    m = re.search(code_pattern('rows.append(WorkerRow(name: "", windowsText: ""))'),
-                  routing_skel)
-    return m is not None and not dead_modifier(routing_skel, m.start(), m.end())
+    return any(not dead_modifier(routing_skel, m.start(), m.end())
+               for m in re.finditer(code_pattern(
+                   'rows.append(WorkerRow(name: "", windowsText: ""))'), routing_skel))
 
 
 def routing_polls():
-    """The poll loop must be live code: no same-block 'return' before the
-    loop or before the verdict reload inside it."""
-    m = re.search(code_pattern('while !Task.isCancelled'), routing_skel)
-    if not m or early_return_before(routing_skel, m.start()):
-        return False
-    try:
-        brace = routing_skel.index('{', m.end())
-        body = routing_skel[brace:matching_brace(routing_skel, brace)]
-    except ValueError:
-        return False
-    sleep = re.search(code_pattern('60_000_000_000'), body)
-    reload = re.search(code_pattern('await reloadVerdicts()'), body)
-    return bool(sleep and reload
-                and not early_return_before(routing_skel, brace + reload.start()))
+    """Some poll loop must be live code: no same-block 'return' or never-
+    running branch before the loop or before a verdict reload inside it."""
+    for m in re.finditer(code_pattern('while !Task.isCancelled'), routing_skel):
+        if (early_return_before(routing_skel, m.start())
+                or unreachable(routing_skel, m.start())):
+            continue
+        try:
+            brace = routing_skel.index('{', m.end())
+            body = routing_skel[brace:matching_brace(routing_skel, brace)]
+        except ValueError:
+            continue
+        if not re.search(code_pattern('60_000_000_000'), body):
+            continue
+        if any(not early_return_before(routing_skel, brace + r.start())
+               and not unreachable(routing_skel, brace + r.start())
+               for r in re.finditer(code_pattern('await reloadVerdicts()'), body)):
+            return True
+    return False
 
 
 def routing_uses_segmented_picker():
@@ -398,7 +659,7 @@ checks = {
     'outdated color translation is removed':
         '超過・枯渇は赤、ギリギリは黄、余裕ありは緑。' not in en,
     'routing uses the segmented CLI mode picker': routing_uses_segmented_picker(),
-    'burn fallback has an English translation': '"使い切り" = "Burn";' in en,
+    'burn fallback has an English translation': en_values.get('使い切り') == 'Burn',
 }
 for name, passed in checks.items():
     if not passed:
