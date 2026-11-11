@@ -661,6 +661,9 @@ def advice_text(pace, compact=False, now=None):
     # 状態語の代わりに、余裕ありなら「このままだと約◯%余る」から始める。
     # 英語の文言は区切りの後に続く形 (小文字始まり) なので行頭だけ大文字にする。
     quiet = st in (PaceStatus.ON_TRACK, PaceStatus.SPARE)
+    # ペース超過もカード右上のバッジに出るので、アドバイス行には「ペース超過」を
+    # 繰り返さない (compact は残量・締切だけ、状態語しか無いときは「ペースを落とす」)。
+    over = st is PaceStatus.OVER
 
     def with_spare_forecast(text):
         if st is PaceStatus.SPARE and pace.projected_leftover is not None:
@@ -675,8 +678,10 @@ def advice_text(pace, compact=False, now=None):
             # そのまま出す。リセット時刻不明 (実データでは UNKNOWN で先に返る)
             # は状態語だけ。
             if left_in is not None:
-                head = None if quiet else _badge(st)
+                head = None if quiet or over else _badge(st)
                 return with_spare_forecast(_short_left_advice(head, left, left_in, bedtime_in))
+            if over:
+                return t("render.advice.slow_down")
             return with_spare_forecast(None) if quiet else _badge(st)
         sust = _daily_allowance(pace)
         if last_unit:
@@ -689,6 +694,8 @@ def advice_text(pace, compact=False, now=None):
             tail = None
         if quiet:
             return with_spare_forecast(tail)
+        if over:
+            return (tail[:1].upper() + tail[1:]) if tail else t("render.advice.slow_down")
         label = _badge(st)
         return "%s · %s" % (label, tail) if tail else label
 

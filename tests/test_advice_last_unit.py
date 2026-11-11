@@ -64,11 +64,11 @@ def test_5h_spare_shows_rest_and_time_to_reset():
 
 
 def test_5h_over_full_keeps_slow_down_head():
-    # full (compact=False) の OVER は頭が「ペースを約◯%落とす」、compact はバッジ
+    # full (compact=False) の OVER は頭が「ペースを約◯%落とす」、compact はバッジと重なる「ペース超過」を付けない
     pace = _pace(95.0, timedelta(hours=4), timedelta(hours=5))
     assert pace.status is PaceStatus.OVER
     assert advice_text(pace, compact=True, now=NOW) == \
-        "ペース超過 · 残り5% · あと4時間"
+        "残り5% · あと4時間"
     assert advice_text(pace, compact=False, now=NOW) == \
         "ペースを約99%落とす · 残り5% · あと4時間"
 
@@ -103,7 +103,7 @@ def test_5h_bedtime_over_keeps_heads():
     assert pace.status is PaceStatus.OVER
     pace.bedtime_at = NOW + timedelta(hours=3)
     assert advice_text(pace, compact=True, now=NOW) == \
-        "ペース超過 · 残り5% · 寝るまで3時間"
+        "残り5% · 寝るまで3時間"
     assert advice_text(pace, compact=False, now=NOW) == \
         "ペースを約99%落とす · 残り5% · 寝るまで3時間"
 
@@ -158,7 +158,7 @@ def test_weekly_last_unit_normal():
 
 
 @pytest.mark.parametrize("used,compact_expected,normal_expected", [
-    (97.0, "ペース超過 · リセットまで18分",
+    (97.0, "リセットまで18分",
      "ペースを落とす · リセットまでの18分は残り3%で"),
     (93.5, "適正ペース · リセットまで18分",
      "ほぼ使い切れる見込み · リセットまで18分"),
@@ -179,5 +179,56 @@ def test_spare_forecast_in_english():
         i18n.set_language("en")
         pace = _pace(19.0, timedelta(days=5), timedelta(days=7))
         assert advice_text(pace, now=NOW) == "About 34% will remain at this pace · up to 16%/day"
+    finally:
+        i18n.set_language(old)
+
+
+def test_weekly_over_compact_omits_badge_word():
+    # ペース超過はカード右上のバッジに出るので、compact のアドバイス行には繰り返さない
+    pace = _pace(90.0, timedelta(days=5), timedelta(days=7))
+    assert pace.status is PaceStatus.OVER
+    text = advice_text(pace, compact=True, now=NOW)
+    assert "ペース超過" not in text
+    assert text.startswith("1日 約")
+    assert "ペース超過" not in advice_text(pace, compact=False, now=NOW)
+
+
+@pytest.mark.parametrize("lang,expected_compact,expected_full", [
+    ("ja", "ペースを落とす", "ペースを落とす · 残り期間は控えめに"),
+    ("en", "Slow down", "Slow down · take it easy"),
+])
+def test_over_without_allowance_omits_badge_word(lang, expected_compact, expected_full):
+    # 1日の許容量が出せない OVER (compact の tail なし・full の over_generic) でも
+    # バッジと同じ「ペース超過」は出さず、空にもしない
+    from quotacanvas import i18n
+    win = Window("codex", "weekly", "週間", 90.0, NOW + timedelta(days=5),
+                 timedelta(days=7))
+    pace = Pace(window=win, status=PaceStatus.OVER, elapsed_fraction=0.3,
+                ideal_used_percent=30.0, rate_per_day=None,
+                projected_end_percent=None, exhausts_at=None,
+                sustainable_per_day=None, adjust_percent=None, daily_used=[])
+    old = i18n.current_language()
+    i18n.set_language(lang)
+    try:
+        assert advice_text(pace, compact=True, now=NOW) == expected_compact
+        assert advice_text(pace, compact=False, now=NOW) == expected_full
+    finally:
+        i18n.set_language(old)
+
+
+@pytest.mark.parametrize("used,resets_in,length,expected", [
+    (90.0, timedelta(days=5), timedelta(days=7), "Up to 2%/day"),
+    (95.0, timedelta(hours=4), timedelta(hours=5), "5% left · in 4h"),
+    (97.0, timedelta(minutes=18), timedelta(hours=5), "Resets in 18m"),
+], ids=["per_day", "hourly", "last_unit"])
+def test_over_compact_english_omits_badge_word(used, resets_in, length, expected):
+    # 英語でも compact の OVER は「Over pace」を付けず、行頭を大文字にする
+    from quotacanvas import i18n
+    old = i18n.current_language()
+    i18n.set_language("en")
+    try:
+        pace = _pace(used, resets_in, length)
+        assert pace.status is PaceStatus.OVER
+        assert advice_text(pace, compact=True, now=NOW) == expected
     finally:
         i18n.set_language(old)
