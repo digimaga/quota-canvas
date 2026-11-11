@@ -15,6 +15,7 @@ Embedded in the desktop like wallpaper — your icons stay on top, and windows c
 - Receive notifications about quota status.
 - See usage pace, projected exhaustion, and history.
 - Place a calendar panel in the manual layout (dots on reset days of windows ≥ 1 day; week starts Sunday or Monday).
+- Show a second thin bar (5h / daily window) in small two-row panels, chosen per panel (on by default for OpenCode Go, OpenDesign Go, Gemini and Devin).
 - Route AI workers using quota and pace information with Claude Code / Codex plugins (advanced).
 
 ## Supported services

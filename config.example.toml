@@ -53,6 +53,10 @@ brightness = 20
 #   size = "large"（大きいパネル。1 枚で 1 列）か "small"（小さいパネル。続けて書いた
 #          2 枚が 1 列に上下 2 段で入る。どの列でも使える）。
 #          small に限り main = "" で空き段（位置だけ保つ）にできます。
+#   second_bar = small パネルの下に 2 本目のバー（5 時間・日次などの短い窓）を出すか。
+#          true = 出す / false = 出さない / 省略 = 自動（OpenCode Go・OpenDesign Go・
+#          Gemini・Devin のときだけ出す）。出すときはリセットまでの時間が % の上に移ります。
+#          large では無視されます（サブの窓を使います）。
 # 上限: 列は最大 5 つ（5 列すべて small にすれば最大 10 枚）。
 # [[layout.panels]]
 # main = "claude:weekly"
@@ -62,6 +66,11 @@ brightness = 20
 # [[layout.panels]]
 # main = "codex:weekly"
 # size = "small"
+#
+# [[layout.panels]]
+# main = "opencode"
+# size = "small"
+# second_bar = true
 
 [poll]
 # 利用枠の取得間隔 (秒)。最小 60

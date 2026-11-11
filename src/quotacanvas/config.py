@@ -114,6 +114,10 @@ class Panel:
     main: str
     subs: Optional[List[str]] = None
     size: str = "large"
+    # size = "small" のときだけ意味がある: 小パネルの下に 2 本目のバー (5 時間・
+    # 日次など短い窓) を出すか。None (省略) = 自動 (render.SECOND_BAR_AUTO の
+    # サービスだけ出す)、True = 出す、False = 出さない。large では無視。
+    second_bar: Optional[bool] = None
 
 
 @dataclass
@@ -502,6 +506,10 @@ def _panel(table: Any, key: str, path: Path) -> Panel:
                                        example='subs = ["claude:5h"]')
         elif sub == "size":
             panel.size = _size(value, key + ".size", path)
+        elif sub == "second_bar":
+            if value is None:
+                continue  # JSON null = automatic, same as leaving it out
+            panel.second_bar = _bool(value, key + ".second_bar", path)
         else:
             _unknown(path, key + "." + sub)
     if not panel.main:
@@ -954,6 +962,8 @@ def format_toml(cfg: Config) -> str:
         '# subs = 大きいパネルの下に並べるサブの窓 ID (large のみ)',
         '# size = "large" (大きいパネル、1 枚で 1 列) | "small" (小さいパネル、'
         '連続する 2 枚で 1 列の上下 2 段)',
+        '# second_bar = small パネルの下に 2 本目のバー（5 時間・日次などの短い窓）を出すか。'
+        'true | false。省略で自動（OpenCode Go・OpenDesign Go・Gemini・Devin だけ出す）。large では無視',
         '# 上限: 列は最大 5 つ（全部 small なら最大 10 枚）。',
     ]
     if cfg.layout.panels:
@@ -970,6 +980,8 @@ def format_toml(cfg: Config) -> str:
                     "subs = %s" % json.dumps(p.subs, ensure_ascii=False),
                 ]
             lines.append('size = "%s"' % p.size)
+            if p.second_bar is not None:
+                lines.append("second_bar = %s" % ("true" if p.second_bar else "false"))
     else:
         lines += [
             "# [[layout.panels]]",
@@ -1186,7 +1198,11 @@ def config_to_dict(cfg: Config) -> Dict[str, Any]:
             "panels": [
                 {"main": p.main,
                  "subs": None if p.subs is None else list(p.subs),
-                 "size": p.size}
+                 "size": p.size,
+                 # 自動 (None) はキーごと省略 (subs の null と違い、旧 UI の
+                 # 往復で増えないようにする)
+                 **({} if p.second_bar is None
+                    else {"second_bar": p.second_bar})}
                 for p in cfg.layout.panels
             ],
         },

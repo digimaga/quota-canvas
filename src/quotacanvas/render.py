@@ -49,6 +49,9 @@ class PanelSpec:
                             # CALENDAR_MAIN ("calendar"; 月間カレンダー 1 枚)
     subs: List[str] = field(default_factory=list)   # window ids, large only
     size: str = "large"     # "large" | "small"
+    # small のときだけ: 2 本目のバー (5 時間・日次など短い窓) を出すか。
+    # None = 自動 (SECOND_BAR_AUTO のサービスだけ)、True = 出す、False = 出さない
+    second_bar: Optional[bool] = None
 
 CANVAS_W = 1920
 CANVAS_H = 462
@@ -776,6 +779,8 @@ CARD_RADIUS = 14
 MAX_SERVICES = 8        # auto_layout keeps at most this many services
 AUTO_COLUMNS = 4        # auto_layout が使う列数 (手動配置の上限とは別)
 MAX_COLUMNS = 5         # 列の上限 (large 1 枚 / small 2 枚で 1 列、small だけなら最大 10 枚)
+#: second_bar が自動 (None) のとき、小パネルに 2 本目のバーを出すサービス。
+SECOND_BAR_AUTO = ("opencode", "opendesign", "gemini", "devin")
 NARROW_W = 520          # below this a panel switches to the compact layout
 
 _STATUS_RANK = {
@@ -938,6 +943,28 @@ def _resolve_parts(g, main_win, sub_ids=None):
     return parts
 
 
+def _resolve_second(g, main_win, spec):
+    # type: (dict, Window, PanelSpec) -> Optional[tuple]
+    """小パネルの 2 本目のバーになる窓 (g, pu, p)。出さないなら None。
+
+    spec.second_bar が False なら出さない。None (自動) は SECOND_BAR_AUTO の
+    サービスだけ、True はどのサービスでも出す。対象はメイン窓より短い、同じ
+    サービスの独立した窓 (内訳窓は除く) で、5 時間枠があればそれ、なければ
+    いちばん短い窓。"""
+    if spec.size != "small" or spec.second_bar is False:
+        return None
+    if spec.second_bar is None and g["provider"] not in SECOND_BAR_AUTO:
+        return None
+    cands = [(pu, p) for pu, p in g["usable"]
+             if p.window.part_of is None and p.window.id != main_win.id
+             and p.window.length < main_win.length]
+    if not cands:
+        return None
+    pu, p = min(cands, key=lambda it: (it[1].window.length != timedelta(hours=5),
+                                       it[1].window.length))
+    return (g, pu, p)
+
+
 def _resolve_panel(lookups, spec):
     # type: (Tuple[dict, dict], PanelSpec) -> Optional[dict]
     """Turn one PanelSpec into a drawable panel. Returns None when ``main``
@@ -960,6 +987,10 @@ def _resolve_panel(lookups, spec):
                              mi[1].window.id) if mi is not None else []
         parts = _resolve_parts(g, mi[1].window, spec.subs) \
             if mi is not None else []
+        second = _resolve_second(g, mi[1].window, spec) \
+            if mi is not None else None
+        return {"spec": spec, "g": g, "main": mi, "subs": subs, "parts": parts,
+                "second": second}
     else:
         found = by_win.get(spec.main)       # window id
         if found is None:
@@ -971,7 +1002,8 @@ def _resolve_panel(lookups, spec):
         g, mi = found[0], (found[1], found[2])
         subs = _resolve_subs(by_win, spec.subs, spec.main)
         parts = _resolve_parts(g, mi[1].window, spec.subs)
-    return {"spec": spec, "g": g, "main": mi, "subs": subs, "parts": parts}
+    return {"spec": spec, "g": g, "main": mi, "subs": subs, "parts": parts,
+            "second": _resolve_second(g, mi[1].window, spec)}
 
 
 def _layout_columns(cards, specs):
@@ -1735,17 +1767,21 @@ def _draw_small_error(s, box, name, error, theme):
 
 
 def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
-                      parts=None):
-    # type: (_S, Tuple[int, int, int, int], str, tuple, datetime, str, tuple, Optional[Tuple[str, Optional[datetime]]], Optional[List[Tuple[Window, tuple]]]) -> None
+                      parts=None, second=None):
+    # type: (_S, Tuple[int, int, int, int], str, tuple, datetime, str, tuple, Optional[Tuple[str, Optional[datetime]]], Optional[List[Tuple[Window, tuple]]], Optional[tuple]) -> None
     """One small slot panel: theme dot + service name + window label, a small
     status badge, a big remaining %, a divider + gauge (with the ideal
     triangle), the reset countdown and a one-line compact advice. stale is the
     (reason, fetched_at) tuple shown as the "取得失敗中" mark while the engine
-    keeps displaying this provider's last good data."""
+    keeps displaying this provider's last good data.
+    second = (group, ProviderUsage, Pace) of a shorter window (5 時間・日次):
+    2 本目の細いバーを下に足す。縦を空けるため、リセットまでの時間は %
+    の行の上に移し、% の字を少し小さくする (second が None なら従来どおり)."""
     x0, y0, x1, y1 = box
     mp = main_item[1]
     win = mp.window
     color = _STATUS_COLOR[mp.status]        # badge == main status (no subs)
+    dual = second is not None
 
     s.rrect(box, radius=CARD_RADIUS, fill=CARD_BG)
     s.rrect((x0, y0, x0 + 6, y1), radius=3, fill=color,
@@ -1779,37 +1815,6 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
                               bx0 - 10 - nx, min_size=10)
         s.text((nx, name_cy), shown, font=lf, fill=TEXT_FAINT, anchor="lm")
 
-    # -- 2. big remaining % ---------------------------------------------------
-    if gauge == "remaining":
-        pct, word = ("%d%%" % _round(win.remaining_percent),
-                     t("render.word.remaining"))
-    else:
-        pct, word = ("%d%%" % _round(win.used_percent),
-                     t("render.word.used"))
-    pf = _fit_font(s, pct, "w8", 52, cw * 0.6, min_size=32)
-    s.text((tx0, y0 + 94), pct, font=pf, fill=_num_color(s, mp.status),
-           anchor="ls")
-    wx = tx0 + s.textlength(pct, font=pf) + 10
-    word_f = F("w5", 15)
-    s.text((wx, y0 + 96), word, font=word_f, fill=TEXT_DIM, anchor="ls")
-    prev_txt = _prev_line(mp, gauge)          # F3: 入らなければ省略
-    if prev_txt:
-        px = wx + s.textlength(word, font=word_f) + 10
-        avail = tx1 - px
-        if avail >= 60:
-            vf, shown = _fit_text(s, prev_txt, "w5", 13, avail, min_size=9)
-            s.text((px, y0 + 96), shown, font=vf, fill=TEXT_FAINT, anchor="ls")
-
-    # -- 3. divider + gauge ---------------------------------------------------
-    s.line((tx0, y0 + 108, tx1, y0 + 108), fill=DIVIDER, width=1)
-    _draw_gauge(s, (tx0, y0 + 122, tx1, y0 + 140), win, mp, theme, color,
-                gauge, marker=0.8, marks=False,
-                parts=[(w.used_percent, c) for w, c in (parts or [])])
-
-    # -- 4. reset countdown + reset credits + compact advice ------------------
-    credits = list(getattr(main_item[0], "reset_credits", None) or [])
-    adv = advice_text(mp, True, now)
-    af, adv_shown = _fit_text(s, adv, "w6", 15, cw, min_size=10)
     reset_span = _fmt_span(win.resets_at - now) if win.resets_at is not None \
         else None
     rtxt = t("render.card.reset_compact", span=reset_span) \
@@ -1818,6 +1823,56 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     balances = getattr(main_item[0], "balances", None) or []
     if balances:
         rtxt = _balance_text(balances[0]) + " · " + rtxt
+
+    # -- 2. big remaining % ---------------------------------------------------
+    if gauge == "remaining":
+        pct, word = ("%d%%" % _round(win.remaining_percent),
+                     t("render.word.remaining"))
+    else:
+        pct, word = ("%d%%" % _round(win.used_percent),
+                     t("render.word.used"))
+    pct_y = y0 + (88 if dual else 94)
+    pf = _fit_font(s, pct, "w8", 48 if dual else 52, cw * 0.6,
+                   min_size=30 if dual else 32)
+    s.text((tx0, pct_y), pct, font=pf, fill=_num_color(s, mp.status),
+           anchor="ls")
+    wx = tx0 + s.textlength(pct, font=pf) + 10
+    word_f = F("w5", 15)
+    s.text((wx, pct_y + 2), word, font=word_f, fill=TEXT_DIM, anchor="ls")
+    if dual:
+        # 2 本目のバーで縦が足りないので、リセットまでの時間は % の右 (「残り」
+        # の上の空き) に置く。右上の取得失敗マークの下に収まる高さ・幅で。
+        rf, rt = _fit_text(s, rtxt, "w4", 13, tx1 - wx, min_size=10)
+        s.text((wx, pct_y - 22), rt, font=rf, fill=TEXT_DIM, anchor="ls")
+    prev_txt = _prev_line(mp, gauge)          # F3: 入らなければ省略
+    if prev_txt:
+        px = wx + s.textlength(word, font=word_f) + 10
+        avail = tx1 - px
+        if avail >= 60:
+            vf, shown = _fit_text(s, prev_txt, "w5", 13, avail, min_size=9)
+            s.text((px, pct_y + 2), shown, font=vf, fill=TEXT_FAINT, anchor="ls")
+
+    # -- 3. divider + gauge ---------------------------------------------------
+    gy0, gy1 = (y0 + 108, y0 + 122) if dual else (y0 + 122, y0 + 140)
+    s.line((tx0, y0 + (96 if dual else 108), tx1, y0 + (96 if dual else 108)),
+           fill=DIVIDER, width=1)
+    _draw_gauge(s, (tx0, gy0, tx1, gy1), win, mp, theme, color,
+                gauge, marker=0.7 if dual else 0.8, marks=False,
+                parts=[(w.used_percent, c) for w, c in (parts or [])])
+    if dual:
+        _draw_second_bar(s, (tx0, tx1), y0 + 150, second, theme, gauge)
+
+    # -- 4. reset countdown + reset credits + compact advice ------------------
+    credits = list(getattr(main_item[0], "reset_credits", None) or [])
+    adv = advice_text(mp, True, now)
+    af, adv_shown = _fit_text(s, adv, "w6", 15, cw, min_size=10)
+
+    if dual:
+        # リセット表示は % の右に出した。下はアドバイス行だけ (リセット権の
+        # 行は縦が足りず省略)。
+        s.text((tx0, y1 - 8), adv_shown, font=af, fill=advice_color(mp),
+               anchor="ls")
+        return
 
     # リセット行は「目盛り下端 (ゲージ下端 +4px) 〜アドバイス行 bbox 上端」の
     # 帯に、実フォントの bbox で上下 2px 以上の余白を保てる行数だけ描く
@@ -1852,6 +1907,30 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     # burst の警告が出るときは spare / fresh でも黄 (バッジ・帯は status 色)
     s.text((tx0, y1 - 8), adv_shown, font=af, fill=advice_color(mp),
            anchor="ls")
+def _draw_second_bar(s, xs, cy, second, theme, gauge):
+    # type: (_S, Tuple[float, float], float, tuple, tuple, str) -> None
+    """小パネルの 2 本目のバー 1 行: 窓ラベル + ゲージ + 数値。second は
+    (group, ProviderUsage, Pace)。大パネルのサブ行と同じ色の規則 (状態色は
+    数値と予測ハッチだけ)。"""
+    tx0, tx1 = xs
+    sp = second[2]
+    sw = sp.window
+    sst = _sub_status(sp.status)
+    scol = _STATUS_COLOR[sst]
+    label = sw.label or sw.key
+    lf = _fit_font(s, label, "w6", 15, (tx1 - tx0) * 0.3, min_size=10)
+    s.text((tx0, cy), label, font=lf, fill=TEXT, anchor="lm")
+    num = "%d%%" % _round(sw.remaining_percent if gauge == "remaining"
+                          else sw.used_percent)
+    nf = F("w8", 17)
+    s.text((tx1, cy), num, font=nf, fill=_num_color(s, sst, TEXT), anchor="rm")
+    lx = tx0 + s.textlength(label, font=lf) + 12
+    gx1 = tx1 - s.textlength(num, font=nf) - 12
+    if gx1 - lx >= 50:
+        _draw_gauge(s, (lx, cy - 7, gx1, cy + 7), sw, sp, theme, scol, gauge,
+                    marker=0.7, marks=False)
+
+
 # ------------------------------------------------------------------ entry ---
 
 def _balance_text(balance: Balance) -> str:
@@ -2097,7 +2176,8 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
             else:
                 _draw_small_panel(s, sbox, p["g"]["name"], p["main"], now,
                                   gauge, theme, stale=p["g"].get("stale"),
-                                  parts=p.get("parts") or [])
+                                  parts=p.get("parts") or [],
+                                  second=p.get("second"))
     return img
 
 

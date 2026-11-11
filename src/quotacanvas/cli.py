@@ -441,7 +441,8 @@ def _render_layout(cfg: Config, cards: Optional[List[Card]] = None):
                     subs.append(wid)
             subs.sort(key=lambda wid: not wid.endswith(":5h"))  # 5 時間枠を先頭に
             used.update(subs)
-        specs.append(PanelSpec(main=p.main, subs=subs, size=p.size))
+        specs.append(PanelSpec(main=p.main, subs=subs, size=p.size,
+                               second_bar=p.second_bar))
     return specs
 
 

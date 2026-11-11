@@ -15,6 +15,7 @@ Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi / OpenCode G
 - 利用枠の状態を通知する。
 - 利用ペース、枯渇予測、履歴を表示する。
 - 手動配置にカレンダーパネル（≥ 1 日の窓のリセット日に印、週の始まりは日曜 / 月曜から選択）を置ける。
+- 2 段の小パネルに 2 本目の細いバー（5 時間・日次の窓）を出せる。パネルごとに選択（既定では OpenCode Go・OpenDesign Go・Gemini・Devin で表示）。
 - Claude Code / Codex プラグインで、残量とペースに基づく AI ワーカーの振り分けを支援する（上級者向け）。
 
 ## 対応サービス

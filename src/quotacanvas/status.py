@@ -111,8 +111,12 @@ def _window_item(pu: ProviderUsage, pace: Pace) -> Dict[str, Any]:
 
 
 def _spec_dict(spec: Any) -> Dict[str, Any]:
-    """render.PanelSpec を {main, subs, size} の dict にする。"""
-    return {"main": spec.main, "subs": list(spec.subs), "size": spec.size}
+    """render.PanelSpec を {main, subs, size[, second_bar]} の dict にする。
+    second_bar は設定で明示されたとき (true / false) だけ付ける (自動 = 省略)。"""
+    out = {"main": spec.main, "subs": list(spec.subs), "size": spec.size}
+    if getattr(spec, "second_bar", None) is not None:
+        out["second_bar"] = spec.second_bar
+    return out
 
 
 def _reset_credits_payload(usages: Sequence[ProviderUsage]) -> Optional[Dict[str, List[Dict[str, Optional[str]]]]]:
