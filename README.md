@@ -2,7 +2,7 @@
 
 English | [日本語](README.ja.md)
 
-A macOS menu bar app that shows remaining quota and usage pace for Claude, Codex, GLM, Grok, Gemini, OpenRouter, DeepSeek, Kimi, OpenCode Go, Devin, and Muse on your desktop, in the menu bar, or on an optional TURZX 9.2" USB screen.
+A macOS menu bar app that shows remaining quota and usage pace for Claude, Codex, GLM, Grok, Gemini, OpenRouter, DeepSeek, Kimi, OpenCode Go, Devin, Muse, and OpenDesign on your desktop, in the menu bar, or on an optional TURZX 9.2" USB screen.
 
 ![QuotaCanvas panel embedded in the macOS desktop](docs/images/desktop-ja.png)
 
@@ -32,6 +32,7 @@ Embedded in the desktop like wallpaper — your icons stay on top, and windows c
 | OpenCode Go | 5-hour, weekly, and 30-day usage windows | API key in Keychain, `OPENCODE_API_KEY`, or the opencode CLI login (`~/.local/share/opencode/auth.json`) |
 | Devin | Daily and weekly usage windows, plus the extra usage balance when reported | API key in Keychain, the Devin CLI login (`~/.local/share/devin/credentials.toml`), or the Devin desktop app login (`state.vscdb`) |
 | Muse | Weekly usage window and top-up token balance | muse.ai login inside the menu bar app (WebKit session; the app polls every 5 min) |
+| OpenDesign | 5-hour and 7-day usage windows, plus the USD wallet balance when reported | OpenDesign CLI login (`vela login`, `~/.amr/config.json`) or `VELA_CONTROL_KEY` |
 
 OpenRouter, DeepSeek, and Kimi follow public API specifications and have not been verified with real accounts. See [Credentials](#credentials) for details.
 
@@ -147,6 +148,7 @@ The Routing settings tab enables routing, sets the remaining quota floor and dat
 - OpenCode Go reads Keychain `quota-canvas/opencode` (saved with `set-key opencode`), then `OPENCODE_API_KEY`, then the `opencode-go` entry's `key` in the opencode CLI login at `~/.local/share/opencode/auth.json`. The usage endpoint reports `opencode:5h` (5-hour rolling), `opencode:weekly` (7 days), and `opencode:30d` (30 days). A 401/403 means the key is invalid or the account has no OpenCode Go subscription; check that the key is correct and that the account subscribes to OpenCode Go.
 - Devin reads Keychain `quota-canvas/devin` (saved with `set-key devin`), then `windsurf_api_key` in the Devin CLI login at `~/.local/share/devin/credentials.toml` (using the host of its `api_server_url` only when it is `https://` on codeium.com, windsurf.com, or devin.ai or their subdomains), then the `windsurfAuthStatus` entry's `apiKey` in the Devin desktop app's `state.vscdb`. The windows are `devin:1d` (daily) and `devin:weekly` (7 days); `hideDailyQuota` / `hideWeeklyQuota` hides the corresponding window, and an optional `overageBalanceMicros` is shown as the extra usage balance (USD). A 401/403 means the key is invalid; check that the key belongs to a Devin account.
 - Muse needs the menu bar app: the engine's POST to muse.ai's `fetchSubscriptionAction` Server Action is blocked (403 bot protection), so the app logs in to muse.ai inside its dedicated in-app WebKit session (Settings → Services → Muse → "Log in to muse.ai") and runs the same `fetch` every 5 minutes, piping the response to `quota-canvas muse-ingest`, which writes `muse-usage.json` (never the raw body or cookies). `fetch` reads that file only; missing file / `logged_out` / older than 20 minutes means a failed fetch. The Action ID comes from `quota-canvas muse-action-id` (cached, `--refresh` after a 404). The window is `muse:weekly` (7 days); top-up tokens show as a balance line (`Top-up tokens NN% left`, `currency: "TOKENS"` — not a money amount or a window).
+- OpenDesign reads the official CLI login: `VELA_CONTROL_KEY` first (with `VELA_API_URL` or the default `https://amr-api.open-design.ai`), then `controlKey` in `{AMR_HOME or ~/.amr}/config.json` (the profile is `AMR_PROFILE`, else `"prod"`, else the only entry). Install the CLI with `npm install -g @powerformer/vela-cli`, then run `vela login`. Only `https` apiUrl values are accepted. The windows are `opendesign:5h` (5 hours) and `opendesign:weekly` (7 days); an optional `wallet.balanceUsd` shows as the balance (USD). A 401/403 means the login expired; run `vela login` again.
 - Gemini uses Antigravity CLI's `agy -p "/usage" --output-format json`. This does not invoke a model or consume quota, and agy refreshes its own token. `providers.gemini.token_refresh` is accepted for compatibility but is no longer used. The windows are `gemini:weekly`, Gemini 4 Argon's `gemini:argon`, `gemini:5h`, and `gemini:claude` / `gemini:claude_5h` for Claude / GPT through Antigravity. The plan name is shown if it can be obtained with the Keychain token for service `gemini` / account `antigravity`; otherwise it is shown as “Gemini”.
 
 #### History, pace and recommendations

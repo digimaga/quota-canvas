@@ -71,7 +71,8 @@ def _no_real_balance_credentials(monkeypatch):
         return original(provider)
     monkeypatch.setattr(keychain, "read", read)
     for variable in ("OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "MOONSHOT_API_KEY",
-                     "OPENCODE_API_KEY", "MUSE_COOKIE"):
+                     "OPENCODE_API_KEY", "MUSE_COOKIE", "VELA_CONTROL_KEY",
+                     "VELA_API_URL", "AMR_PROFILE"):
         monkeypatch.delenv(variable, raising=False)
 
 
@@ -95,6 +96,13 @@ def _no_real_devin_login(tmp_path, monkeypatch):
                         lambda: tmp_path / "devin-credentials.toml")
     monkeypatch.setattr(providers.devin, "_desktop_state_db",
                         lambda: tmp_path / "devin-state.vscdb")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_opendesign_login(tmp_path, monkeypatch):
+    """Point the OpenDesign provider at a nonexistent config dir so tests never
+    read the real vela CLI login."""
+    monkeypatch.setenv("AMR_HOME", str(tmp_path / "amr-home"))
 
 
 @pytest.fixture(autouse=True)

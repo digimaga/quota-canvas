@@ -53,7 +53,7 @@ SHIFTS = [(0, 0), (4, 0), (4, 4), (0, 4), (-4, 4), (-4, 0), (-4, -4), (0, -4), (
 # 分単位で変わるため)。他のサービスは poll.interval のまま。
 LOCAL_REFRESH = 60  # 秒
 
-PROVIDER_ORDER = {"claude": 0, "codex": 1, "glm": 2, "grok": 3, "gemini": 4, "openrouter": 5, "deepseek": 6, "kimi": 7, "opencode": 8, "devin": 9, "muse": 10}
+PROVIDER_ORDER = {"claude": 0, "codex": 1, "glm": 2, "grok": 3, "gemini": 4, "openrouter": 5, "deepseek": 6, "kimi": 7, "opencode": 8, "devin": 9, "muse": 10, "opendesign": 11}
 
 Card = Tuple[ProviderUsage, Optional[Pace]]
 

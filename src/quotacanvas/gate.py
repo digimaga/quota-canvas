@@ -34,7 +34,7 @@ if TYPE_CHECKING:  # 循環 import を避ける (実行時は duck typing)
     from .config import Routing
 
 # routing check の既定ワーカー名。残高表示専用のサービスは含めない。
-KNOWN_PROVIDERS = ("claude", "codex", "glm", "grok", "gemini", "opencode", "devin", "muse")
+KNOWN_PROVIDERS = ("claude", "codex", "glm", "grok", "gemini", "opencode", "devin", "muse", "opendesign")
 NON_ROUTING_PROVIDERS = frozenset(("openrouter", "deepseek", "kimi"))
 
 # ワーカー名の制約。既定ワーカーの名前は status.json 由来の windows[].provider の

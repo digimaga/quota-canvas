@@ -361,7 +361,7 @@ output is the envelope so callers can judge freshness:
   `stop` → one stderr line, exit 3; `reserve` → one stderr note, exit 0; `unknown` → one
   stderr line (「判定できないためそのまま続行」), exit 0; `go`/`boost` → silent, exit 0.
   A name is valid when it is one of `KNOWN_PROVIDERS` (claude / codex / glm / grok /
-  gemini / opencode / devin / muse), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
+  gemini / opencode / devin / muse / opendesign), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
   the worst of its workers; a worker name wins on collision) — anything else exits 2, regardless of what
   status.json contains. A valid name whose windows are absent from status.json (or when
   status.json is missing / too old / unreadable) is `unknown` with exit 0; with `--json`
@@ -448,6 +448,17 @@ rather than a window or a money amount — the raw token count is not reported
 because it does not match the service's own labels. `needs_key` is false; there
 is no `set-key muse`/`MUSE_COOKIE` path anymore (a stale Keychain entry is
 simply ignored, and `set-key muse --delete` still removes it).
+
+OpenDesign (`opendesign`) reads the official vela CLI login: `VELA_CONTROL_KEY`
+first (using `VELA_API_URL` or the default `https://amr-api.open-design.ai`),
+then `controlKey` in `{AMR_HOME or ~/.amr}/config.json` — the profile is
+`AMR_PROFILE`, else `"prod"`, else the only entry; `apiUrl` must be `https`.
+It GETs `{apiUrl}/api/v1/workspaces/current` for the `workspaceId`, then
+`{apiUrl}/api/v1/workspaces/{id}/billing/snapshot`, whose `designPlanWindows`
+kinds `5h` / `7d` map to `opendesign:5h` (5 hours) and `opendesign:weekly`
+(7 days) with `used = (limitCredits - remainingCredits) / limitCredits`;
+`plan.tier` names the plan and an optional `wallet.balanceUsd` shows as the
+balance (USD). A 401/403 means the login expired (`vela login` again).
 
 ## Config keys the app edits
 

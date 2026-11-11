@@ -11,6 +11,9 @@ token_expired_refreshing = "トークン期限切れ（自動更新中）"
 login_expired_run_grok = "ログインの期限切れ（grok を一度起動してください）"
 login_expired_refreshing = "ログインの期限切れ（自動更新中）"
 muse_resolve_unavailable = "Muse の取得先を解決できない（数時間後に再試行）"
+opendesign_login_required = "OpenDesign のログインがありません（vela login でログインしてください）"
+opendesign_login_expired = "OpenDesign のログインが切れました（vela login でログインし直してください）"
+opendesign_bad_api_url = "apiUrl は https のみ受け付けます"
 reset_credit = "リセット権"
 
 balance = "残高"
@@ -43,6 +46,7 @@ env = "環境変数 {variable}"
 opencode_auth = "~/.local/share/opencode/auth.json"
 devin_cli = "Devin CLI のログイン（~/.local/share/devin/credentials.toml）"
 devin_desktop = "Devin デスクトップアプリのログイン（state.vscdb）"
+opendesign_config = "OpenDesign CLI のログイン（{path}）"
 
 [claude]
 weekly_scoped = "週間 {model}"

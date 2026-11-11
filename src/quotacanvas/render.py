@@ -92,6 +92,7 @@ BRAND_COLORS = {
     "opencode": "#EC4899",
     "devin": "#0EA5E9",
     "muse": "#F59E0B",
+    "opendesign": "#84CC16",
     # ローカル LLM サーバー (providers.local.<名前>、provider id "local:<名前>")
     # は窓と違って状態色 (空き/満杯/待ち) が主体なので、名前のドットは落ち着いた
     # シアン 1 色に寄せる。[providers.local.<名前>].color で台ごとに上書き可

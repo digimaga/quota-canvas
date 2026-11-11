@@ -196,6 +196,13 @@ enabled = true
 # 利用枠を取ってエンジンに渡す（Cookie や API キーは使わない）
 # color = "#F59E0B"
 
+[providers.opendesign]
+enabled = true
+# OpenDesign 公式 CLI の `vela login`（{AMR_HOME または ~/.amr}/config.json）を読む。
+# 環境変数 VELA_CONTROL_KEY があればそちらを優先（apiUrl は VELA_API_URL か既定）。
+# 使うプロファイルは AMR_PROFILE、無ければ "prod"、それも無ければ profiles の唯一の要素
+# color = "#84CC16"
+
 # ローカル LLM サーバー（OpenAI 互換サーバーの並列枠の空きを /metrics から取る）。
 # サーバー名ごとに [providers.local.<名前>] を 1 つ書けます（名前は半角英数字と
 # . _ - で、routing.workers では "local:<名前>" で束ねます）。

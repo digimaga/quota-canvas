@@ -45,7 +45,7 @@ def test_missing_file_gives_defaults(tmp_path):
     assert cfg.poll.redraw == 60
     assert cfg.pacing.tight == pytest.approx(92.0)
     assert cfg.pacing.on_track == pytest.approx(70.0)
-    assert cfg.providers.enabled() == {"claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek", "kimi", "opencode", "devin", "muse"}
+    assert cfg.providers.enabled() == {"claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek", "kimi", "opencode", "devin", "muse", "opendesign"}
     assert not cfg.is_stale()
 
 
@@ -92,7 +92,7 @@ def test_load_full_file(tmp_path):
     assert cfg.poll.redraw == 30
     assert cfg.pacing.tight == pytest.approx(85.5)
     assert cfg.pacing.on_track == pytest.approx(60.0)
-    assert cfg.providers.enabled() == {"codex", "grok", "gemini", "openrouter", "deepseek", "kimi", "opencode", "devin", "muse"}  # unmentioned providers retain their default
+    assert cfg.providers.enabled() == {"codex", "grok", "gemini", "openrouter", "deepseek", "kimi", "opencode", "devin", "muse", "opendesign"}  # unmentioned providers retain their default
 
 
 # --- windows ordering --------------------------------------------------------
@@ -254,7 +254,7 @@ enabled = false
     assert cfg.display.windows == []
     assert cfg.poll.interval == 900
     assert cfg.pacing.tight == pytest.approx(92.0)
-    assert cfg.providers.enabled() == {"claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek", "kimi", "opencode", "devin", "muse"}
+    assert cfg.providers.enabled() == {"claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek", "kimi", "opencode", "devin", "muse", "opendesign"}
     warned = [r.getMessage() for r in caplog.records]
     for key in ("unknown_top", "display.colr", "display.night.foo", "poll.retry",
                 "pacing.speed", "providers.openai"):
@@ -888,7 +888,7 @@ def test_fetch_all_enabled_subset(monkeypatch):
 def test_fetch_all_enabled_none_fetches_all(monkeypatch):
     _patch_providers(monkeypatch)
     results = providers.fetch_all(NOW, enabled=None)
-    assert [r.provider for r in results] == ["claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek", "kimi", "opencode", "devin", "muse"]
+    assert [r.provider for r in results] == ["claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek", "kimi", "opencode", "devin", "muse", "opendesign"]
     assert results[4].error  # gemini: no keychain entry under the test fixture
 
 
