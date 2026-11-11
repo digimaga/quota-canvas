@@ -58,6 +58,16 @@ struct RegressionTests {
     }
 
     @MainActor static func main() async throws {
+        let museNow = Date(timeIntervalSince1970: 1_800_000_000)
+        for status in [400, 404, 409, 410, 422, 499] {
+            check(MuseUsagePoller.shouldRefreshActionId(status: status, lastFailedRefresh: nil, now: museNow), "muse refreshes action id on \(status)")
+        }
+        for status in [0, 200, 399, 401, 403, 429, 500, 503] {
+            check(!MuseUsagePoller.shouldRefreshActionId(status: status, lastFailedRefresh: nil, now: museNow), "muse keeps action id on \(status)")
+        }
+        let museInterval = MuseUsagePoller.refreshRetryInterval
+        check(!MuseUsagePoller.shouldRefreshActionId(status: 409, lastFailedRefresh: museNow.addingTimeInterval(-museInterval + 1), now: museNow), "muse waits after a failed refresh")
+        check(MuseUsagePoller.shouldRefreshActionId(status: 409, lastFailedRefresh: museNow.addingTimeInterval(-museInterval), now: museNow), "muse refreshes again after the interval")
         check(RoutingSettingsView.isValidWorkerName("worker-1.a_b"), "valid worker name")
         check(RoutingSettingsView.isValidWorkerName(String(repeating: "a", count: 40)), "40 characters")
         check(!RoutingSettingsView.isValidWorkerName(""), "empty worker name")

@@ -441,7 +441,11 @@ logs in via Settings → サービス →「muse.ai にログイン」) every 5 
 `logged_out` asks to log in again, and data older than 20 minutes counts as a
 failed fetch (last-good/stale display). The Action ID for the POST comes from
 `muse-action-id` (cached in `muse-action.json` with `verified`/`resolved_at`;
-`--refresh` re-resolves after a 404). Its window is `muse:weekly` (7 days);
+`--refresh` re-resolves once when the POST returns
+a 4xx other than 401/403/429, e.g. 404 or 409, since a stale ID after a muse.ai
+deploy is not always 404; after a refresh that did not help, the app waits an
+hour before refreshing again and stores the last reply it got). Its window
+is `muse:weekly` (7 days);
 top-up tokens are reported as a `balances` entry (`currency: "TOKENS"`,
 `amount`: remaining percent, `text`: the display string like `残り 70%`)
 rather than a window or a money amount — the raw token count is not reported

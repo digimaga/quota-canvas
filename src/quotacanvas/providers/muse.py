@@ -334,7 +334,8 @@ def action_id(refresh: bool = False, chunks=None) -> str:
     """`muse-action-id` コマンド用: 解決済みの Action ID を返す。
 
     キャッシュがあればそれを使い、refresh=True なら解決し直す
-    (POST が 404 = キャッシュの ID が古いときの再試行用)。
+    (POST が 401・403・429 以外の 4xx = キャッシュの ID が
+    古いかもしれないときの再試行用。404 とは限らず 409 のこともある)。
     chunks (ページが読み込んだ chunk のパス) が渡されたら HTML は取らず
     それから解決する。見つからなければ ValueError / CredentialError /
     HTTPError。"""

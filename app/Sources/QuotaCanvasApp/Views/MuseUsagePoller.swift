@@ -76,18 +76,35 @@ final class MuseUsagePoller: ObservableObject {
                 else { finish(.success(value as? [String] ?? [])) }
             }
         }) ?? []
-        var actionId = try await client.museActionId(
+        let actionId = try await client.museActionId(
             refresh: false, chunks: chunks,
             timeout: deadline.timeIntervalSinceNow)
         var reply = try await Self.postAction(webView, actionId: actionId,
                                               deadline: deadline)
-        if reply.status == 404 {
-            // キャッシュの ID が古い → 1 回だけ解決し直して再試行
-            actionId = try await client.museActionId(
-                refresh: true, chunks: chunks,
-                timeout: deadline.timeIntervalSinceNow)
-            reply = try await Self.postAction(webView, actionId: actionId,
-                                              deadline: deadline)
+        if Self.shouldRefreshActionId(status: reply.status,
+                                      lastFailedRefresh: lastFailedRefresh,
+                                      now: Date()) {
+            // キャッシュの ID が古いかもしれない → 1 回だけ解決し直して再試行。
+            // 抑制（lastFailedRefresh）を記録するのは「取り直しても直らなかった」
+            // とき: ID を解決できなかった・同じ ID だった・新しい ID でも 4xx 等。
+            // 再 POST の通信失敗（throw・status 0）は一時的なので記録せず、
+            // 1 回目の応答を残す。
+            if let fresh = try? await client.museActionId(
+                    refresh: true, chunks: chunks,
+                    timeout: deadline.timeIntervalSinceNow) {
+                if fresh == actionId {
+                    lastFailedRefresh = Date()
+                } else if let retried = try? await Self.postAction(
+                            webView, actionId: fresh, deadline: deadline),
+                          retried.status != 0 {
+                    reply = retried
+                    lastFailedRefresh = retried.status == 200 ? nil : Date()
+                }
+            } else {
+                lastFailedRefresh = Date()
+            }
+        } else if reply.status == 200 {
+            lastFailedRefresh = nil
         }
         // 期限切れ・途中で削除済みなら ingest しない（消したデータの復活を防ぐ）。
         guard Date() < deadline,
@@ -98,6 +115,27 @@ final class MuseUsagePoller: ObservableObject {
         // サービス一覧（detect は muse-usage.json の有無を見る）を再検出させる。
         NotificationCenter.default.post(name: .museUsageUpdated, object: nil)
     }
+
+    /// POST の応答が「キャッシュの Action ID が古い」可能性を示すか。
+    ///
+    /// muse.ai の更新後、古い ID への応答は 404 とは限らない（2026-11 の更新では
+    /// 409 が返り続け、ID を取り直さないまま取得が止まった）。そこで 200 以外の
+    /// 4xx は、ログイン切れ（401・403）と混雑（429）を除いてすべて取り直す。
+    /// 5xx と通信失敗（0）は ID の問題ではないので取り直さない。
+    /// 取り直しても直らなかった（lastFailedRefresh）後は、ID 以外が原因の 4xx が
+    /// 続いても JS を 5 分ごとに取り直さないよう refreshRetryInterval 空ける。
+    static func shouldRefreshActionId(status: Int, lastFailedRefresh: Date?,
+                                      now: Date) -> Bool {
+        guard (400..<500).contains(status),
+              ![401, 403, 429].contains(status) else { return false }
+        guard let last = lastFailedRefresh else { return true }
+        return now.timeIntervalSince(last) >= refreshRetryInterval
+    }
+
+    /// 取り直しても直らなかった後、次に取り直すまでの間隔（1 時間）。
+    static let refreshRetryInterval: TimeInterval = 3600
+    /// 直前の「取り直しても 200 にならなかった」時刻。200 を受けたら消す。
+    private var lastFailedRefresh: Date?
 
     /// ページが読み込んだ muse.ai/_next/static/chunks/*.js のパス一覧を返す JS。
     private static let chunkListProbe = """
