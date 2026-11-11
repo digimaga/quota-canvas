@@ -332,6 +332,11 @@ struct LayoutPanel: Decodable {
     var size: String?
     /// 実際に 2 本目のバーを出したか（付かないこともある）。型が違うときは nil。
     var secondBar: Bool?
+    /// 実際に 2 本目のバーに出した窓の ID（自動で選ばれた窓も含む）。型が違うときは nil。
+    var secondWindow: String?
+    /// main がサービス ID のときエンジンが実際にメインに選んだ窓の ID。
+    /// （窓 ID 指定・空き枠・解決不能では付かない）。型が違うときは nil。
+    var mainWindow: String?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -339,9 +344,11 @@ struct LayoutPanel: Decodable {
         subs = try? c.decodeIfPresent([String].self, forKey: .subs)
         size = try? c.decodeIfPresent(String.self, forKey: .size)
         secondBar = try? c.decodeIfPresent(Bool.self, forKey: .secondBar)
+        secondWindow = try? c.decodeIfPresent(String.self, forKey: .secondWindow)
+        mainWindow = try? c.decodeIfPresent(String.self, forKey: .mainWindow)
     }
 
-    enum CodingKeys: String, CodingKey { case main, subs, size, secondBar = "second_bar" }
+    enum CodingKeys: String, CodingKey { case main, subs, size, secondBar = "second_bar", secondWindow = "second_window", mainWindow = "main_window" }
 }
 
 // MARK: - detect --json models

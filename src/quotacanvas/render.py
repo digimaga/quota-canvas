@@ -52,6 +52,8 @@ class PanelSpec:
     # small のときだけ: 2 本目のバー (5 時間・日次など短い窓) を出すか。
     # None = 自動 (SECOND_BAR_AUTO のサービスだけ)、True = 出す、False = 出さない
     second_bar: Optional[bool] = None
+    # 2 本目に出す窓 ID (同じサービス)。None = 自動 (_resolve_second)
+    second_window: Optional[str] = None
 
 CANVAS_W = 1920
 CANVAS_H = 462
@@ -947,22 +949,33 @@ def _resolve_second(g, main_win, spec):
     # type: (dict, Window, PanelSpec) -> Optional[tuple]
     """小パネルの 2 本目のバーになる窓 (g, pu, p)。出さないなら None。
 
-    spec.second_bar が False なら出さない。None (自動) は SECOND_BAR_AUTO の
-    サービスだけ、True はどのサービスでも出す。対象はメイン窓より短い、同じ
-    サービスの独立した窓 (内訳窓は除く) で、5 時間枠があればそれ、なければ
-    いちばん短い窓。"""
+    spec.second_bar が False なら出さない。spec.second_window があればその窓
+    (同じサービスの窓。メイン自身・見つからない窓は出さない)。無ければ自動:
+    SECOND_BAR_AUTO のサービスだけ (second_bar = True ならどのサービスでも)、
+    メインが 1 日未満の短い窓なら 1 日以上でいちばん短い窓 (週間など)、そうで
+    なければメインより短い窓 (ちょうど 5 時間があればそれ、なければ最短)。
+    内訳窓 (part_of) は対象外。"""
     if spec.size != "small" or spec.second_bar is False:
+        return None
+    others = [(pu, p) for pu, p in g["usable"]
+              if p.window.part_of is None and p.window.id != main_win.id]
+    wanted = getattr(spec, "second_window", None)
+    if wanted:
+        for pu, p in others:                 # 内訳窓・メイン自身は選べない
+            if p.window.id == wanted:
+                return (g, pu, p)
         return None
     if spec.second_bar is None and g["provider"] not in SECOND_BAR_AUTO:
         return None
-    cands = [(pu, p) for pu, p in g["usable"]
-             if p.window.part_of is None and p.window.id != main_win.id
-             and p.window.length < main_win.length]
-    if not cands:
-        return None
-    pu, p = min(cands, key=lambda it: (it[1].window.length != timedelta(hours=5),
-                                       it[1].window.length))
-    return (g, pu, p)
+    day = timedelta(days=1)
+    if main_win.length < day:
+        cands = [c for c in others if c[1].window.length >= day]
+        pick = min(cands, key=lambda it: it[1].window.length) if cands else None
+    else:
+        cands = [c for c in others if c[1].window.length < main_win.length]
+        pick = min(cands, key=lambda it: (it[1].window.length != timedelta(hours=5),
+                                          it[1].window.length)) if cands else None
+    return (g,) + pick if pick else None
 
 
 def _resolve_panel(lookups, spec):

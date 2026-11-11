@@ -111,11 +111,13 @@ def _window_item(pu: ProviderUsage, pace: Pace) -> Dict[str, Any]:
 
 
 def _spec_dict(spec: Any) -> Dict[str, Any]:
-    """render.PanelSpec を {main, subs, size[, second_bar]} の dict にする。
+    """render.PanelSpec を {main, subs, size[, second_bar, second_window]} の dict にする。
     second_bar は設定で明示されたとき (true / false) だけ付ける (自動 = 省略)。"""
     out = {"main": spec.main, "subs": list(spec.subs), "size": spec.size}
     if getattr(spec, "second_bar", None) is not None:
         out["second_bar"] = spec.second_bar
+    if getattr(spec, "second_window", None) is not None:
+        out["second_window"] = spec.second_window
     return out
 
 
@@ -147,12 +149,38 @@ def _layout_payload(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[P
     auto_layout を持たなければ省略 (None)。
     """
     if used is not None:
-        return [_spec_dict(sp) for sp in used]
+        specs = list(used)
+    else:
+        try:
+            from .render import auto_layout
+        except (ImportError, AttributeError):
+            return None
+        specs = auto_layout(cards)
+    return _with_main_windows([_spec_dict(sp) for sp in specs], specs, cards)
+
+
+def _with_main_windows(entries: List[Dict[str, Any]], specs: Sequence[Any],
+                       cards: Sequence[Tuple[ProviderUsage, Optional[Pace]]]
+                       ) -> List[Dict[str, Any]]:
+    """main がサービス ID のパネルに、描画が実際に選んだメイン窓の ID を
+    "main_window" として足す (アプリの 2 本目の窓の候補から外すため)。
+    解決できなければ足さない。"""
     try:
-        from .render import auto_layout
+        from .render import _lookups, _resolve_panel
     except (ImportError, AttributeError):
-        return None
-    return [_spec_dict(sp) for sp in auto_layout(cards)]
+        return entries
+    lookups = _lookups(cards)
+    for entry, spec in zip(entries, specs):
+        main = entry.get("main") or ""
+        if not main or ":" in main:
+            continue
+        try:
+            panel = _resolve_panel(lookups, spec)
+        except Exception:  # 表示ヒントなので、解決の失敗で status を壊さない
+            continue
+        if panel and panel.get("main") is not None:
+            entry["main_window"] = panel["main"][1].window.id
+    return entries
 
 
 def _colors_payload(cfg: Config) -> Optional[Dict[str, str]]:

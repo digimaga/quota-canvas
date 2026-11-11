@@ -54,9 +54,44 @@ def test_explicit_true_false_and_large():
     assert _second(cards, PanelSpec(main="opencode", size="large")) is None
 
 
-def test_no_second_when_main_is_shortest():
-    cards = _service("opencode")
-    assert _second(cards, PanelSpec(main="opencode:5h", size="small")) is None
+def test_main_short_window_gets_weekly_as_second():
+    # メインが 5 時間枠のときは、1 日以上で最短の窓 (週間) が 2 本目
+    day30 = Window("opencode", "30d", "30日", 10.0, NOW + timedelta(days=20),
+                   timedelta(days=30))
+    cards = _service("opencode", extra=[day30])
+    sec = _second(cards, PanelSpec(main="opencode:5h", size="small"))
+    assert sec[2].window.key == "weekly"
+    # 長い窓しか無い (5 時間枠のみ) なら出さない
+    only5 = [c for c in _service("opencode") if c[1].window.key == "5h"]
+    assert _second(only5, PanelSpec(main="opencode:5h", size="small")) is None
+
+
+def test_explicit_second_window_choice():
+    day30 = Window("opencode", "30d", "30日", 10.0, NOW + timedelta(days=20),
+                   timedelta(days=30))
+    cards = _service("opencode", extra=[day30])
+    spec = PanelSpec(main="opencode:weekly", size="small",
+                     second_window="opencode:30d")
+    assert _second(cards, spec)[2].window.key == "30d"
+    # 明示した窓は自動対象外のサービスでも出る。second_bar=False なら出ない
+    cards = _service("claude")
+    spec = PanelSpec(main="claude:weekly", size="small",
+                     second_window="claude:5h")
+    assert _second(cards, spec)[2].window.key == "5h"
+    spec = PanelSpec(main="claude:weekly", size="small", second_bar=False,
+                     second_window="claude:5h")
+    assert _second(cards, spec) is None
+    # 内訳窓を明示しても出さない
+    part = Window("claude", "weekly_x", "内訳", 5.0, NOW + timedelta(days=5),
+                  timedelta(days=7), part_of="weekly")
+    cards_p = _service("claude", extra=[part])
+    spec = PanelSpec(main="claude:weekly", size="small",
+                     second_window="claude:weekly_x")
+    assert _second(cards_p, spec) is None
+    # メイン自身・存在しない窓は出さない
+    for wid in ("claude:weekly", "claude:nope"):
+        spec = PanelSpec(main="claude:weekly", size="small", second_window=wid)
+        assert _second(cards, spec) is None
 
 
 def test_prefers_5h_and_skips_breakdown_windows():
@@ -142,17 +177,20 @@ def test_config_second_bar_parse_and_roundtrip(tmp_path):
         [[layout.panels]]
         main = "devin"
         size = "small"
+        second_window = "devin:5h"
         """)
     cfg = load_config(p)
     assert [pn.second_bar for pn in cfg.layout.panels] == [True, False, None]
+    assert [pn.second_window for pn in cfg.layout.panels] == [None, None, "devin:5h"]
     d = config_to_dict(cfg)
     panels = d["layout"]["panels"]
     assert panels[0]["second_bar"] is True and panels[1]["second_bar"] is False
-    assert "second_bar" not in panels[2]
+    assert "second_bar" not in panels[2] and panels[2]["second_window"] == "devin:5h"
     assert config_to_dict(config_from_dict(d)) == d
     out = tmp_path / "saved.toml"
     save_config(config_from_dict(d), out)
     assert [pn.second_bar for pn in load_config(out).layout.panels] == [True, False, None]
+    assert load_config(out).layout.panels[2].second_window == "devin:5h"
 
 
 def test_config_second_bar_rejects_non_bool(tmp_path):
@@ -169,3 +207,15 @@ def test_config_second_bar_rejects_non_bool(tmp_path):
 def test_status_spec_dict_second_bar_only_when_explicit():
     assert "second_bar" not in _spec_dict(PanelSpec(main="a:b", size="small"))
     assert _spec_dict(PanelSpec(main="a:b", size="small", second_bar=False))["second_bar"] is False
+    assert _spec_dict(PanelSpec(main="a:b", size="small", second_window="a:c"))["second_window"] == "a:c"
+
+
+def test_status_layout_reports_resolved_main_window():
+    from quotacanvas.status import _layout_payload
+    cards = _service("opencode")
+    specs = [PanelSpec(main="opencode", size="small"),
+             PanelSpec(main="opencode:5h", size="small"),
+             PanelSpec(main="", size="small")]
+    out = _layout_payload(None, cards, specs)
+    assert out[0]["main_window"] == "opencode:weekly"   # サービス ID → 実際のメイン
+    assert "main_window" not in out[1] and "main_window" not in out[2]

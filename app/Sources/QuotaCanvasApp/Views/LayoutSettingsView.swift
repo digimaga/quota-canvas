@@ -22,6 +22,9 @@ struct LayoutSettingsView: View {
     @State private var splits = [Bool](repeating: false, count: LayoutSettingsView.columnCount)
     /// 自動（subs == nil）のときの表示用: status.json の layout（解決済み subs）を主枠窓 ID で覚えておく
     @State private var resolvedSubsByMain: [String: [String]] = [:]
+    /// status.json の layout が教える、サービス ID の主枠 → エンジンが実際に選んだメイン窓
+    /// （「2本目の窓」の候補から除く窓の特定に使う）
+    @State private var resolvedMainWindows: [String: String] = [:]
     @State private var selectedSlotID: String?
     @State private var loading = true
     @State private var loadFailed = false
@@ -34,6 +37,10 @@ struct LayoutSettingsView: View {
     struct WindowChoice: Identifiable {
         let id: String     // 窓 ID "provider:key"
         let label: String  // "Claude 週間"
+        /// 窓の長さ（秒）。status.json の windows から。取れないとき nil（長さ不明）。
+        var length: Double? = nil
+        /// 内訳窓なら親窓の key（status.json の part_of）。独立窓・不明は nil。
+        var partOf: String? = nil
     }
 
     struct LayoutSlot: Identifiable {
@@ -44,6 +51,7 @@ struct LayoutSettingsView: View {
         var main: String?   // 窓 ID（nil = 空）
         var subs: [String]? // 大スロットのみ（最大 maxSubs）。nil = 自動、[] = 明示的にサブなし
         var secondBar: Bool? = nil // 小スロットのみ。nil = 自動
+        var secondWindow: String? = nil // 小スロットのみ。2 本目のバーに出す窓。nil = 自動
     }
 
     /// 列内の行 → slots の添字。0 = 大 / 1 = 小 上段 / 2 = 小 下段
@@ -161,6 +169,7 @@ struct LayoutSettingsView: View {
                  mainLabel: mainLabel(slot),
                  subLabels: effectiveSubs(slot).map { windowLabel($0) },
                  subAuto: slot.size == "large" && slot.subs == nil,
+                 secondWindowLabel: slot.secondWindow.map { windowLabel($0) },
                  onSelect: { selectedSlotID = slot.id },
                  onSwap: { swapSlots(from: $0, to: slot.id) })
     }
@@ -195,6 +204,19 @@ struct LayoutSettingsView: View {
                     .pickerStyle(.menu)
                     .frame(width: 300, alignment: .leading)
                     Text("自動: OpenCode Go・OpenDesign Go・Gemini・Devin の小パネルで、5 時間枠などの短い窓を 2 本目のバーに出します。")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                    Picker("2本目の窓", selection: secondWindowBinding(slot)) {
+                        Text("自動").tag(String?.none)
+                        ForEach(Self.secondWindowCandidates(main: slot.main, windows: windows,
+                                                            selected: slot.secondWindow,
+                                                            resolvedMain: slot.main.flatMap { resolvedMainWindows[$0] })) { window in
+                            Text(window.label).tag(String?.some(window.id))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 300, alignment: .leading)
+                    .disabled(slot.secondBar == false) // 2 本目のバーを出さない設定では選べない
+                    Text("自動: メインが 1 日未満の窓なら 1 日以上の最短の窓（週間など）、そうでなければメインより短い窓（5 時間枠など）を出します。")
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
@@ -309,6 +331,50 @@ struct LayoutSettingsView: View {
         return !main.hasPrefix("local:")
     }
 
+    /// 2 本目の窓の候補: 主枠と同じサービス（窓 ID の ":" の前が同じ）の独立窓から
+    /// エンジンが実際にメインに使う窓を除いた一覧（エンジンはメイン自身を 2 本目に選べない）。
+    /// main が窓 ID なら main 自身を除く。main がサービス ID（":" 無し）のときは、
+    /// status.json の main_window が取れていれば（resolvedMain）その窓だけを除き、
+    /// 取れなければ resolvedMainWindow の推定（render.py _main_rank と同じ規則）を fallback にする。
+    /// 内訳窓（part_of 付き）も選べないので候補に出さない。
+    /// 一覧に無い窓が設定に残っているときは外せるように候補に残す。
+    static func secondWindowCandidates(main: String?, windows: [WindowChoice],
+                                       selected: String?, resolvedMain: String? = nil) -> [WindowChoice] {
+        guard let main, acceptsSecondBar(main) else { return [] }
+        let provider = main.split(separator: ":", maxSplits: 1)[0]
+        let excludedMain = main.contains(":")
+            ? main
+            : (resolvedMain ?? resolvedMainWindow(provider: String(provider), windows: windows))
+        var candidates = windows.filter { window in
+            window.id.contains(":") && window.id != main && window.id != excludedMain
+                && window.partOf == nil
+                && window.id.split(separator: ":", maxSplits: 1)[0] == provider
+        }
+        if let selected, !selected.isEmpty, !candidates.contains(where: { $0.id == selected }) {
+            candidates.append(WindowChoice(id: selected, label: selected))
+        }
+        return candidates
+    }
+
+    /// main がサービス ID のときエンジンがメインに選ぶ窓（render.py _main_rank と
+    /// 同じ規則）: 同じサービスの独立窓（内訳窓を除く）のうち長さが最大、同長なら
+    /// key=="weekly" を優先。長さの取れる窓だけで判定し、全部取れなければ nil。
+    static func resolvedMainWindow(provider: String, windows: [WindowChoice]) -> String? {
+        var best: WindowChoice?
+        for window in windows {
+            guard window.partOf == nil, let length = window.length,
+                  window.id.split(separator: ":", maxSplits: 1)[0] == provider else { continue }
+            let weekly = window.id.split(separator: ":").last == "weekly" ? 1 : 0
+            if let current = best,
+               (length, weekly) <= (current.length ?? -1,
+                                    current.id.split(separator: ":").last == "weekly" ? 1 : 0) {
+                continue
+            }
+            best = window
+        }
+        return best?.id
+    }
+
     /// サブ窓の候補: 主枠と同じサービスの窓（主枠自身を除く）。以前に別サービスの窓を
     /// サブにしていた設定は、外せるように選択中のものだけ残す。
     static func subCandidates(main: String?, windows: [WindowChoice], selected: [String]) -> [WindowChoice] {
@@ -343,6 +409,7 @@ struct LayoutSettingsView: View {
                 slots[index].main = newValue.isEmpty ? nil : newValue
                 slots[index].subs = nil // 主枠を選び直したらサブは自動に戻す
                 slots[index].secondBar = nil // 2 本目のバーも自動に戻す
+                slots[index].secondWindow = nil
                 commit()
             }
         )
@@ -382,6 +449,18 @@ struct LayoutSettingsView: View {
         )
     }
 
+    /// 小スロットの 2 本目の窓。nil = 自動。
+    private func secondWindowBinding(_ slot: LayoutSlot) -> Binding<String?> {
+        Binding<String?>(
+            get: { slots.first { $0.id == slot.id }?.secondWindow },
+            set: { newValue in
+                guard let index = slots.firstIndex(where: { $0.id == slot.id }) else { return }
+                slots[index].secondWindow = newValue
+                commit()
+            }
+        )
+    }
+
     /// スロットに窓が入っているか（main "" は空扱い）
     private func rowFilled(_ index: Int) -> Bool {
         guard let main = slots[index].main else { return false }
@@ -407,6 +486,7 @@ struct LayoutSettingsView: View {
                     if let main = slots[li].main, !main.isEmpty {
                         slots[ti].main = main
                         slots[ti].secondBar = nil // 別の主枠が入るので自動に戻す
+                        slots[ti].secondWindow = nil
                         slots[li].main = nil
                     }
                     slots[li].subs = nil
@@ -420,8 +500,10 @@ struct LayoutSettingsView: View {
                     }
                     slots[ti].main = nil
                     slots[ti].secondBar = nil
+                    slots[ti].secondWindow = nil
                     slots[bi].main = nil
                     slots[bi].secondBar = nil
+                    slots[bi].secondWindow = nil
                     if selectedSlotID == slots[ti].id || selectedSlotID == slots[bi].id {
                         selectedSlotID = slots[li].id
                     }
@@ -437,6 +519,7 @@ struct LayoutSettingsView: View {
         slots[index].main = nil
         slots[index].subs = nil
         slots[index].secondBar = nil
+        slots[index].secondWindow = nil
         commit()
     }
 
@@ -452,6 +535,7 @@ struct LayoutSettingsView: View {
             slots[index].main = nil
             slots[index].subs = nil
             slots[index].secondBar = nil
+            slots[index].secondWindow = nil
         }
         for index in splits.indices { splits[index] = false }
         selectedSlotID = nil
@@ -475,10 +559,11 @@ struct LayoutSettingsView: View {
         }
         if source.size == "small" && target.size == "small" {
             swap(&source.secondBar, &target.secondBar)
+            swap(&source.secondWindow, &target.secondWindow)
         } else {
-            // 大↔小: secondBar は小スロットだけの設定なので、main をもらった小側は自動に戻す
-            if source.size == "small" { source.secondBar = nil }
-            if target.size == "small" { target.secondBar = nil }
+            // 大↔小: secondBar / secondWindow は小スロットだけの設定なので、main をもらった小側は自動に戻す
+            if source.size == "small" { source.secondBar = nil; source.secondWindow = nil }
+            if target.size == "small" { target.secondBar = nil; target.secondWindow = nil }
         }
         slots[s] = source
         slots[t] = target
@@ -537,23 +622,41 @@ struct LayoutSettingsView: View {
             windows.append(WindowChoice(id: Self.calendarMain,
                                         label: String(localized: "カレンダー")))
         }
+        // status.json の全窓（内訳窓の part_of と長さ）を窓一覧に載せる。
+        // 「2本目の窓」の候補からエンジンが実際にメインにする窓・内訳窓を
+        // 除く判定に使う（detect-cache には part_of が無い）。
+        let statusWindows = Dictionary(
+            (snapshot?.windows ?? []).compactMap { w -> (String, StatusWindow)? in
+                guard let id = w.id else { return nil }
+                return (id, w)
+            }, uniquingKeysWith: { first, _ in first })
+        for index in windows.indices {
+            if let sw = statusWindows[windows[index].id] {
+                windows[index].length = sw.length
+                windows[index].partOf = sw.partOf
+            }
+        }
 
         providerColors = snapshot?.colors ?? [:]
         let restored = Self.restoreLayout(config: doc?.layoutPanels ?? [], status: snapshot?.layout ?? [])
         slots = restored.slots
         splits = restored.splits
         resolvedSubsByMain = restored.resolvedSubs
+        resolvedMainWindows = restored.resolvedMains
     }
 
-    /// 手動配置は config が正。status は自動配置と、対応するパネルの解決済みサブ表示に使う。
+    /// 手動配置は config が正。status は自動配置と、対応するパネル（同じ main・size）の
+    /// 解決済みサブ表示と、サービス ID の主枠が実際に解決されたメイン窓（main_window）に使う。
     static func restoreLayout(config: [ConfigDocument.PanelConfig], status: [LayoutPanel])
-        -> (slots: [LayoutSlot], splits: [Bool], resolvedSubs: [String: [String]]) {
+        -> (slots: [LayoutSlot], splits: [Bool], resolvedSubs: [String: [String]],
+            resolvedMains: [String: String]) {
         let panels: [ConfigDocument.PanelConfig] = config.isEmpty
             ? status.map { ConfigDocument.PanelConfig(main: $0.main ?? "", subs: nil, size: $0.size ?? "large") }
             : config
         var next = emptySlots()
         var nextSplits = [Bool](repeating: false, count: columnCount)
         var resolvedSubs: [String: [String]] = [:]
+        var resolvedMains: [String: String] = [:]
         var col = -1
         var colIsSmall = false
         var colFilled = 0
@@ -568,24 +671,31 @@ struct LayoutSettingsView: View {
                 colFilled = 0
                 nextSplits[col] = isSmall
             }
+            let statusPanel: LayoutPanel? = (!main.isEmpty && i < status.count
+                && status[i].main == main && (status[i].size ?? "large") == panel.size)
+                ? status[i] : nil
             if isSmall {
                 if !main.isEmpty {
                     next[slotIndex(col, continues ? 2 : 1)].main = main
                     next[slotIndex(col, continues ? 2 : 1)].secondBar = panel.secondBar
+                    next[slotIndex(col, continues ? 2 : 1)].secondWindow = panel.secondWindow
                 }
             } else {
                 next[slotIndex(col, 0)].main = main.isEmpty ? nil : main
                 // カレンダーは窓を持たない 1 枚: subs が config に残っていても捨てる
                 // (engine 側でも無視される。local: と同じ扱い)。
                 next[slotIndex(col, 0)].subs = main == calendarMain ? nil : panel.subs
-                if !main.isEmpty, i < status.count,
-                   status[i].main == main, (status[i].size ?? "large") == panel.size {
-                    resolvedSubs[main] = status[i].subs ?? []
+                if let statusPanel {
+                    resolvedSubs[main] = statusPanel.subs ?? []
                 }
+            }
+            // サービス ID の主枠が実際に解決された窓（small も対象。「2本目の窓」の候補から除く）
+            if let statusPanel, let mainWindow = statusPanel.mainWindow {
+                resolvedMains[main] = mainWindow
             }
             colFilled += 1
         }
-        return (next, nextSplits, resolvedSubs)
+        return (next, nextSplits, resolvedSubs, resolvedMains)
     }
 
     /// 表示中のスロットから layout.panels を組み立てて即保存。
@@ -607,11 +717,13 @@ struct LayoutSettingsView: View {
                 let top = slots[Self.slotIndex(col, 1)]
                 let bottom = slots[Self.slotIndex(col, 2)]
                 guard top.main != nil || bottom.main != nil else { continue }
-                // secondBar は small だけの設定。空の段（main ""）には付けない
+                // secondBar / secondWindow は small だけの設定。空の段（main ""）には付けない
                 panels.append(ConfigDocument.PanelConfig(main: top.main ?? "", subs: nil, size: "small",
-                                                         secondBar: top.main?.isEmpty == false ? top.secondBar : nil))
+                                                         secondBar: top.main?.isEmpty == false ? top.secondBar : nil,
+                                                         secondWindow: top.main?.isEmpty == false ? top.secondWindow : nil))
                 panels.append(ConfigDocument.PanelConfig(main: bottom.main ?? "", subs: nil, size: "small",
-                                                         secondBar: bottom.main?.isEmpty == false ? bottom.secondBar : nil))
+                                                         secondBar: bottom.main?.isEmpty == false ? bottom.secondBar : nil,
+                                                         secondWindow: bottom.main?.isEmpty == false ? bottom.secondWindow : nil))
             } else {
                 let large = slots[Self.slotIndex(col, 0)]
                 if let main = large.main, !main.isEmpty {
@@ -645,6 +757,7 @@ private struct SlotCard: View {
     let mainLabel: String?
     let subLabels: [String]
     var subAuto: Bool = false
+    var secondWindowLabel: String? = nil
     let onSelect: () -> Void
     let onSwap: (String) -> Void
 
@@ -679,6 +792,11 @@ private struct SlotCard: View {
             if slot.size == "small", slot.main?.isEmpty == false, let secondBar = slot.secondBar {
                 // 明示したときだけ小さなバッジで分かるようにする（自動は表示しない）
                 Text(secondBar ? String(localized: "2本目のバー: 出す") : String(localized: "2本目のバー: 出さない"))
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if slot.size == "small", slot.main?.isEmpty == false, let secondWindowLabel {
+                // 2 本目の窓を選んでいるときだけバッジに出す（自動は表示しない）
+                Text(String(localized: "2本目: \(secondWindowLabel)"))
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
         }

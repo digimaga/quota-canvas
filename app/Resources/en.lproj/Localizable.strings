@@ -52,9 +52,12 @@
 "2本目のバー（短い窓）" = "Second bar (short windows)";
 "2本目のバー: 出す" = "Second bar: on";
 "2本目のバー: 出さない" = "Second bar: off";
+"2本目の窓" = "Second bar window";
+"2本目: %@" = "Second: %@";
 "表示する" = "Show";
 "表示しない" = "Don't show";
 "自動: OpenCode Go・OpenDesign Go・Gemini・Devin の小パネルで、5 時間枠などの短い窓を 2 本目のバーに出します。" = "Auto: on small panels for OpenCode Go, OpenDesign Go, Gemini, and Devin, a second bar shows short windows such as the 5-hour window.";
+"自動: メインが 1 日未満の窓なら 1 日以上の最短の窓（週間など）、そうでなければメインより短い窓（5 時間枠など）を出します。" = "Auto: when the main window is shorter than a day, the second bar shows the shortest window of a day or more (such as weekly); otherwise a shorter window than the main (such as the 5-hour window).";
 "サブ窓（最大 %lld）" = "Sub-windows (max %lld)";
 "自動" = "Auto";
 "サブを自動に戻す" = "Back to auto subs";

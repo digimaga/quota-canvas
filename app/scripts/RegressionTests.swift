@@ -186,6 +186,154 @@ struct RegressionTests {
               && !LayoutSettingsView.acceptsSubs("kimi") && LayoutSettingsView.acceptsSubs("claude:weekly"),
               "subs need a main window")
 
+        // second_window（2 本目のバーに出す窓の ID）: nil = キー省略（自動）、値は往復で
+        // 保持。空文字・null・型違いは nil。large では書き出さない。
+        let secondWindowDoc = try ConfigDocument(data: Data(#"{"layout":{"panels":[{"main":"alpha:week","size":"large","second_window":"alpha:5h"},{"main":"beta:day","size":"small","second_window":"beta:5h"},{"main":"gamma:day","size":"small","second_window":""},{"main":"delta:day","size":"small"},{"main":"epsilon:day","size":"small","second_window":null},{"main":"zeta:day","size":"small","second_window":42}]}}"#.utf8))
+        let secondWindowPanels = secondWindowDoc.layoutPanels
+        check(secondWindowPanels.map(\.secondWindow) == ["alpha:5h", "beta:5h", nil, nil, nil, nil],
+              "second_window decodes; empty, missing, null and wrong type are nil")
+        var secondWindowRewrite = secondWindowDoc
+        secondWindowRewrite.layoutPanels = secondWindowPanels
+        let rewrittenWindows = (secondWindowRewrite.object["layout"] as? [String: Any])?["panels"] as? [[String: Any]]
+        check(rewrittenWindows?.count == secondWindowPanels.count, "rewrite keeps every panel for second_window")
+        check(rewrittenWindows?[0]["second_window"] == nil, "large never writes second_window")
+        check(rewrittenWindows?[1]["second_window"] as? String == "beta:5h",
+              "small keeps explicit second_window")
+        check(rewrittenWindows?[2]["second_window"] == nil && rewrittenWindows?[3]["second_window"] == nil
+              && rewrittenWindows?[4]["second_window"] == nil && rewrittenWindows?[5]["second_window"] == nil,
+              "nil second_window omits the key")
+
+        // status.json の layout にも second_window が付くことがある（無くてもよい・型違いは nil）
+        let secondWindowStatus = try JSONDecoder().decode([LayoutPanel].self,
+            from: Data(#"[{"main":"beta:day","size":"small","second_window":"beta:5h"},{"main":"gamma:day","size":"small","second_window":42}]"#.utf8))
+        check(secondWindowStatus[0].secondWindow == "beta:5h" && secondWindowStatus[1].secondWindow == nil,
+              "status layout second_window decodes; wrong type is nil")
+
+        // 小スロットへの復元と保存の往復。空の段・大スロットには付かない。
+        var secondWindowSlots = LayoutSettingsView.emptySlots()
+        var secondWindowSplits = [Bool](repeating: false, count: LayoutSettingsView.columnCount)
+        secondWindowSplits[0] = true
+        secondWindowSplits[1] = true
+        secondWindowSlots[LayoutSettingsView.slotIndex(0, 1)].main = "beta:day"
+        secondWindowSlots[LayoutSettingsView.slotIndex(0, 1)].secondWindow = "beta:5h"
+        secondWindowSlots[LayoutSettingsView.slotIndex(0, 2)].main = "gamma:day"
+        secondWindowSlots[LayoutSettingsView.slotIndex(1, 1)].secondWindow = "epsilon:5h" // 空の段: 保存されない
+        secondWindowSlots[LayoutSettingsView.slotIndex(1, 2)].main = "delta:day"
+        secondWindowSlots[LayoutSettingsView.slotIndex(2, 0)].main = "alpha:week"
+        secondWindowSlots[LayoutSettingsView.slotIndex(2, 0)].secondWindow = "alpha:5h" // large: 保存されない
+        let secondWindowSaved = LayoutSettingsView.panelsForSave(slots: secondWindowSlots, splits: secondWindowSplits)
+        check(secondWindowSaved.map(\.main) == ["beta:day", "gamma:day", "", "delta:day", "alpha:week"],
+              "second window slots keep the panel order")
+        check(secondWindowSaved.map(\.secondWindow) == ["beta:5h", nil, nil, nil, nil],
+              "second_window saves on filled small rows only")
+        let secondWindowRestored = LayoutSettingsView.restoreLayout(config: secondWindowSaved, status: [])
+        check(secondWindowRestored.slots[LayoutSettingsView.slotIndex(0, 1)].secondWindow == "beta:5h"
+              && secondWindowRestored.slots[LayoutSettingsView.slotIndex(0, 2)].secondWindow == nil
+              && secondWindowRestored.slots[LayoutSettingsView.slotIndex(1, 2)].secondWindow == nil
+              && secondWindowRestored.slots[LayoutSettingsView.slotIndex(2, 0)].secondWindow == nil,
+              "second_window round-trips through restore and save")
+        check(LayoutSettingsView.secondWindowCandidates(main: "claude:weekly", windows: subWindows,
+                                                        selected: nil).map(\.id)
+              == ["claude:5h", "claude:weekly_fable"],
+              "second window candidates are the main service's other windows")
+        check(LayoutSettingsView.secondWindowCandidates(main: "claude:weekly", windows: subWindows,
+                                                        selected: "claude:gone").map(\.id)
+              == ["claude:5h", "claude:weekly_fable", "claude:gone"],
+              "a stored second window stays removable")
+        check(LayoutSettingsView.secondWindowCandidates(main: "calendar", windows: subWindows, selected: nil).isEmpty
+              && LayoutSettingsView.secondWindowCandidates(main: "local:gx10", windows: subWindows, selected: nil).isEmpty
+              && LayoutSettingsView.secondWindowCandidates(main: nil, windows: subWindows, selected: nil).isEmpty,
+              "no second window for calendar, local or empty main")
+
+        // main がサービス ID のとき、エンジンが自動で選ぶ実際のメイン窓（最長、
+        // 同長は key=="weekly"）は 2 本目に選べないので候補から除く。
+        // 内訳窓（partOf）も出さない。窓 ID 指定では main 自身だけを除く。
+        let serviceWindows = [
+            LayoutSettingsView.WindowChoice(id: "opencode", label: "OpenCode"),
+            LayoutSettingsView.WindowChoice(id: "opencode:5h", label: "5時間", length: 5 * 3600),
+            LayoutSettingsView.WindowChoice(id: "opencode:weekly", label: "週間", length: 7 * 86400),
+            LayoutSettingsView.WindowChoice(id: "opencode:daily", label: "日次", length: 86400),
+            LayoutSettingsView.WindowChoice(id: "opencode:weekly_a", label: "内訳A",
+                                            length: 86400, partOf: "weekly"),
+            LayoutSettingsView.WindowChoice(id: "other:x", label: "Other", length: 3600)
+        ]
+        check(LayoutSettingsView.secondWindowCandidates(main: "opencode", windows: serviceWindows,
+                                                        selected: nil).map(\.id)
+              == ["opencode:5h", "opencode:daily"],
+              "service main drops the engine-resolved main window and breakdown windows")
+        check(LayoutSettingsView.secondWindowCandidates(main: "opencode:5h", windows: serviceWindows,
+                                                        selected: nil).map(\.id)
+              == ["opencode:weekly", "opencode:daily"],
+              "window-id main drops only itself and breakdown windows")
+        check(LayoutSettingsView.secondWindowCandidates(main: "opencode", windows: serviceWindows,
+                                                        selected: "opencode:weekly").map(\.id)
+              == ["opencode:5h", "opencode:daily", "opencode:weekly"],
+              "a stored resolved main stays removable")
+        let equalLengthWindows = [
+            LayoutSettingsView.WindowChoice(id: "svc:long_a", label: "A", length: 7 * 86400),
+            LayoutSettingsView.WindowChoice(id: "svc:weekly", label: "週間", length: 7 * 86400)
+        ]
+        check(LayoutSettingsView.secondWindowCandidates(main: "svc", windows: equalLengthWindows,
+                                                        selected: nil).map(\.id) == ["svc:long_a"],
+              "equal length resolves the weekly window as main")
+        let partialWindows = [
+            LayoutSettingsView.WindowChoice(id: "svc:unknown", label: "不明"),
+            LayoutSettingsView.WindowChoice(id: "svc:weekly", label: "週間", length: 7 * 86400),
+            LayoutSettingsView.WindowChoice(id: "svc:5h", label: "5時間", length: 5 * 3600)
+        ]
+        check(LayoutSettingsView.secondWindowCandidates(main: "svc", windows: partialWindows,
+                                                        selected: nil).map(\.id)
+              == ["svc:unknown", "svc:5h"],
+              "windows without a length stay candidates; the resolvable main is still dropped")
+        let noLengthWindows = [
+            LayoutSettingsView.WindowChoice(id: "svc:5h", label: "5時間"),
+            LayoutSettingsView.WindowChoice(id: "svc:weekly", label: "週間")
+        ]
+        check(LayoutSettingsView.secondWindowCandidates(main: "svc", windows: noLengthWindows,
+                                                        selected: nil).map(\.id)
+              == ["svc:5h", "svc:weekly"],
+              "no resolvable main means no extra exclusion")
+
+        // status.json の layout の "main_window": サービス ID の主枠が実際に解決された
+        // メイン窓（解決できるときだけ付く）。型違い・欠落は nil。
+        let mainWindowStatus = try JSONDecoder().decode([LayoutPanel].self,
+            from: Data(#"[{"main":"opencode","size":"small","main_window":"opencode:weekly"},{"main":"beta:day","size":"small","main_window":42},{"main":"gamma:day","size":"small"}]"#.utf8))
+        check(mainWindowStatus[0].mainWindow == "opencode:weekly" && mainWindowStatus[1].mainWindow == nil
+              && mainWindowStatus[2].mainWindow == nil,
+              "status layout main_window decodes; wrong type and missing are nil")
+
+        // restoreLayout は status の対応パネル（同じ main・size）の main_window を
+        // 主枠 → 窓 ID の対応として返す（small も large も対象）。
+        let serviceMainConfig = [ConfigDocument.PanelConfig(main: "opencode", subs: nil, size: "small"),
+                                 ConfigDocument.PanelConfig(main: "claude", subs: nil, size: "large")]
+        let mainWindowLayout = try JSONDecoder().decode([LayoutPanel].self,
+            from: Data(#"[{"main":"opencode","size":"small","main_window":"opencode:weekly"},{"main":"claude","size":"large","main_window":"claude:weekly"}]"#.utf8))
+        check(LayoutSettingsView.restoreLayout(config: serviceMainConfig, status: mainWindowLayout)
+              .resolvedMains == ["opencode": "opencode:weekly", "claude": "claude:weekly"],
+              "status main_window resolves service mains on small and large panels")
+        let mismatchedLayout = try JSONDecoder().decode([LayoutPanel].self,
+            from: Data(#"[{"main":"opencode","size":"large","main_window":"opencode:weekly"}]"#.utf8))
+        check(LayoutSettingsView.restoreLayout(config: serviceMainConfig, status: mismatchedLayout)
+              .resolvedMains.isEmpty, "a main or size mismatch keeps no resolved main")
+        check(LayoutSettingsView.restoreLayout(config: serviceMainConfig, status: [])
+              .resolvedMains.isEmpty, "no status keeps no resolved main")
+
+        // status が教える実際のメイン窓（main_window）があるときは、推定（最長窓・
+        // weekly 優先）と違う窓でも推定ではなく main_window の方だけを候補から除く。
+        // 取れないとき（古いエンジン・status 無し）は従来の推定が fallback。
+        check(LayoutSettingsView.secondWindowCandidates(main: "opencode", windows: serviceWindows,
+                                                        selected: nil, resolvedMain: "opencode:5h").map(\.id)
+              == ["opencode:weekly", "opencode:daily"],
+              "the engine-reported main window is excluded instead of the estimate")
+        check(LayoutSettingsView.secondWindowCandidates(main: "opencode", windows: serviceWindows,
+                                                        selected: nil, resolvedMain: "opencode:daily").map(\.id)
+              == ["opencode:5h", "opencode:weekly"],
+              "a reported main different from the estimate is the only exclusion")
+        check(LayoutSettingsView.secondWindowCandidates(main: "opencode:5h", windows: serviceWindows,
+                                                        selected: nil, resolvedMain: "opencode:daily").map(\.id)
+              == ["opencode:weekly", "opencode:daily"],
+              "a window-id main drops only itself even with a reported main")
+
         let statusJSON = #"{"updated_at":"2026-10-28T12:00:00Z","cards":[{"id":"one","fetched_at":"2026-10-28T10:00:00Z"},{"id":"two","fetched_at":42},{"id":"three"}]}"#
         let decoded = try JSONDecoder().decode(EngineStatus.self, from: Data(statusJSON.utf8))
         let reference = ISO8601Support.parse("2026-10-28T12:00:30Z")!

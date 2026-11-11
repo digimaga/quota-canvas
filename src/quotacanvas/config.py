@@ -118,6 +118,9 @@ class Panel:
     # 日次など短い窓) を出すか。None (省略) = 自動 (render.SECOND_BAR_AUTO の
     # サービスだけ出す)、True = 出す、False = 出さない。large では無視。
     second_bar: Optional[bool] = None
+    # 2 本目のバーに出す窓 ID (同じサービスの窓)。None = 自動 (メインが短い窓なら
+    # 1 日以上の最短の窓、そうでなければ 5 時間枠など短い窓)。size = "small" のみ。
+    second_window: Optional[str] = None
 
 
 @dataclass
@@ -510,6 +513,13 @@ def _panel(table: Any, key: str, path: Path) -> Panel:
             if value is None:
                 continue  # JSON null = automatic, same as leaving it out
             panel.second_bar = _bool(value, key + ".second_bar", path)
+        elif sub == "second_window":
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                raise ConfigError(t("config.panel_main_not_string", path=path,
+                                    name=key + ".second_window", value=value))
+            panel.second_window = value.strip() or None
         else:
             _unknown(path, key + "." + sub)
     if not panel.main:
@@ -964,6 +974,7 @@ def format_toml(cfg: Config) -> str:
         '連続する 2 枚で 1 列の上下 2 段)',
         '# second_bar = small パネルの下に 2 本目のバー（5 時間・日次などの短い窓）を出すか。'
         'true | false。省略で自動（OpenCode Go・OpenDesign Go・Gemini・Devin だけ出す）。large では無視',
+        '# second_window = 2 本目のバーに出す窓 ID（同じサービスの窓。省略で自動）',
         '# 上限: 列は最大 5 つ（全部 small なら最大 10 枚）。',
     ]
     if cfg.layout.panels:
@@ -982,6 +993,9 @@ def format_toml(cfg: Config) -> str:
             lines.append('size = "%s"' % p.size)
             if p.second_bar is not None:
                 lines.append("second_bar = %s" % ("true" if p.second_bar else "false"))
+            if p.second_window is not None:
+                lines.append("second_window = %s"
+                             % json.dumps(p.second_window, ensure_ascii=False))
     else:
         lines += [
             "# [[layout.panels]]",
@@ -1202,7 +1216,9 @@ def config_to_dict(cfg: Config) -> Dict[str, Any]:
                  # 自動 (None) はキーごと省略 (subs の null と違い、旧 UI の
                  # 往復で増えないようにする)
                  **({} if p.second_bar is None
-                    else {"second_bar": p.second_bar})}
+                    else {"second_bar": p.second_bar}),
+                 **({} if p.second_window is None
+                    else {"second_window": p.second_window})}
                 for p in cfg.layout.panels
             ],
         },
