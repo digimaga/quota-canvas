@@ -6,6 +6,7 @@ Dummy values only; no network or real credentials.
 from __future__ import annotations
 
 import json
+import socket
 import urllib.error
 from datetime import datetime, timedelta, timezone
 
@@ -566,6 +567,161 @@ def test_fetch_non_json_snapshot_is_error(monkeypatch):
     monkeypatch.setattr(opendesign, "http_get_json", fake_http)
     with pytest.raises(json.JSONDecodeError):
         opendesign.fetch(NOW)
+
+
+# ------------------------------------------------------------------ retry
+
+def _record_sleep(monkeypatch):
+    """time.sleep の呼び出しを記録し、実際には待たないようにする。"""
+    import time as time_module
+    sleeps = []
+    monkeypatch.setattr(time_module, "sleep", sleeps.append)
+    return sleeps
+
+
+@pytest.mark.parametrize("code", [502, 503, 504])
+def test_fetch_retries_5xx_then_succeeds(monkeypatch, code):
+    """一時的な 502/503/504 は RETRY_DELAY 秒待って 1 回だけやり直す。"""
+    monkeypatch.setenv("VELA_CONTROL_KEY", "env-dummy")
+    monkeypatch.setattr(opendesign, "RETRY_DELAY", 7.0)
+    sleeps = _record_sleep(monkeypatch)
+    calls = []
+
+    def flaky(url, headers, timeout=providers.TIMEOUT):
+        calls.append({"url": url, "timeout": timeout})
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(url, code, "err", None, None)
+        if url.endswith("/api/v1/workspaces/current"):
+            return {"workspaceId": "ws-dummy"}
+        return SNAPSHOT
+
+    monkeypatch.setattr(opendesign, "http_get_json", flaky)
+    usage = opendesign.fetch(NOW)
+    assert usage.error is None
+    assert [w.id for w in usage.windows] == [
+        "opendesign:5h", "opendesign:weekly"]
+    assert len(calls) == 3  # current 2 回 + snapshot 1 回
+    assert sleeps == [7.0]  # RETRY_DELAY で 1 回だけ待つ
+    # 2 回目の GET は最悪の所要時間を抑えるため timeout=TIMEOUT/2
+    assert calls[0]["timeout"] == providers.TIMEOUT
+    assert calls[1]["timeout"] == providers.TIMEOUT / 2
+    assert calls[2]["timeout"] == providers.TIMEOUT
+
+
+def test_fetch_retries_503_on_snapshot_too(monkeypatch):
+    """やり直しは workspaces/current と billing/snapshot の各 GET ごと。"""
+    monkeypatch.setenv("VELA_CONTROL_KEY", "env-dummy")
+    monkeypatch.setattr(opendesign, "RETRY_DELAY", 0)
+    calls = []
+
+    def flaky(url, headers, timeout=providers.TIMEOUT):
+        calls.append(url)
+        if url.endswith("/billing/snapshot") and len(calls) == 2:
+            raise urllib.error.HTTPError(url, 503, "err", None, None)
+        if url.endswith("/api/v1/workspaces/current"):
+            return {"workspaceId": "ws-dummy"}
+        return SNAPSHOT
+
+    monkeypatch.setattr(opendesign, "http_get_json", flaky)
+    usage = opendesign.fetch(NOW)
+    assert usage.error is None
+    assert len(calls) == 3  # current 1 回 + snapshot 2 回
+
+
+def test_fetch_second_503_is_failure(monkeypatch):
+    """2 回目も 503 なら今までどおりの失敗扱い (呼び出しは 2 回で終わる)。"""
+    monkeypatch.setenv("VELA_CONTROL_KEY", "env-dummy")
+    monkeypatch.setattr(opendesign, "RETRY_DELAY", 0)
+    calls = []
+
+    def always_503(url, headers, timeout=providers.TIMEOUT):
+        calls.append(url)
+        raise urllib.error.HTTPError(url, 503, "err", None, None)
+
+    monkeypatch.setattr(opendesign, "http_get_json", always_503)
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        opendesign.fetch(NOW)
+    assert excinfo.value.code == 503
+    assert len(calls) == 2
+
+
+def test_fetch_does_not_retry_401(monkeypatch):
+    """401 は 1 回で終わる (CredentialError。sleep も呼ばない)。"""
+    monkeypatch.setenv("VELA_CONTROL_KEY", "env-dummy")
+    monkeypatch.setattr(opendesign, "RETRY_DELAY", 0)
+    sleeps = _record_sleep(monkeypatch)
+    calls = []
+
+    def unauthorized(url, headers, timeout=providers.TIMEOUT):
+        calls.append(url)
+        raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
+
+    monkeypatch.setattr(opendesign, "http_get_json", unauthorized)
+    with pytest.raises(CredentialError):
+        opendesign.fetch(NOW)
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("code", [400, 404, 429])
+def test_fetch_does_not_retry_other_4xx(monkeypatch, code):
+    monkeypatch.setenv("VELA_CONTROL_KEY", "env-dummy")
+    monkeypatch.setattr(opendesign, "RETRY_DELAY", 0)
+    sleeps = _record_sleep(monkeypatch)
+    calls = []
+
+    def fail(url, headers, timeout=providers.TIMEOUT):
+        calls.append(url)
+        raise urllib.error.HTTPError(url, code, "err", None, None)
+
+    monkeypatch.setattr(opendesign, "http_get_json", fail)
+    with pytest.raises(urllib.error.HTTPError):
+        opendesign.fetch(NOW)
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("exc", [
+    urllib.error.URLError(socket.timeout("timed out")),  # 接続タイムアウト
+    TimeoutError("timed out"),                           # 応答待ち (URLError に包まれない)
+    socket.timeout("timed out"),
+])
+def test_fetch_retries_timeout_then_succeeds(monkeypatch, exc):
+    """接続・応答待ちのタイムアウトも 1 回だけやり直す。"""
+    monkeypatch.setenv("VELA_CONTROL_KEY", "env-dummy")
+    monkeypatch.setattr(opendesign, "RETRY_DELAY", 0)
+    calls = []
+
+    def flaky(url, headers, timeout=providers.TIMEOUT):
+        calls.append(url)
+        if len(calls) == 1:
+            raise exc
+        if url.endswith("/api/v1/workspaces/current"):
+            return {"workspaceId": "ws-dummy"}
+        return SNAPSHOT
+
+    monkeypatch.setattr(opendesign, "http_get_json", flaky)
+    usage = opendesign.fetch(NOW)
+    assert usage.error is None
+    assert len(calls) == 3
+
+
+def test_fetch_does_not_retry_other_url_errors(monkeypatch):
+    """タイムアウト以外の URLError (例 接続拒否) はやり直さない。"""
+    monkeypatch.setenv("VELA_CONTROL_KEY", "env-dummy")
+    monkeypatch.setattr(opendesign, "RETRY_DELAY", 0)
+    sleeps = _record_sleep(monkeypatch)
+    calls = []
+
+    def refused(url, headers, timeout=providers.TIMEOUT):
+        calls.append(url)
+        raise urllib.error.URLError(OSError("connection refused"))
+
+    monkeypatch.setattr(opendesign, "http_get_json", refused)
+    with pytest.raises(urllib.error.URLError):
+        opendesign.fetch(NOW)
+    assert len(calls) == 1
+    assert sleeps == []
 
 
 # ---------------------------------------------------------------- provider

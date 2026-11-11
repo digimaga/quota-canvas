@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import time
 import urllib.error
 import urllib.parse
 from datetime import datetime
@@ -21,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..i18n import t
 from ..models import Balance, ProviderUsage, Window
 from ._base import (
-    USER_AGENT, CredentialError, Detection, Provider,
+    TIMEOUT, USER_AGENT, CredentialError, Detection, Provider,
     _parse_iso, _window_identity, finite_number, http_get_json,
 )
 
@@ -211,6 +213,40 @@ def parse_opendesign(data: Any, now: Optional[datetime] = None) \
 
 # ---------------------------------------------------------------- fetch
 
+# 一時的な HTTP 502/503/504・接続タイムアウトで 1 回だけやり直す待ち秒。
+# 常駐は 15 分ごとの取得なので、1 回の 503 で stale (20 分) にならないよう
+# その場で取り直す。テストでは 0 に差し替える。
+RETRY_DELAY = 3.0
+
+
+def _retryable(exc: BaseException) -> bool:
+    """やり直す価値のある一時的な失敗 (HTTP 502/503/504、タイムアウト) か。
+    401/403 やその他の 4xx は対象外。"""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (502, 503, 504)
+    if isinstance(exc, urllib.error.URLError):
+        return isinstance(exc.reason, (socket.timeout, TimeoutError))
+    # 応答待ちのタイムアウトは URLError に包まれずに上がる
+    return isinstance(exc, (socket.timeout, TimeoutError))
+
+
+def _get_json_retry(url: str, headers: Dict[str, str]) -> Any:
+    """http_get_json + 一時的な失敗で RETRY_DELAY 秒待って 1 回だけやり直す。
+    2 回目は timeout=TIMEOUT/2 (最悪の所要時間を抑える)。2 回目も失敗したら
+    そのまま例外を上げる。"""
+    try:
+        return http_get_json(url, headers)
+    except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
+        if not _retryable(exc):
+            raise
+        try:
+            exc.close()  # HTTPError の本体を閉じる (失敗は無視)
+        except (AttributeError, OSError):
+            pass
+    time.sleep(RETRY_DELAY)
+    return http_get_json(url, headers, timeout=TIMEOUT / 2)
+
+
 def _workspace_id(data: Any) -> str:
     """workspaces/current の応答から workspaceId を取り出す。"""
     if not isinstance(data, dict):
@@ -229,11 +265,12 @@ def fetch(now: datetime) -> ProviderUsage:
         "User-Agent": USER_AGENT,  # Python-urllib の既定 UA は Cloudflare に 403 される
     }
     try:
-        current = http_get_json(api_url + "/api/v1/workspaces/current", headers)
+        current = _get_json_retry(
+            api_url + "/api/v1/workspaces/current", headers)
         workspace_id = _workspace_id(current)
         snapshot_url = "%s/api/v1/workspaces/%s/billing/snapshot" % (
             api_url, urllib.parse.quote(workspace_id, safe=""))
-        data = http_get_json(snapshot_url, headers)
+        data = _get_json_retry(snapshot_url, headers)
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             raise CredentialError(
