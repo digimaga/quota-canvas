@@ -309,4 +309,6 @@ final class EngineClient: @unchecked Sendable {
     }
 }
 
+extension EngineClient: RoutingModeClient {}
+
 private extension JSONDecoder {}

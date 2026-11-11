@@ -27,10 +27,7 @@ struct RoutingSettingsView: View {
     @State private var verdictTimestamp: Date?
     @State private var hasRoutingStatus = false // status.json に "routing" がある
     @State private var usableWindows: [String] = []
-    @State private var modeEntries: [RoutingModeEntry] = []
-    @State private var modeLoaded = false  // モード一覧を一度でも取れた
-    @State private var modeGeneration = 0  // 古いモード一覧の応答を捨てる用
-    @State private var modeBusy = false
+    @StateObject private var model = RoutingModeModel()
 
     private let client = EngineClient()
 
@@ -71,11 +68,13 @@ struct RoutingSettingsView: View {
             }
         }
         .task {
+            let alert = $alertMessage
+            model.reportError = { alert.wrappedValue = $0 }
             await load()
-            while !Task.isCancelled {
-                do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { break }
-                await reloadVerdicts()
-            }
+            await RoutingModeModel.pollVerdicts(
+                isCancelled: { Task.isCancelled },
+                sleep: { try await Task.sleep(nanoseconds: 60_000_000_000) },
+                reload: { await reloadVerdicts() })
         }
         .onReceive(NotificationCenter.default.publisher(for: .engineArtifactsChanged)) { _ in
             Task { await reloadVerdicts() } // 設定保存 2 秒後などに判定を取り直す
@@ -167,14 +166,14 @@ struct RoutingSettingsView: View {
                 Spacer()
             }
             Text(reasonText(worker)).font(.caption).foregroundStyle(.secondary)
-            if modeLoaded {
+            if model.modeLoaded {
                 Picker("モード", selection: modeBinding(worker)) {
                     Text("標準").tag("standard")
                     Text("使い切り").tag("burn")
                     Text("監視のみ").tag("off")
                 }
                 .pickerStyle(.segmented)
-                .disabled(modeBusy || !modeEntries.contains { $0.name == worker.name })
+                .disabled(model.modeBusy || !model.modeEntries.contains { $0.name == worker.name })
             } else {
                 Text("モードを取得中…").font(.caption2).foregroundStyle(.secondary)
             }
@@ -185,8 +184,8 @@ struct RoutingSettingsView: View {
     /// 判定がなくても CLI のモード一覧を表示し、変更・解除できる。
     @ViewBuilder
     private var modeOnlyRows: some View {
-        if modeLoaded {
-            ForEach(modeEntries, id: \.name) { entry in
+        if model.modeLoaded {
+            ForEach(model.modeEntries, id: \.name) { entry in
                 if let name = entry.name {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -197,18 +196,18 @@ struct RoutingSettingsView: View {
                             }
                             Spacer()
                             if entry.mode != "standard" {
-                                Button("解除") { setMode(named: name, mode: "standard") }
-                                    .controlSize(.small).disabled(modeBusy)
+                                Button("解除") { model.setMode(named: name, mode: "standard") }
+                                    .controlSize(.small).disabled(model.modeBusy)
                             }
                         }
                         Picker("モード", selection: Binding(
-                            get: { modeEntries.first { $0.name == name }?.mode ?? "standard" },
-                            set: { setMode(named: name, mode: $0) })) {
+                            get: { model.mode(for: name) },
+                            set: { model.setMode(named: name, mode: $0) })) {
                             Text("標準").tag("standard")
                             Text("使い切り").tag("burn")
                             Text("監視のみ").tag("off")
                         }
-                        .pickerStyle(.segmented).disabled(modeBusy)
+                        .pickerStyle(.segmented).disabled(model.modeBusy)
                     }
                 }
             }
@@ -261,7 +260,7 @@ struct RoutingSettingsView: View {
         default: reason = String(localized: "判定できない")
         }
         if let name = worker.name,
-           let entry = modeEntries.first(where: { $0.name == name && $0.mode == "burn" }),
+           let entry = model.modeEntries.first(where: { $0.name == name && $0.mode == "burn" }),
            let until = entry.untilDate {
             return reason + " · " + String(localized: "使い切り \(Self.hhmm(until)) まで")
         }
@@ -271,43 +270,9 @@ struct RoutingSettingsView: View {
     /// CLI の一覧を真実値とし、保存後に判定を更新する。
     private func modeBinding(_ worker: RoutingWorkerStatus) -> Binding<String> {
         Binding(
-            get: { modeEntries.first { $0.name == worker.name }?.mode ?? "standard" },
-            set: { mode in
-                if let name = worker.name { setMode(named: name, mode: mode) }
-            }
+            get: { model.mode(for: worker.name) },
+            set: { model.setMode(named: worker.name ?? "", mode: $0) }
         )
-    }
-
-    private func setMode(named name: String, mode: String) {
-        guard !name.isEmpty else { return }
-        modeBusy = true
-        Task {
-            defer { modeBusy = false }
-            do {
-                let list = try await client.setRoutingMode(name: name, mode: mode)
-                modeGeneration += 1
-                modeEntries = list
-                modeLoaded = true
-                try? await client.refresh()
-                EngineClient.scheduleArtifactReload()
-            } catch {
-                alertMessage = error.localizedDescription
-                await reloadModes()
-            }
-        }
-    }
-
-    private func reloadModes() async {
-        modeGeneration += 1
-        let generation = modeGeneration
-        do {
-            let list = try await client.routingModes()
-            guard generation == modeGeneration else { return }
-            modeEntries = list
-            modeLoaded = true
-        } catch {
-            // 取得失敗時は前回の一覧を保つ。
-        }
     }
 
     // MARK: - ワーカーの設定（routing.workers、保存ボタンで明示的に保存）
@@ -509,10 +474,8 @@ struct RoutingSettingsView: View {
     }
 
     /// 現在の判定（status.json の "routing" / "windows"）とモード一覧（CLI）を取り直す。
-    /// モード一覧は世代番号で古い応答を捨てる。失敗時は前回の一覧を保つ。
+    /// モード一覧は RoutingModeModel 側で世代番号により古い応答を捨てる。
     private func reloadVerdicts() async {
-        modeGeneration += 1
-        let generation = modeGeneration
         let snapshot = StatusStore.loadStatusSnapshot()
         verdictTimestamp = snapshot?.routing?.at
         hasRoutingStatus = snapshot?.routing != nil
@@ -520,14 +483,7 @@ struct RoutingSettingsView: View {
         usableWindows = (snapshot?.windows ?? []).compactMap { window in
             window.partOf == nil ? window.id : nil
         }
-        do {
-            let list = try await client.routingModes()
-            guard generation == modeGeneration else { return } // 古い応答は捨てる
-            modeEntries = list
-            modeLoaded = true
-        } catch {
-            // 取得失敗時は前回の一覧のまま
-        }
+        await model.reloadModes()
     }
 
     // 変更した項目だけを、アプリ共通の直列化された保存経路に渡す。

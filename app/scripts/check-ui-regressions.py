@@ -15,6 +15,8 @@ en_values = plistlib.loads(subprocess.run(
     ['plutil', '-convert', 'xml1', '-o', '-', '--', str(en_path)],
     capture_output=True, check=True).stdout)
 app = (root / 'Sources/QuotaCanvasApp/QuotaCanvasApp.swift').read_text()
+mode_model = (root / 'Sources/QuotaCanvasApp/RoutingModeModel.swift').read_text()
+engine = (root / 'Sources/QuotaCanvasApp/EngineClient.swift').read_text()
 
 
 def swift_code_skeleton(text, keep_literals=False):
@@ -589,23 +591,52 @@ def worker_editor_appends_row():
 
 
 def routing_polls():
-    """Some poll loop must be live code: no same-block 'return' or never-
-    running branch before the loop or before a verdict reload inside it."""
-    for m in re.finditer(code_pattern('while !Task.isCancelled'), routing_skel):
+    """The view task must hand a live poll to RoutingModeModel.pollVerdicts
+    (its loop is exercised by RegressionTests): 60 s sleep, verdict reload,
+    and no same-block 'return' or never-running branch before the call."""
+    for m in re.finditer(code_pattern('await RoutingModeModel.pollVerdicts('),
+                         routing_skel):
         if (early_return_before(routing_skel, m.start())
                 or unreachable(routing_skel, m.start())):
             continue
         try:
-            brace = routing_skel.index('{', m.end())
-            body = routing_skel[brace:matching_brace(routing_skel, brace)]
+            args_open = m.end() - 1
+            args = routing_skel[args_open:matching_paren(routing_skel, args_open)]
         except ValueError:
             continue
-        if not re.search(code_pattern('60_000_000_000'), body):
-            continue
-        if any(not early_return_before(routing_skel, brace + r.start())
-               and not unreachable(routing_skel, brace + r.start())
-               for r in re.finditer(code_pattern('await reloadVerdicts()'), body)):
+        if (re.search(code_pattern('isCancelled: { Task.isCancelled }'), args)
+                and re.search(code_pattern(
+                    'sleep: { try await Task.sleep(nanoseconds: 60_000_000_000) }'), args)
+                and re.search(code_pattern('reload: { await reloadVerdicts() }'), args)):
             return True
+    return False
+
+
+def routing_errors_reach_alert():
+    """Mode-change errors reach the alert: in the view task that polls, a
+    live 'model.reportError = { alert.wrappedValue = $0 }' (alert being
+    $alertMessage, so the model does not retain the view) runs before the
+    first 'await' (load / poll), with no 'return' or dead branch before it."""
+    for t in re.finditer(r'\.\s*task\s*\{', routing_skel):
+        try:
+            open_ = t.end() - 1
+            close = matching_brace(routing_skel, open_)
+        except ValueError:
+            continue
+        body = routing_skel[open_:close]
+        if not re.search(code_pattern('RoutingModeModel.pollVerdicts('), body):
+            continue
+        first_await = re.search(r'\bawait\b', body)
+        binding = re.search(code_pattern('let alert = $alertMessage'), body)
+        for a in re.finditer(code_pattern(
+                'model.reportError = { alert.wrappedValue = $0 }'), body):
+            at = open_ + a.start()
+            if (binding and binding.start() < a.start()
+                    and first_await and a.start() < first_await.start()
+                    and not early_return_before(routing_skel, at)
+                    and not unreachable(routing_skel, at)
+                    and not unreachable(routing_skel, open_ + binding.start())):
+                return True
     return False
 
 
@@ -637,14 +668,21 @@ def routing_uses_segmented_picker():
                     and not dead_modifier(routing_skel, start, chain_at)
                     and off_option(labels, label_skel)
                     for start, args, (labels, label_skel), chain_at in pickers)
-            and has_code(routing_skel, 'client.routingModes()')
-            and has_code(routing_skel, 'client.setRoutingMode(name: name, mode: mode)'))
+            # The model (behavior covered by RegressionTests) is the view's
+            # state object and talks to the real engine client by default.
+            and has_code(routing_skel, '@StateObject private var model = RoutingModeModel()')
+            and has_code(mode_model_skel, 'init(client: any RoutingModeClient = EngineClient(),')
+            and has_code(mode_model_skel, 'scheduleReload: @escaping () -> Void = EngineClient.scheduleArtifactReload,')
+            and has_code(swift_code_skeleton(engine), 'extension EngineClient: RoutingModeClient {}')
+            and has_code(routing_skel, 'await model.reloadModes()')
+            and routing_errors_reach_alert())
 
 
 app_skel = swift_code_skeleton(app)
 display_skel = swift_code_skeleton(display)
 routing_skel = swift_code_skeleton(routing)
 routing_source = swift_code_skeleton(routing, keep_literals=True)
+mode_model_skel = swift_code_skeleton(mode_model)
 
 checks = {
     'app starts the StateObject instance': app_starts_status_store(),

@@ -18,6 +18,37 @@ final class DeliveryGate {
     func accept() { deliveryWaiter?.resume(); deliveryWaiter = nil }
 }
 
+/// RoutingModeClient の偽物。呼ばれた引数を記録し、返す値・投げるエラー・
+/// routingModes の応答タイミング（modesGate）を外から設定できる。
+@MainActor
+final class FakeRoutingModeClient: RoutingModeClient {
+    var setCalls: [(name: String, mode: String)] = []
+    var modesCalls = 0
+    var refreshCalls = 0
+    var setResult: [RoutingModeEntry] = []
+    var setError: Error?
+    var modesResult: [RoutingModeEntry] = []
+    var modesError: Error?
+    var modesGate: (() async -> Void)?
+
+    func routingModes() async throws -> [RoutingModeEntry] {
+        modesCalls += 1
+        // 応答は呼び出し時点のものを返す（ゲート後に差し替えても古い応答のまま）。
+        let gate = modesGate
+        let result = modesResult
+        let error = modesError
+        if let gate { await gate() }
+        if let error { throw error }
+        return result
+    }
+    func setRoutingMode(name: String, mode: String) async throws -> [RoutingModeEntry] {
+        setCalls.append((name: name, mode: mode))
+        if let setError { throw setError }
+        return setResult
+    }
+    func refresh() async throws { refreshCalls += 1 }
+}
+
 @main
 struct RegressionTests {
     static var checks = 0
@@ -422,6 +453,102 @@ struct RegressionTests {
         let dedupedFlags = dedupedMenu.map { $0.inLayout }
         check(dedupedIds == ["claude:weekly", "claude:5h"] && dedupedFlags == [true, false],
               "both panels resolve to the same window, shown once at the first slot")
+
+        // RoutingModeModel（振り分けタブのモード切り替え）を偽のクライアントで動かす。
+        let routingClient = FakeRoutingModeClient()
+        var scheduledReloads = 0
+        var routingErrors: [String] = []
+        let routingModel = RoutingModeModel(client: routingClient,
+            scheduleReload: { scheduledReloads += 1 },
+            reportError: { routingErrors.append($0) })
+        routingClient.setResult = [RoutingModeEntry(name: "w1", mode: "burn", until: nil)]
+        let setTask = routingModel.setMode(named: "w1", mode: "burn")
+        check(setTask != nil && routingModel.modeBusy, "setMode marks busy while running")
+        await setTask?.value
+        check(routingClient.setCalls.count == 1
+              && routingClient.setCalls[0].name == "w1" && routingClient.setCalls[0].mode == "burn",
+              "setMode calls the engine once with the worker name and mode")
+        check(routingModel.modeEntries.count == 1 && routingModel.modeEntries[0].name == "w1"
+              && routingModel.modeEntries[0].mode == "burn",
+              "modeEntries are replaced by the reply")
+        check(routingModel.modeLoaded && !routingModel.modeBusy, "setMode clears busy when finished")
+        check(routingClient.refreshCalls == 1 && scheduledReloads == 1,
+              "setMode refreshes the engine and schedules an artifact reload")
+        check(routingErrors.isEmpty, "a successful setMode reports no error")
+        check(routingModel.setMode(named: "", mode: "off") == nil && routingClient.setCalls.count == 1,
+              "an empty worker name does not call the engine")
+        check(routingModel.mode(for: "w1") == "burn" && routingModel.mode(for: "nobody") == "standard"
+              && routingModel.mode(for: nil) == "standard",
+              "mode(for:) falls back to standard for missing and nil names")
+
+        let failingClient = FakeRoutingModeClient()
+        failingClient.setError = EngineError(message: "set failed")
+        failingClient.modesResult = [RoutingModeEntry(name: "w2", mode: "off", until: nil)]
+        var failureErrors: [String] = []
+        let failingModel = RoutingModeModel(client: failingClient,
+            scheduleReload: {}, reportError: { failureErrors.append($0) })
+        await failingModel.setMode(named: "w2", mode: "burn")?.value
+        check(failureErrors == ["set failed"], "a failed setMode surfaces the error text")
+        check(failingClient.modesCalls == 1 && failingClient.refreshCalls == 0,
+              "a failed setMode reloads the mode list instead of refreshing")
+        check(failingModel.modeEntries.count == 1 && failingModel.modeEntries[0].name == "w2"
+              && !failingModel.modeBusy,
+              "a failed setMode keeps the reloaded list and clears busy")
+
+        // 世代番号: 進行中の古い reloadModes の応答は新しい一覧を上書きしない。
+        let gatedClient = FakeRoutingModeClient()
+        let gatedModel = RoutingModeModel(client: gatedClient)
+        let modeGate = DeliveryGate()
+        gatedClient.modesResult = [RoutingModeEntry(name: "stale", mode: "off", until: nil)]
+        gatedClient.modesGate = { await modeGate.deliver() }
+        async let staleReload: Void = gatedModel.reloadModes()
+        await modeGate.waitForStart()
+        gatedClient.modesGate = nil
+        gatedClient.modesResult = [RoutingModeEntry(name: "fresh", mode: "burn", until: nil)]
+        await gatedModel.reloadModes()
+        check(gatedModel.modeEntries.first?.name == "fresh", "the newer reload applies its reply")
+        modeGate.accept()
+        await staleReload
+        check(gatedModel.modeEntries.count == 1 && gatedModel.modeEntries[0].name == "fresh",
+              "a stale routingModes reply does not overwrite a newer list")
+
+        // 世代番号: 進行中の古い reloadModes は setMode 成功の一覧を上書きしない。
+        let staleGateClient = FakeRoutingModeClient()
+        let staleGateModel = RoutingModeModel(client: staleGateClient)
+        let staleGate = DeliveryGate()
+        staleGateClient.modesResult = [RoutingModeEntry(name: "stale", mode: "off", until: nil)]
+        staleGateClient.modesGate = { await staleGate.deliver() }
+        async let heldReload: Void = staleGateModel.reloadModes()
+        await staleGate.waitForStart()
+        staleGateClient.setResult = [RoutingModeEntry(name: "w3", mode: "burn", until: nil)]
+        await staleGateModel.setMode(named: "w3", mode: "burn")?.value
+        check(staleGateModel.modeEntries.count == 1 && staleGateModel.modeEntries[0].name == "w3",
+              "a setMode reply replaces the mode list")
+        staleGate.accept()
+        await heldReload
+        check(staleGateModel.modeEntries.count == 1 && staleGateModel.modeEntries[0].name == "w3",
+              "a stale routingModes reply does not overwrite the setMode reply")
+
+        // pollVerdicts: sleep が投げるまで sleep → reload を繰り返す。
+        var pollSleeps = 0
+        var pollReloads = 0
+        await RoutingModeModel.pollVerdicts(
+            isCancelled: { false },
+            sleep: {
+                pollSleeps += 1
+                if pollSleeps == 3 { throw EngineError(message: "stop") }
+            },
+            reload: { pollReloads += 1 })
+        check(pollSleeps == 3 && pollReloads == 2,
+              "pollVerdicts reloads once per completed sleep and exits when sleep throws")
+        var cancelledSleeps = 0
+        var cancelledReloads = 0
+        await RoutingModeModel.pollVerdicts(
+            isCancelled: { true },
+            sleep: { cancelledSleeps += 1 },
+            reload: { cancelledReloads += 1 })
+        check(cancelledSleeps == 0 && cancelledReloads == 0,
+              "a poll cancelled from the start never sleeps or reloads")
 
         print("Regression checks: \(checks) passed")
     }
