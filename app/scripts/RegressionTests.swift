@@ -106,6 +106,60 @@ struct RegressionTests {
         let matching = LayoutSettingsView.restoreLayout(config: configPanels, status: matchingStatus)
         check(matching.resolvedSubs["alpha:week"] == ["alpha:resolved"], "matching status supplies resolved subs")
 
+        // second_bar（小パネルの 2 本目のバー）: nil = キー省略（自動）、true/false は
+        // 往復で保持。large では書き出さない。NSNull・型違いは nil。
+        let secondBarDoc = try ConfigDocument(data: Data(#"{"layout":{"panels":[{"main":"alpha:week","size":"large","second_bar":true},{"main":"beta:day","size":"small","second_bar":true},{"main":"gamma:day","size":"small","second_bar":false},{"main":"delta:day","size":"small"},{"main":"epsilon:day","size":"small","second_bar":null},{"main":"zeta:day","size":"small","second_bar":"yes"}]}}"#.utf8))
+        let secondBarPanels = secondBarDoc.layoutPanels
+        check(secondBarPanels.map(\.secondBar) == [true, true, false, nil, nil, nil],
+              "second_bar decodes; missing, null and wrong type are nil")
+        var secondBarRewrite = secondBarDoc
+        secondBarRewrite.layoutPanels = secondBarPanels
+        let rewrittenPanels = (secondBarRewrite.object["layout"] as? [String: Any])?["panels"] as? [[String: Any]]
+        check(rewrittenPanels?.count == secondBarPanels.count, "rewrite keeps every panel")
+        check(rewrittenPanels?[0]["second_bar"] == nil, "large never writes second_bar")
+        check(rewrittenPanels?[1]["second_bar"] as? Bool == true
+              && rewrittenPanels?[2]["second_bar"] as? Bool == false,
+              "small keeps explicit second_bar")
+        check(rewrittenPanels?[3]["second_bar"] == nil && rewrittenPanels?[4]["second_bar"] == nil
+              && rewrittenPanels?[5]["second_bar"] == nil, "nil second_bar omits the key")
+
+        // status.json の layout にも second_bar が付くことがある（無くてもよい・型違いは nil）
+        let secondBarStatus = try JSONDecoder().decode([LayoutPanel].self,
+            from: Data(#"[{"main":"beta:day","size":"small","second_bar":true},{"main":"gamma:day","size":"small","second_bar":"yes"}]"#.utf8))
+        check(secondBarStatus[0].secondBar == true && secondBarStatus[1].secondBar == nil,
+              "status layout second_bar decodes; wrong type is nil")
+
+        // 小スロットへの復元と保存の往復。空の段・大スロットには付かない。
+        var secondBarSlots = LayoutSettingsView.emptySlots()
+        var secondBarSplits = [Bool](repeating: false, count: LayoutSettingsView.columnCount)
+        secondBarSplits[0] = true
+        secondBarSplits[1] = true
+        secondBarSlots[LayoutSettingsView.slotIndex(0, 1)].main = "beta:day"
+        secondBarSlots[LayoutSettingsView.slotIndex(0, 1)].secondBar = true
+        secondBarSlots[LayoutSettingsView.slotIndex(0, 2)].main = "gamma:day"
+        secondBarSlots[LayoutSettingsView.slotIndex(0, 2)].secondBar = false
+        secondBarSlots[LayoutSettingsView.slotIndex(1, 1)].secondBar = true // 空の段: 保存されない
+        secondBarSlots[LayoutSettingsView.slotIndex(1, 2)].main = "delta:day"
+        secondBarSlots[LayoutSettingsView.slotIndex(2, 0)].main = "alpha:week"
+        secondBarSlots[LayoutSettingsView.slotIndex(2, 0)].secondBar = true // large: 保存されない
+        let secondBarSaved = LayoutSettingsView.panelsForSave(slots: secondBarSlots, splits: secondBarSplits)
+        check(secondBarSaved.map(\.main) == ["beta:day", "gamma:day", "", "delta:day", "alpha:week"],
+              "second bar slots keep the panel order")
+        check(secondBarSaved.map(\.secondBar) == [true, false, nil, nil, nil],
+              "second_bar saves on filled small rows only")
+        let secondBarRestored = LayoutSettingsView.restoreLayout(config: secondBarSaved, status: [])
+        check(secondBarRestored.splits[0] && secondBarRestored.splits[1],
+              "small pairs restore as split columns")
+        check(secondBarRestored.slots[LayoutSettingsView.slotIndex(0, 1)].secondBar == true
+              && secondBarRestored.slots[LayoutSettingsView.slotIndex(0, 2)].secondBar == false
+              && secondBarRestored.slots[LayoutSettingsView.slotIndex(1, 2)].secondBar == nil
+              && secondBarRestored.slots[LayoutSettingsView.slotIndex(2, 0)].secondBar == nil,
+              "second_bar round-trips through restore and save")
+        check(LayoutSettingsView.acceptsSecondBar("beta:day") && LayoutSettingsView.acceptsSecondBar("beta")
+              && !LayoutSettingsView.acceptsSecondBar("calendar") && !LayoutSettingsView.acceptsSecondBar("local:x")
+              && !LayoutSettingsView.acceptsSecondBar("") && !LayoutSettingsView.acceptsSecondBar(nil),
+              "second bar is offered for windows and services but not calendar or local")
+
         // ローカル LLM サーバー ([providers.local.<名前>]) は主枠の候補に出る。
         // 表示名は label、無ければ名前。enabled = false と壊れた形の台は外す。
         // サブ窓の候補には出さない。

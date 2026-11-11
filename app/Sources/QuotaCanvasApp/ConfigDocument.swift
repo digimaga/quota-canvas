@@ -268,18 +268,22 @@ struct ConfigDocument {
         var main: String
         var subs: [String]? // nil = 自動（キー省略で送る）、[] = 明示的にサブなし
         var size: String    // "large" | "small"
+        /// small だけ意味がある: 小パネルの下に 2 本目のバー（短い窓）を出すか。
+        /// nil = 自動（キー省略で送る）。large では書き出さない。
+        var secondBar: Bool? = nil
     }
 
-    /// 手動配置。subs のキーなし / null = 自動。layout 配下の他のキーは保持する。
+    /// 手動配置。subs / second_bar のキーなし / null = 自動。layout 配下の他のキーは保持する。
     var layoutPanels: [PanelConfig] {
         get {
             guard let layout = object["layout"] as? [String: Any],
                   let panels = layout["panels"] as? [[String: Any]] else { return [] }
             return panels.map { p in
-                // NSNull / キーなしも `as? [String]` で nil（自動）になる。[] は [] のまま。
+                // NSNull / キーなしも `as?` で nil（自動）になる。[] は [] のまま。
                 PanelConfig(main: p["main"] as? String ?? "",
                             subs: p["subs"] as? [String],
-                            size: p["size"] as? String ?? "large")
+                            size: p["size"] as? String ?? "large",
+                            secondBar: p["second_bar"] as? Bool)
             }
         }
         set {
@@ -287,6 +291,10 @@ struct ConfigDocument {
             layout["panels"] = newValue.map { p in
                 var dict: [String: Any] = ["main": p.main, "size": p.size]
                 if let subs = p.subs { dict["subs"] = subs } // nil はキーごと省略（= 自動）
+                // second_bar は small だけ意味があるので、large では書き出さない
+                if p.size == "small", let secondBar = p.secondBar {
+                    dict["second_bar"] = secondBar
+                }
                 return dict
             }
             object["layout"] = layout

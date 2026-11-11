@@ -330,15 +330,18 @@ struct LayoutPanel: Decodable {
     var main: String?
     var subs: [String]?
     var size: String?
+    /// 実際に 2 本目のバーを出したか（付かないこともある）。型が違うときは nil。
+    var secondBar: Bool?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         main = try? c.decodeIfPresent(String.self, forKey: .main)
         subs = try? c.decodeIfPresent([String].self, forKey: .subs)
         size = try? c.decodeIfPresent(String.self, forKey: .size)
+        secondBar = try? c.decodeIfPresent(Bool.self, forKey: .secondBar)
     }
 
-    enum CodingKeys: String, CodingKey { case main, subs, size }
+    enum CodingKeys: String, CodingKey { case main, subs, size, secondBar = "second_bar" }
 }
 
 // MARK: - detect --json models

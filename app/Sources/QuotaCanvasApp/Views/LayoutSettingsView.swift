@@ -43,6 +43,7 @@ struct LayoutSettingsView: View {
         let title: String
         var main: String?   // 窓 ID（nil = 空）
         var subs: [String]? // 大スロットのみ（最大 maxSubs）。nil = 自動、[] = 明示的にサブなし
+        var secondBar: Bool? = nil // 小スロットのみ。nil = 自動
     }
 
     /// 列内の行 → slots の添字。0 = 大 / 1 = 小 上段 / 2 = 小 下段
@@ -184,6 +185,20 @@ struct LayoutSettingsView: View {
             .pickerStyle(.menu)
             .frame(width: 300, alignment: .leading)
 
+            if slot.size == "small" && Self.acceptsSecondBar(slot.main) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("2本目のバー（短い窓）", selection: secondBarBinding(slot)) {
+                        Text("自動").tag(Bool?.none)
+                        Text("表示する").tag(Bool?.some(true))
+                        Text("表示しない").tag(Bool?.some(false))
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 300, alignment: .leading)
+                    Text("自動: OpenCode Go・OpenDesign Go・Gemini・Devin の小パネルで、5 時間枠などの短い窓を 2 本目のバーに出します。")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+
             if slot.size == "large" && Self.acceptsSubs(slot.main) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
@@ -287,6 +302,13 @@ struct LayoutSettingsView: View {
         return !isCalendar(main)
     }
 
+    /// 2 本目のバーを選べる主枠か。small だけの設定で、カレンダー・ローカル LLM
+    /// (local:<名前>) 以外の窓/サービスが対象。主枠が空の段は保存されないので選ばせない。
+    static func acceptsSecondBar(_ main: String?) -> Bool {
+        guard let main, !main.isEmpty, !isCalendar(main) else { return false }
+        return !main.hasPrefix("local:")
+    }
+
     /// サブ窓の候補: 主枠と同じサービスの窓（主枠自身を除く）。以前に別サービスの窓を
     /// サブにしていた設定は、外せるように選択中のものだけ残す。
     static func subCandidates(main: String?, windows: [WindowChoice], selected: [String]) -> [WindowChoice] {
@@ -320,6 +342,7 @@ struct LayoutSettingsView: View {
                 guard let index = slots.firstIndex(where: { $0.id == slot.id }) else { return }
                 slots[index].main = newValue.isEmpty ? nil : newValue
                 slots[index].subs = nil // 主枠を選び直したらサブは自動に戻す
+                slots[index].secondBar = nil // 2 本目のバーも自動に戻す
                 commit()
             }
         )
@@ -342,6 +365,18 @@ struct LayoutSettingsView: View {
                     selection.removeAll { $0 == windowID }
                 }
                 slots[index].subs = selection
+                commit()
+            }
+        )
+    }
+
+    /// 小スロットの 2 本目のバー。nil = 自動。
+    private func secondBarBinding(_ slot: LayoutSlot) -> Binding<Bool?> {
+        Binding<Bool?>(
+            get: { slots.first { $0.id == slot.id }?.secondBar },
+            set: { newValue in
+                guard let index = slots.firstIndex(where: { $0.id == slot.id }) else { return }
+                slots[index].secondBar = newValue
                 commit()
             }
         )
@@ -371,6 +406,7 @@ struct LayoutSettingsView: View {
                 if on {
                     if let main = slots[li].main, !main.isEmpty {
                         slots[ti].main = main
+                        slots[ti].secondBar = nil // 別の主枠が入るので自動に戻す
                         slots[li].main = nil
                     }
                     slots[li].subs = nil
@@ -383,7 +419,9 @@ struct LayoutSettingsView: View {
                         slots[li].subs = nil // 小スロットにサブはないので自動に戻す
                     }
                     slots[ti].main = nil
+                    slots[ti].secondBar = nil
                     slots[bi].main = nil
+                    slots[bi].secondBar = nil
                     if selectedSlotID == slots[ti].id || selectedSlotID == slots[bi].id {
                         selectedSlotID = slots[li].id
                     }
@@ -398,6 +436,7 @@ struct LayoutSettingsView: View {
         guard let index = slots.firstIndex(where: { $0.id == slot.id }) else { return }
         slots[index].main = nil
         slots[index].subs = nil
+        slots[index].secondBar = nil
         commit()
     }
 
@@ -412,6 +451,7 @@ struct LayoutSettingsView: View {
         for index in slots.indices {
             slots[index].main = nil
             slots[index].subs = nil
+            slots[index].secondBar = nil
         }
         for index in splits.indices { splits[index] = false }
         selectedSlotID = nil
@@ -432,6 +472,13 @@ struct LayoutSettingsView: View {
             // 大↔小: 小側にはサブがないので、main をもらった大側のサブは自動に戻す
             if source.size == "large" { source.subs = nil }
             if target.size == "large" { target.subs = nil }
+        }
+        if source.size == "small" && target.size == "small" {
+            swap(&source.secondBar, &target.secondBar)
+        } else {
+            // 大↔小: secondBar は小スロットだけの設定なので、main をもらった小側は自動に戻す
+            if source.size == "small" { source.secondBar = nil }
+            if target.size == "small" { target.secondBar = nil }
         }
         slots[s] = source
         slots[t] = target
@@ -524,6 +571,7 @@ struct LayoutSettingsView: View {
             if isSmall {
                 if !main.isEmpty {
                     next[slotIndex(col, continues ? 2 : 1)].main = main
+                    next[slotIndex(col, continues ? 2 : 1)].secondBar = panel.secondBar
                 }
             } else {
                 next[slotIndex(col, 0)].main = main.isEmpty ? nil : main
@@ -556,11 +604,14 @@ struct LayoutSettingsView: View {
         var panels: [ConfigDocument.PanelConfig] = []
         for col in 0..<Self.columnCount {
             if splits[col] {
-                let top = slots[Self.slotIndex(col, 1)].main
-                let bottom = slots[Self.slotIndex(col, 2)].main
-                guard top != nil || bottom != nil else { continue }
-                panels.append(ConfigDocument.PanelConfig(main: top ?? "", subs: nil, size: "small"))
-                panels.append(ConfigDocument.PanelConfig(main: bottom ?? "", subs: nil, size: "small"))
+                let top = slots[Self.slotIndex(col, 1)]
+                let bottom = slots[Self.slotIndex(col, 2)]
+                guard top.main != nil || bottom.main != nil else { continue }
+                // secondBar は small だけの設定。空の段（main ""）には付けない
+                panels.append(ConfigDocument.PanelConfig(main: top.main ?? "", subs: nil, size: "small",
+                                                         secondBar: top.main?.isEmpty == false ? top.secondBar : nil))
+                panels.append(ConfigDocument.PanelConfig(main: bottom.main ?? "", subs: nil, size: "small",
+                                                         secondBar: bottom.main?.isEmpty == false ? bottom.secondBar : nil))
             } else {
                 let large = slots[Self.slotIndex(col, 0)]
                 if let main = large.main, !main.isEmpty {
@@ -624,6 +675,11 @@ private struct SlotCard: View {
             if slot.size == "large" && LayoutSettingsView.acceptsSubs(slot.main) {
                 Text(subSummary)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            if slot.size == "small", slot.main?.isEmpty == false, let secondBar = slot.secondBar {
+                // 明示したときだけ小さなバッジで分かるようにする（自動は表示しない）
+                Text(secondBar ? String(localized: "2本目のバー: 出す") : String(localized: "2本目のバー: 出さない"))
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
         }
         .padding(8)
