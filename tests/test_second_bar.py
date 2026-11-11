@@ -156,6 +156,94 @@ def test_render_single_when_off(monkeypatch):
     assert "5時間" not in calls
 
 
+def _two_windows(provider, five_used, weekly_used):
+    weekly = Window(provider, "weekly", "週間", weekly_used,
+                    NOW + timedelta(days=5), timedelta(days=7))
+    five = Window(provider, "5h", "5時間", five_used,
+                  NOW + timedelta(hours=2), timedelta(hours=5))
+    wins = [five, weekly]
+    pu = ProviderUsage(provider, provider.title(), wins, None, NOW)
+    return [(pu, compute_pace(w, [], NOW)) for w in wins]
+
+
+def _drawn_texts(monkeypatch):
+    calls = []
+    orig = ImageDraw.ImageDraw.text
+
+    def spy(self, xy, text, **kw):
+        calls.append(text)
+        return orig(self, xy, text, **kw)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", spy)
+    return calls
+
+
+def test_badge_follows_worse_weekly_when_main_is_5h(monkeypatch):
+    # 5 時間と週間は同じ枠を使う。5 時間が余裕でも、週間がペース超過なら
+    # バッジは「ペース超過」 (「余裕あり」で隠さない)
+    cards = _two_windows("opendesign", five_used=10.0, weekly_used=60.0)
+    assert cards[0][1].status.name == "SPARE"
+    assert cards[1][1].status.name == "OVER"
+    calls = _drawn_texts(monkeypatch)
+    render(cards, NOW,
+           layout=[PanelSpec(main="opendesign:5h", size="small")])
+    assert "ペース超過" in calls
+    assert "余裕あり" not in calls
+
+
+def test_badge_keeps_main_when_second_is_not_worse(monkeypatch):
+    # 両方が余裕ならメインのまま「余裕あり」
+    cards = _two_windows("opendesign", five_used=10.0, weekly_used=10.0)
+    assert cards[0][1].status.name == "SPARE"
+    assert cards[1][1].status.name == "SPARE"
+    calls = _drawn_texts(monkeypatch)
+    render(cards, NOW,
+           layout=[PanelSpec(main="opendesign:5h", size="small")])
+    assert "余裕あり" in calls
+    assert "ペース超過" not in calls
+
+
+def test_badge_keeps_5h_main_when_5h_is_worse(monkeypatch):
+    # メインの 5 時間の方が悪く週間が余裕なら、バッジはメインの悪い方のまま
+    # (「余裕あり」に引き上げない)
+    cards = _two_windows("opendesign", five_used=95.0, weekly_used=10.0)
+    assert cards[0][1].status.name != "SPARE"
+    assert cards[1][1].status.name == "SPARE"
+    calls = _drawn_texts(monkeypatch)
+    render(cards, NOW,
+           layout=[PanelSpec(main="opendesign:5h", size="small")])
+    assert "余裕あり" not in calls
+
+
+def test_gauge_state_color_stays_main_window_when_badge_defers(monkeypatch):
+    # バッジが週間に合わせて変わっても、メインゲージの予測ハッチ色
+    # (state_color) はメイン窓自身の状態のまま
+    import quotacanvas.render as render_mod
+    cards = _two_windows("opendesign", five_used=10.0, weekly_used=60.0)
+    seen = []
+    orig = render_mod._draw_gauge
+
+    def spy(s, box, win, pace, theme, state_color, *a, **kw):
+        seen.append((win.key, state_color))
+        return orig(s, box, win, pace, theme, state_color, *a, **kw)
+
+    monkeypatch.setattr(render_mod, "_draw_gauge", spy)
+    render(cards, NOW,
+           layout=[PanelSpec(main="opendesign:5h", size="small")])
+    five_color = render_mod._STATUS_COLOR[cards[0][1].status]
+    assert ("5h", five_color) in seen
+
+
+def test_badge_keeps_weekly_main_even_if_5h_is_worse(monkeypatch):
+    # メインが週間なら短い窓には引きずられない
+    cards = _two_windows("opendesign", five_used=95.0, weekly_used=10.0)
+    assert cards[1][1].status.name == "SPARE"
+    calls = _drawn_texts(monkeypatch)
+    render(cards, NOW,
+           layout=[PanelSpec(main="opendesign:weekly", size="small")])
+    assert "余裕あり" in calls
+
+
 def _cfg(tmp_path, body):
     p = tmp_path / "config.toml"
     p.write_text(textwrap.dedent(body), encoding="utf-8")

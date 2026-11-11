@@ -1793,8 +1793,21 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     x0, y0, x1, y1 = box
     mp = main_item[1]
     win = mp.window
-    color = _STATUS_COLOR[mp.status]        # badge == main status (no subs)
     dual = second is not None
+    # バッジ・左の帯・アドバイス行は、メインの窓の状態を基本にする。ただし
+    # メインが 1 日未満の短い窓 (5 時間など) で、2 本目の 1 日以上の窓 (週間
+    # など) の方が悪いときは、そちらの状態にする (悪い方を隠さない)。5 時間と
+    # 週間は同じ枠を消費するので、週間がペース超過なのに 5 時間の「余裕あり」
+    # だけが出るのを防ぐ。メインが悪いときはメインのまま。大きな % の色と
+    # ゲージの予測ハッチ (state_color) はメイン窓自身の状態のまま。
+    bp = mp
+    if dual and win.length < timedelta(days=1):
+        sp = second[2]
+        if sp.window.length >= timedelta(days=1) \
+                and _STATUS_RANK[sp.status] > _STATUS_RANK[mp.status]:
+            bp = sp
+    color = _STATUS_COLOR[bp.status]
+    gauge_color = _STATUS_COLOR[mp.status]
 
     s.rrect(box, radius=CARD_RADIUS, fill=CARD_BG)
     s.rrect((x0, y0, x0 + 6, y1), radius=3, fill=color,
@@ -1805,7 +1818,7 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     cw = tx1 - tx0
 
     # -- 1. header: theme dot + "サービス名 · 窓ラベル", badge on the right --
-    badge = _badge(mp.status)
+    badge = _badge(bp.status)
     bf = F("w6", 13)
     bh = 22
     bx1 = tx1
@@ -1869,7 +1882,7 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     gy0, gy1 = (y0 + 108, y0 + 122) if dual else (y0 + 122, y0 + 140)
     s.line((tx0, y0 + (96 if dual else 108), tx1, y0 + (96 if dual else 108)),
            fill=DIVIDER, width=1)
-    _draw_gauge(s, (tx0, gy0, tx1, gy1), win, mp, theme, color,
+    _draw_gauge(s, (tx0, gy0, tx1, gy1), win, mp, theme, gauge_color,
                 gauge, marker=0.7 if dual else 0.8, marks=False,
                 parts=[(w.used_percent, c) for w, c in (parts or [])])
     if dual:
@@ -1877,13 +1890,13 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
 
     # -- 4. reset countdown + reset credits + compact advice ------------------
     credits = list(getattr(main_item[0], "reset_credits", None) or [])
-    adv = advice_text(mp, True, now)
+    adv = advice_text(bp, True, now)
     af, adv_shown = _fit_text(s, adv, "w6", 15, cw, min_size=10)
 
     if dual:
         # リセット表示は % の右に出した。下はアドバイス行だけ (リセット権の
         # 行は縦が足りず省略)。
-        s.text((tx0, y1 - 8), adv_shown, font=af, fill=advice_color(mp),
+        s.text((tx0, y1 - 8), adv_shown, font=af, fill=advice_color(bp),
                anchor="ls")
         return
 
