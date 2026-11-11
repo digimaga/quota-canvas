@@ -113,7 +113,7 @@ def test_5h_bedtime_tight_keeps_heads():
     assert pace.status is PaceStatus.TIGHT
     pace.bedtime_at = NOW + timedelta(hours=3)
     assert advice_text(pace, compact=True, now=NOW) == \
-        "適正ペース · 残り81% · 寝るまで3時間"
+        "残り81% · 寝るまで3時間"
     assert advice_text(pace, compact=False, now=NOW) == \
         "ほぼ使い切れる見込み · 残り81% · 寝るまで3時間"
 
@@ -160,7 +160,7 @@ def test_weekly_last_unit_normal():
 @pytest.mark.parametrize("used,compact_expected,normal_expected", [
     (97.0, "リセットまで18分",
      "ペースを落とす · リセットまでの18分は残り3%で"),
-    (93.5, "適正ペース · リセットまで18分",
+    (93.5, "リセットまで18分",
      "ほぼ使い切れる見込み · リセットまで18分"),
     (92.0, "リセットまで18分",
      "リセットまで18分、残り8%は使い切ってよい"),
@@ -229,6 +229,47 @@ def test_over_compact_english_omits_badge_word(used, resets_in, length, expected
     try:
         pace = _pace(used, resets_in, length)
         assert pace.status is PaceStatus.OVER
+        assert advice_text(pace, compact=True, now=NOW) == expected
+    finally:
+        i18n.set_language(old)
+
+
+@pytest.mark.parametrize("lang,used,resets_in,length,expected", [
+    ("ja", 19.5, timedelta(hours=4), timedelta(hours=5), "残り81% · あと4時間"),
+    ("ja", 93.5, timedelta(minutes=18), timedelta(hours=5), "リセットまで18分"),
+    ("en", 19.5, timedelta(hours=4), timedelta(hours=5), "81% left · in 4h"),
+    ("en", 93.5, timedelta(minutes=18), timedelta(hours=5), "Resets in 18m"),
+    ("ja", 27.5, timedelta(days=5), timedelta(days=7), "1日 約15%まで"),
+    ("en", 27.5, timedelta(days=5), timedelta(days=7), "Up to 15%/day"),
+], ids=["ja_hourly", "ja_last_unit", "en_hourly", "en_last_unit",
+        "ja_per_day", "en_per_day"])
+def test_tight_compact_omits_badge_word(lang, used, resets_in, length, expected):
+    # 適正ペースもカード右上のバッジに出るので、compact のアドバイス行には繰り返さない
+    from quotacanvas import i18n
+    old = i18n.current_language()
+    i18n.set_language(lang)
+    try:
+        pace = _pace(used, resets_in, length)
+        assert pace.status is PaceStatus.TIGHT
+        assert advice_text(pace, compact=True, now=NOW) == expected
+    finally:
+        i18n.set_language(old)
+
+
+@pytest.mark.parametrize("lang,expected", [
+    ("ja", "ほぼ使い切れる見込み"), ("en", "On pace to use it all"),
+])
+def test_tight_compact_without_tail_uses_non_badge_wording(lang, expected):
+    from quotacanvas import i18n
+    win = Window("codex", "weekly", "週間", 30.0, NOW + timedelta(days=5),
+                 timedelta(days=7))
+    pace = Pace(window=win, status=PaceStatus.TIGHT, elapsed_fraction=0.3,
+                ideal_used_percent=30.0, rate_per_day=None,
+                projected_end_percent=None, exhausts_at=None,
+                sustainable_per_day=None, adjust_percent=None, daily_used=[])
+    old = i18n.current_language()
+    i18n.set_language(lang)
+    try:
         assert advice_text(pace, compact=True, now=NOW) == expected
     finally:
         i18n.set_language(old)
