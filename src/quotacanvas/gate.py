@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from .atomic import atomic_write
+from .models import ROUTING_ONLY_WINDOWS
 from .platform_support.paths import data_dir
 from .i18n import t
 
@@ -591,7 +592,9 @@ def _judge(entry: dict, floor_percent: float, floor_hours: float, now: datetime,
 
 def _match_windows(patterns: List[str], windows: List[dict]) -> List[dict]:
     """ワーカーの窓指定 (id 完全一致 or 末尾 * の前方一致) に合う独立窓だけ返す。
-    part_of 付きの内訳窓はどの指定でも判定に入れない。"""
+    part_of 付きの内訳窓はどの指定でも判定に入れない。判定専用の窓
+    (ROUTING_ONLY_WINDOWS。devin:free など) は id を名指ししたときだけ入れ、
+    "devin:*" のような前方一致では拾わない (有料の Lightning を無料枠の制限で止めない)。"""
     out: List[dict] = []
     for w in windows:
         if w.get("part_of"):
@@ -603,7 +606,7 @@ def _match_windows(patterns: List[str], windows: List[dict]) -> List[dict]:
             if not isinstance(p, str) or not p:
                 continue
             if p.endswith("*"):
-                if wid.startswith(p[:-1]):
+                if wid.startswith(p[:-1]) and wid not in ROUTING_ONLY_WINDOWS:
                     out.append(w)
                     break
             elif wid == p:
@@ -812,11 +815,15 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
                 provider=_one_provider(providers),
                 local=local_fields(entry) if entry else None))
             continue
-        if any(_is_stale_window(w, stale_min, now) for w in data_windows):
+        # 判定専用の窓 (devin:free。ローカルのファイルから毎回作り直す) だけに結ばれた
+        # ワーカーは、同じ provider の API の取得失敗・前回値 (stale) で unknown にしない
+        # (API が落ちていても利用制限中なら stop を出す)
+        file_only = bool(matched) and all(w.get("id") in ROUTING_ONLY_WINDOWS for w in matched)
+        if not file_only and any(_is_stale_window(w, stale_min, now) for w in data_windows):
             workers.append(WorkerResult(name=name, verdict="unknown", reason="stale",
                                         stale=True, provider=_one_provider(providers)))
             continue
-        if providers & errors:
+        if not file_only and providers & errors:
             workers.append(WorkerResult(name=name, verdict="unknown", reason="error",
                                         provider=_one_provider(providers)))
             continue

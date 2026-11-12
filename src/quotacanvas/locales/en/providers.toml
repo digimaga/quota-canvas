@@ -30,6 +30,7 @@ monthly = "Monthly"
 five_hours = "5h"
 days = "{n}d"
 hours = "{n}h"
+free_limit = "Free limit"
 
 [detect]
 claude = "Claude Code login (keychain)"
