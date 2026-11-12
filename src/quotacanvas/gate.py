@@ -66,6 +66,10 @@ DEFAULT_FLOOR_PERCENT = 5.0
 DEFAULT_FLOOR_HOURS = 24.0
 DEFAULT_STALE_MINUTES = 20
 
+# fetched_at / updated_at がこれより未来なら、時計ずれか壊れた値として判定不能
+# (stale) にする。数秒のずれは許容する。
+STALE_FUTURE_TOLERANCE_SECONDS = 120.0
+
 # 使い切りモード (burn) の状態ファイル。status.json と同じディレクトリ。
 BURN_PATH = data_dir() / "routing-burn.json"
 OFF_PATH = data_dir() / "routing-off.json"
@@ -111,7 +115,11 @@ def norm_status(value: Any) -> str:
 def norm_remaining(value: Any) -> Optional[float]:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def fmt_hhmm(dt: Optional[datetime]) -> Optional[str]:
@@ -140,7 +148,13 @@ def fmt_reset(value: Any, now: datetime) -> Optional[str]:
 def pct_str(remaining: Optional[float]) -> str:
     if remaining is None:
         return "?%"
-    return "%d%%" % round(remaining)
+    try:
+        number = float(remaining)
+    except (TypeError, ValueError, OverflowError):
+        return "?%"
+    if not math.isfinite(number):
+        return "?%"
+    return "%d%%" % round(number)
 
 
 def parse_until(value: str, now: datetime) -> Optional[datetime]:
@@ -230,10 +244,22 @@ def error_providers(status: Optional[dict]) -> Set[str]:
     return out
 
 
+def _age_seconds(timestamp: datetime, now: datetime) -> Optional[float]:
+    """timestamp から now までの経過秒数。計算できないほど極端な値なら None。"""
+    try:
+        return (now - to_local(timestamp)).total_seconds()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _is_stale_window(entry: dict, stale_minutes: int, now: datetime) -> bool:
     """その窓の残量を信用しないなら True。stale_error キーに null/空以外が入っている、
     または fetched_at が stale_minutes より古い (壊れた fetched_at も信用しない)。
-    fetched_at キーが無い窓は status.json 全体の新しさ判定 (load_status) に任せる。"""
+    fetched_at キーが無い窓は status.json 全体の新しさ判定 (load_status) に任せる。
+
+    未来時刻は許容誤差 (STALE_FUTURE_TOLERANCE_SECONDS) を超えると時計ずれ・
+    壊れた値とみなして True。stale_minutes が大きくても timedelta を作らず、
+    秒数の数値比較で判定する。"""
     if entry.get("stale_error"):
         return True
     if "fetched_at" not in entry:
@@ -241,7 +267,10 @@ def _is_stale_window(entry: dict, stale_minutes: int, now: datetime) -> bool:
     fetched = parse_dt(entry.get("fetched_at"))
     if fetched is None:
         return True
-    return (now - to_local(fetched)) > timedelta(minutes=stale_minutes)
+    age = _age_seconds(fetched, now)
+    if age is None or age < -STALE_FUTURE_TOLERANCE_SECONDS:
+        return True
+    return age > stale_minutes * 60
 
 
 def load_status(path: Path, stale_minutes: int = DEFAULT_STALE_MINUTES,
@@ -268,7 +297,11 @@ def load_status(path: Path, stale_minutes: int = DEFAULT_STALE_MINUTES,
     if updated is None:
         # updated_at が無い・壊れている → 新しさを検証できないので stale
         return "stale", data, "broken"
-    if (now - to_local(updated)) > timedelta(minutes=stale_minutes):
+    age = _age_seconds(updated, now)
+    if age is None or age < -STALE_FUTURE_TOLERANCE_SECONDS:
+        # 未来すぎる updated_at も新しさを検証できない (時計ずれ・壊れた値)
+        return "stale", data, "broken"
+    if age > stale_minutes * 60:
         return "stale", data, "old"
     return "ok", data, ""
 

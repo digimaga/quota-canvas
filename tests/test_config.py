@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 import tomllib
 from datetime import datetime, time, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -297,6 +300,170 @@ def test_mark_checked_silences_staleness(tmp_path):
     assert not cfg.is_stale()
 
 
+def test_mark_checked_does_not_hide_file_replaced_after_failed_load(tmp_path):
+    # 失敗した読み込みのあとに直されたファイルを「確認済み」にしてしまうと、
+    # 次のループでも読み直されず古い設定のままになる。
+    p = write_cfg(tmp_path, "[poll]\ninterval = 90\n")
+    cfg = load_config(p)
+    p.write_text("{ broken", encoding="utf-8")
+    assert cfg.is_stale()
+    with pytest.raises(ConfigError):
+        load_config(p)
+    p.write_text("[poll]\ninterval = 1200\n# fixed\n", encoding="utf-8")
+    cfg.mark_checked()
+    assert cfg.is_stale()
+
+
+def test_mark_checked_is_not_hidden_by_another_threads_success(tmp_path):
+    # 失敗の記録をパス単位の共有状態にすると、スレッド A の失敗の後に別スレッド
+    # が修正版の読み込みに成功した時点で記録が消え、A が mark_checked() した
+    # ときに未適用の修正版を確認済みにしてしまう。
+    p = write_cfg(tmp_path, "[poll]\ninterval = 90\n")
+    cfg = load_config(p)
+    failed = threading.Event()
+    proceed = threading.Event()
+    result = []
+
+    def worker():
+        p.write_text("{ broken", encoding="utf-8")
+        try:
+            load_config(p)
+        except ConfigError:
+            failed.set()
+        proceed.wait(10)
+        cfg.mark_checked()
+        result.append(cfg.is_stale())
+
+    t = threading.Thread(target=worker)
+    t.start()
+    try:
+        assert failed.wait(10)
+        # 別スレッドでは修正版の読み込みに成功する
+        p.write_text("[poll]\ninterval = 1200\n# fixed\n", encoding="utf-8")
+        assert load_config(p).poll.interval == 1200
+    finally:
+        proceed.set()
+        t.join(10)
+    assert result == [True]
+
+
+def test_mark_checked_accepts_failure_from_another_thread(tmp_path):
+    # 失敗を表す ConfigError を渡すと、その失敗を読んだ時点の状態を使う
+    # (別スレッドで起きた失敗でも、渡せばこのスレッドの記録に頼らない)。
+    p = write_cfg(tmp_path, "[poll]\ninterval = 90\n")
+    cfg = load_config(p)
+    p.write_text("{ broken", encoding="utf-8")
+    box = {}
+
+    def worker():
+        try:
+            load_config(p)
+        except ConfigError as exc:
+            box["exc"] = exc
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join(10)
+    exc = box["exc"]
+    assert exc.path == p
+    assert exc.state is not None
+    p.write_text("[poll]\ninterval = 1200\n# fixed\n", encoding="utf-8")
+    assert load_config(p).poll.interval == 1200
+    cfg.mark_checked(exc)
+    assert cfg.is_stale()
+
+
+def test_load_config_permission_error_records_pre_open_state(tmp_path, monkeypatch):
+    # open が PermissionError で失敗しても stat は成功するファイルで、失敗の
+    # 記録に None を入れると mark_checked() の後も常に stale になり、同じ警告を
+    # 毎ループ繰り返す。試行前に取った stat の状態を記録に使う。
+    p = write_cfg(tmp_path, "[poll]\ninterval = 90\n")
+    cfg = load_config(p)
+    before = p.stat()
+    real_open = Path.open
+
+    def denied_open(self, *args, **kwargs):
+        if self == p and args == ("rb",) and not kwargs:
+            raise PermissionError(13, "Permission denied", str(p))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied_open)
+    with pytest.raises(ConfigError) as ei:
+        load_config(p)
+    assert ei.value.path == p
+    assert ei.value.state == (before.st_mtime_ns, before.st_size)
+    cfg.mark_checked(ei.value)
+    assert not cfg.is_stale()
+    # 引数なしの既存の呼び出しでも、このスレッドの直近の失敗として同じ状態を使う
+    cfg.mark_checked()
+    assert not cfg.is_stale()
+    # 失敗の後にファイルが変わっていれば、これまでどおり stale のまま
+    p.write_text("[poll]\ninterval = 1200\n# fixed\n", encoding="utf-8")
+    cfg.mark_checked(ei.value)
+    assert cfg.is_stale()
+
+
+def test_load_config_file_created_during_open_is_stale(tmp_path, monkeypatch):
+    # 読み始めに無かったファイルが途中で作られても、その状態を「読み込み済み」に
+    # しない (内容は既定値のまま)。次のループで読み直せるよう stale になる。
+    p = tmp_path / "late.toml"
+    real_open = Path.open
+
+    def open_then_create(self, *args, **kwargs):
+        if self == p and args == ("rb",):
+            p.write_text("[poll]\ninterval = 90\n", encoding="utf-8")
+            raise FileNotFoundError(str(p))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_then_create)
+    cfg = load_config(p)
+    assert cfg.poll.interval == 900
+    assert cfg.is_stale()
+
+
+class _FileReplacedOnRead:
+    """read() の直後にパスを別ファイルへ置き換えるファイル風オブジェクト。"""
+
+    def __init__(self, fh, path, replacement):
+        self._fh = fh
+        self._path = path
+        self._replacement = replacement
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return self._fh.__exit__(*exc)
+
+    def fileno(self):
+        return self._fh.fileno()
+
+    def read(self, *args, **kwargs):
+        data = self._fh.read(*args, **kwargs)
+        os.replace(self._replacement, self._path)
+        return data
+
+
+def test_load_config_state_comes_from_the_opened_file(tmp_path, monkeypatch):
+    # 読んだ内容と状態は同じ記述子から取る。read 後にパスが置き換わっても、
+    # 古い内容に新しいファイルの状態を結び付けない (stale のまま読み直す)。
+    p = write_cfg(tmp_path, "[poll]\ninterval = 90\n")
+    replacement = write_cfg(tmp_path, "[poll]\ninterval = 1200\n# new\n",
+                            name="replacement.toml")
+    real_open = Path.open
+
+    def fake_open(self, *args, **kwargs):
+        fh = real_open(self, *args, **kwargs)
+        if self == p:
+            return _FileReplacedOnRead(fh, p, replacement)
+        return fh
+
+    monkeypatch.setattr(Path, "open", fake_open)
+    cfg = load_config(p)
+    assert cfg.poll.interval == 90
+    assert cfg.is_stale()
+
+
 # --- format_toml -----------------------------------------------------------------
 
 
@@ -378,6 +545,41 @@ def test_format_toml_layout_and_colors_roundtrip(tmp_path):
     assert parsed["providers"]["glm"]["color"] == "#3B82F6"
     # 読み戻した設定も同じ内容 (dict → Config → dict で不変)
     assert config_to_dict(config_from_dict(parsed)) == config_to_dict(cfg)
+
+
+def test_format_toml_keeps_floor_percent_precision(tmp_path):
+    # %g (有効数字 6 桁) だと 5.000001 が 5 になり、保存前後で floor の
+    # 厳密な比較 (<) が変わってしまう。
+    cfg = config_from_dict({"routing": {"floor_percent": 5.000001}})
+    parsed = tomllib.loads(format_toml(cfg))
+    assert parsed["routing"]["floor_percent"] == 5.000001
+    p = write_cfg(tmp_path, format_toml(cfg))
+    assert load_config(p).routing.floor_percent == 5.000001
+
+
+def test_format_toml_quotes_local_name_with_dot(tmp_path):
+    # "a.b" は bare key で書くと a の下の b として読み戻される。quoted key にする。
+    p = write_cfg(tmp_path, """
+        [providers.local."a.b"]
+        base_url = "http://localhost:8000"
+        capacity = 2
+        """)
+    cfg = load_config(p)
+    text = format_toml(cfg)
+    assert '[providers.local."a.b"]' in text
+    target = tmp_path / "saved.toml"
+    save_config(cfg, target)  # 保存前の読み戻し検証も通る
+    assert '[providers.local."a.b"]' in target.read_text(encoding="utf-8")
+    assert load_config(target).providers.local == cfg.providers.local
+
+
+def test_stale_minutes_rejects_values_above_one_week(tmp_path):
+    p = write_cfg(tmp_path, "[routing]\nstale_minutes = 10080\n")
+    assert load_config(p).routing.stale_minutes == 10080
+    p2 = write_cfg(tmp_path, "[routing]\nstale_minutes = 10081\n",
+                   name="too-large.toml")
+    with pytest.raises(ConfigError):
+        load_config(p2)
 
 
 # --- pacing thresholds -----------------------------------------------------------

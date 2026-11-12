@@ -15,6 +15,7 @@ import math
 import os
 import re
 import tempfile
+import threading
 import tomllib
 import unicodedata
 import urllib.parse
@@ -37,12 +38,25 @@ PROVIDERS = ("claude", "codex", "glm", "grok", "gemini", "openrouter", "deepseek
 
 INTERVAL_MIN = 60  # poll.interval の最小値 (秒)
 REDRAW_MIN = 10    # poll.redraw の最小値 (秒)
+STALE_MINUTES_MAX = 7 * 24 * 60  # routing.stale_minutes の上限 (1 週間)
 
 PathLike = Union[str, Path]
 
 
 class ConfigError(Exception):
-    """設定ファイルが不正。メッセージはそのままユーザーに表示される。"""
+    """設定ファイルが不正。メッセージはそのままユーザーに表示される。
+
+    読み込みに失敗したときは、load_config が失敗の原因になったファイル
+    (path) と、その読み込みを試みた時点の状態 (state = (mtime_ns, size)) を
+    入れる。呼び出し側はこれを mark_checked() に渡すことで、失敗の後に
+    置き換わった未適用の内容を確認済みにせずに済む。
+    """
+
+    def __init__(self, *args: Any, path: Optional[Path] = None,
+                 state: Optional[Tuple[int, int]] = None) -> None:
+        super().__init__(*args)
+        self.path = path
+        self.state = state
 
 
 # --------------------------------------------------------------- dataclasses
@@ -265,12 +279,57 @@ class Config:
         """設定ファイルが読み込み時から変わっていれば True（run の再読み込み用）。"""
         return _file_state(self.path) != self._state
 
-    def mark_checked(self) -> None:
-        """現在の状態を「確認済み」にする（読み込み失敗時に警告の再表示を防ぐ）。"""
-        self._state = _file_state(self.path)
+    def mark_checked(self, failure: Optional[ConfigError] = None) -> None:
+        """現在の状態を「確認済み」にする（読み込み失敗時に警告の再表示を防ぐ）。
+
+        失敗した読み込みの後にファイルが置き換わっていた場合、新しい内容はまだ
+        適用していないので、ここでその状態を確認済みにしてはいけない。失敗を
+        表す ConfigError (failure) を渡すと、その失敗を読んだときの状態を使う。
+        引数なしのときは、このスレッドで直近に失敗した読み込みの状態を使う
+        (別スレッドの失敗や、別スレッドでの読み込み成功に左右されない)。
+        """
+        if self.path is None:
+            self._state = None
+            return
+        key = _state_key(self.path)
+        if failure is not None and failure.path is not None \
+                and _state_key(failure.path) == key:
+            self._state = failure.state
+            return
+        failed = _failed_states()
+        if key in failed:
+            self._state = failed[key]
+        else:
+            self._state = _file_state(self.path)
 
 
 # ------------------------------------------------------------------ loading
+
+# スレッドごとの「直近の load_config 失敗時の状態」。mark_checked() を引数
+# なしで呼ぶ既存の呼び出し側でも、別スレッドの読み込み成功に失敗の記録が
+# 消されないようにする。パス単位の共有状態にすると、スレッド A の失敗の後に
+# 別スレッドが修正版の読み込みに成功した時点で記録が消え、A が mark_checked()
+# したときに未適用の修正版を確認済みにしてしまう。
+_FAILED_STATES = threading.local()
+
+
+def _failed_states() -> Dict[str, Optional[Tuple[int, int]]]:
+    states = getattr(_FAILED_STATES, "states", None)
+    if states is None:
+        states = {}
+        _FAILED_STATES.states = states
+    return states
+
+
+def _state_key(path: Path) -> str:
+    return os.fspath(path)
+
+
+def _fd_state(fh) -> Tuple[int, int]:
+    """開いているファイル記述子から (mtime_ns, size) を取る。"""
+    st = os.fstat(fh.fileno())
+    return (st.st_mtime_ns, st.st_size)
+
 
 def _file_state(path: Optional[Path]) -> Optional[Tuple[int, int]]:
     """(mtime_ns, size)。ファイルが読めなければ None。"""
@@ -286,26 +345,53 @@ def _file_state(path: Optional[Path]) -> Optional[Tuple[int, int]]:
 def load_config(path: Optional[PathLike] = None) -> Config:
     """設定ファイルを読み込む。無ければ全部既定値。不正なら ConfigError。"""
     cfg_path = Path(path).expanduser() if path is not None else DEFAULT_PATH
+    key = _state_key(cfg_path)
     data: Dict[str, Any] = {}
+    raw: Optional[bytes] = None
+    # open に失敗しても (PermissionError など) 失敗の記録に使えるよう、試行前に
+    # 状態を取っておく。open できたときは fstat の値で上書きする。
+    state = _file_state(cfg_path)
     try:
-        raw = cfg_path.read_bytes()
+        with cfg_path.open("rb") as fh:
+            # 内容と状態を同じファイル記述子から取る。パスを置き換えられても
+            # 読んだ内容と状態が食い違わない (fstat は開いた inode を見る)。
+            state = _fd_state(fh)
+            raw = fh.read()
     except FileNotFoundError:
-        pass  # ファイルが無いのは正常系: 全部既定値
+        state = None  # ファイルが無いのは正常系: 全部既定値
     except OSError as exc:
+        _failed_states()[key] = state
         raise ConfigError(t("config.read_failed", path=cfg_path,
-                            detail=exc.strerror or exc))
-    else:
+                            detail=exc.strerror or exc),
+                          path=cfg_path, state=state)
+    if raw is not None:
         try:
             data = tomllib.loads(raw.decode("utf-8"))
         except UnicodeDecodeError:
-            raise ConfigError(t("config.not_utf8", path=cfg_path)) from None
+            _failed_states()[key] = state
+            raise ConfigError(t("config.not_utf8", path=cfg_path),
+                              path=cfg_path, state=state) from None
         except tomllib.TOMLDecodeError as exc:
-            raise ConfigError(t("config.syntax_error", path=cfg_path, detail=exc)) from None
-    return _build(data, cfg_path)
+            _failed_states()[key] = state
+            raise ConfigError(t("config.syntax_error", path=cfg_path, detail=exc),
+                              path=cfg_path, state=state) from None
+    try:
+        cfg = _build(data, cfg_path, state)
+    except ConfigError as exc:
+        exc.path = cfg_path
+        exc.state = state
+        _failed_states()[key] = state
+        raise
+    except Exception:
+        _failed_states()[key] = state
+        raise
+    _failed_states().pop(key, None)
+    return cfg
 
 
-def _build(data: Dict[str, Any], path: Path) -> Config:
-    cfg = Config(path=path, _state=_file_state(path))
+def _build(data: Dict[str, Any], path: Path,
+           state: Optional[Tuple[int, int]] = None) -> Config:
+    cfg = Config(path=path, _state=state)
     for key in data:
         if key not in ("display", "layout", "poll", "pacing", "providers", "routing"):
             _unknown(path, key)
@@ -427,7 +513,8 @@ def _build(data: Dict[str, Any], path: Path) -> Config:
                                         name="routing.floor_hours", range=_range_txt(0, None), value=value))
                 cfg.routing.floor_hours = hours
             elif key == "stale_minutes":
-                cfg.routing.stale_minutes = _int_in(value, "routing.stale_minutes", path, 1)
+                cfg.routing.stale_minutes = _int_in(
+                    value, "routing.stale_minutes", path, 1, STALE_MINUTES_MAX)
             elif key == "long_over_margin_minutes":
                 cfg.routing.long_over_margin_minutes = _float_in(
                     value, "routing.long_over_margin_minutes", path, 0)
@@ -871,6 +958,17 @@ def _format_time(value: time) -> str:
     return value.isoformat(timespec="seconds" if value.second else "minutes")
 
 
+_TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_key(key: str) -> str:
+    """TOML のキーとして書ける形にする。ドットなど bare key に使えない文字を
+    含む名前は quoted key にする (ドットを階層区切りと誤読させない)。"""
+    if _TOML_BARE_KEY_RE.fullmatch(key):
+        return key
+    return json.dumps(key, ensure_ascii=False)
+
+
 def _time(value: Any, key: str, path: Path) -> time:
     if not isinstance(value, str) or not re.fullmatch(r"\d{2}:\d{2}(?::\d{2})?", value.strip()):
         raise ConfigError(t("config.time_required", path=path, name=key, value=value))
@@ -1045,7 +1143,7 @@ def format_toml(cfg: Config) -> str:
         "# 書き出しはこの設定に関係なく行われます。",
         "enabled = %s" % ("true" if cfg.routing.enabled else "false"),
         "# floor の適用中に残りがこの % 未満なら stop",
-        "floor_percent = %g" % cfg.routing.floor_percent,
+        "floor_percent = %r" % cfg.routing.floor_percent,
         "# 24 時間以上または長さ不明の窓でリセットまでこの時間以上なら floor を適用",
         "# 0 なら全窓で常に適用。リセット時刻不明も適用",
         "floor_hours = %r" % cfg.routing.floor_hours,
@@ -1139,7 +1237,7 @@ def format_toml(cfg: Config) -> str:
             "",
             "# ローカル LLM サーバー (OpenAI 互換) の並列枠。/metrics を読んで",
             '# "local:%s" の窓 id で routing.workers に結べる。' % entry.name,
-            "[providers.local.%s]" % entry.name,
+            "[providers.local.%s]" % _toml_key(entry.name),
             "enabled = %s" % ("true" if entry.enabled else "false"),
         ]
         if entry.label:

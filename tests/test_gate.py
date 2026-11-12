@@ -345,6 +345,31 @@ def test_broken_fetched_at_marks_unknown():
     assert result.workers[0].reason == "stale"
 
 
+def test_future_fetched_at_beyond_tolerance_is_stale():
+    # 時計ずれ・壊れた値: 許容誤差 (2 分) を超える未来は「新しい」と信用しない
+    data = status(win("glm:5h", "glm", "spare", 50.0,
+                      fetched=NOW + timedelta(minutes=3)))
+    result = evaluate(data, cfg(stale_minutes=60), {}, NOW)
+    w = result.workers[0]
+    assert (w.verdict, w.reason, w.stale) == ("unknown", "stale", True)
+
+
+def test_future_fetched_at_within_tolerance_is_fresh():
+    # 1 分程度のずれは許容する
+    data = status(win("glm:5h", "glm", "spare", 50.0,
+                      fetched=NOW + timedelta(minutes=1)))
+    result = evaluate(data, cfg(), {}, NOW)
+    assert (result.workers[0].verdict, result.workers[0].reason) == ("boost", "spare")
+
+
+def test_huge_stale_minutes_does_not_overflow():
+    # timedelta(minutes=巨大値) ではなく秒数の数値比較で判定する
+    data = status(win("glm:5h", "glm", "spare", 50.0,
+                      fetched=NOW - timedelta(minutes=25)))
+    result = evaluate(data, cfg(stale_minutes=10 ** 18), {}, NOW)
+    assert result.workers[0].verdict == "boost"
+
+
 def test_missing_fetched_at_is_trusted_when_file_fresh():
     data = status(win("glm:5h", "glm", "spare", 50.0, fetched=None))
     result = evaluate(data, cfg(), {}, NOW)
@@ -552,6 +577,18 @@ def test_line_rounds_remaining_like_quota_gate():
     result = evaluate(data, cfg(workers={"glm": ["glm:5h"]}), {}, now)
     assert "glm=boost(49%," in format_line(result, now, "ja")
     assert pct_str(None) == "?%"
+    assert pct_str(float("inf")) == "?%"
+    assert pct_str(float("nan")) == "?%"
+
+
+def test_norm_remaining_drops_non_finite_values():
+    assert gate.norm_remaining(float("inf")) is None
+    assert gate.norm_remaining(float("-inf")) is None
+    assert gate.norm_remaining(float("nan")) is None
+    assert gate.norm_remaining(10 ** 400) is None  # float() の OverflowError
+    assert gate.norm_remaining(42) == 42.0
+    assert gate.norm_remaining(True) is None
+    assert gate.norm_remaining("50") is None
 
 
 def test_line_without_remaining_shows_question_mark():
@@ -656,6 +693,30 @@ def test_load_status_states(tmp_path):
     assert gate.load_status(path, 20, NOW)[2] == "broken"
     # パスがディレクトリ → open が OSError (IsADirectoryError) → unreadable
     assert gate.load_status(tmp_path, 20, NOW) == ("stale", None, "unreadable")
+
+
+def test_load_status_future_updated_at_is_stale(tmp_path):
+    path = tmp_path / "status.json"
+    fresh = status(win("glm:5h", "glm", "spare", 50.0),
+                   updated=NOW + timedelta(minutes=1))
+    path.write_text(json.dumps(fresh), encoding="utf-8")
+    assert gate.load_status(path, 20, NOW)[0] == "ok"  # 1 分のずれは許容
+
+    future = status(win("glm:5h", "glm", "spare", 50.0),
+                    updated=NOW + timedelta(minutes=3))
+    path.write_text(json.dumps(future), encoding="utf-8")
+    assert gate.load_status(path, 20, NOW)[0:1] == ("stale",)
+    assert gate.load_status(path, 20, NOW)[2] == "broken"
+
+
+def test_load_status_huge_stale_minutes_does_not_overflow(tmp_path):
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps(status(win("glm:5h", "glm", "spare", 50.0))),
+                    encoding="utf-8")
+    fresh = status(win("glm:5h", "glm", "spare", 50.0),
+                   updated=NOW - timedelta(minutes=25))
+    path.write_text(json.dumps(fresh), encoding="utf-8")
+    assert gate.load_status(path, 10 ** 18, NOW)[0] == "ok"
 
 
 def test_burn_store_clear_and_purge(tmp_path):
