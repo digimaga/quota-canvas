@@ -13,6 +13,8 @@ History.record が、ある窓の新しいサンプルの resets_at が直前の
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
@@ -22,6 +24,8 @@ from typing import Any, Iterator, List, Optional
 
 from .atomic import atomic_write
 from .platform_support.paths import data_dir
+
+log = logging.getLogger("quotacanvas")
 
 MAX_PER_WINDOW = 20   # 窓ごとに残す閉じた期間の上限
 RESET_TOLERANCE = 60.0  # resets_at の API の揺れを吸う秒数 (history.py と同じ)
@@ -57,7 +61,7 @@ def _parse_iso(value: Any) -> Optional[datetime]:
         text = text[:-1] + "+00:00"
     try:
         parsed = datetime.fromisoformat(text)
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
     return _as_utc(parsed)
 
@@ -82,22 +86,29 @@ def encode_period(period: ClosedPeriod) -> str:
     )
 
 
+def decode_entry(obj: Any) -> Optional[ClosedPeriod]:
+    """Parse one decoded JSON object (a line's contents); broken ones return None."""
+    if not isinstance(obj, dict):
+        return None
+    closed_at = _parse_iso(obj.get("closed_at"))
+    if closed_at is None:
+        return None
+    used = float(obj["used"])
+    if not math.isfinite(used):
+        return None  # NaN/inf は「前回の使用率」として扱わない
+    return ClosedPeriod(
+        str(obj["window_id"]),
+        _parse_iso(obj.get("resets_at")),
+        used,
+        closed_at,
+    )
+
+
 def decode_line(line: str) -> Optional[ClosedPeriod]:
     """Parse one JSONL line; broken lines return None and are ignored."""
     try:
-        obj = json.loads(line)
-        if not isinstance(obj, dict):
-            return None
-        closed_at = _parse_iso(obj["closed_at"])
-        if closed_at is None:
-            return None
-        return ClosedPeriod(
-            str(obj["window_id"]),
-            _parse_iso(obj.get("resets_at")),
-            float(obj["used"]),
-            closed_at,
-        )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return decode_entry(json.loads(line))
+    except (KeyError, TypeError, ValueError, OverflowError, json.JSONDecodeError):
         return None
 
 
@@ -110,15 +121,24 @@ class Periods:
     # ------------------------------------------------------------ public
 
     def record_closed(self, window_id: str, resets_at: Optional[datetime],
-                      used: float, closed_at: datetime) -> None:
-        """1 期間ぶんを追記する (同じ resets_at の期間は二重に記録しない)。"""
-        entries = list(self._iter_file())
+                      used: float, closed_at: datetime) -> bool:
+        """1 期間ぶんを追記する (同じ resets_at の期間は二重に記録しない)。
+
+        戻り値は保存できたか。既存ファイルを読めなかったとき・書けなかった
+        ときは False を返し、呼び出し側 (History.record) が履歴を進めずに
+        再試行できるようにする。"""
+        entries = self._read_entries()
+        if entries is None:
+            # 読めないだけの既存履歴を「空」とみなして 1 件だけで置き換えると
+            # 消えてしまう。書き直さずに諦める (次回また読む)。
+            log.warning("periods.jsonl を読めないため記録を見送ります: %s", self.path)
+            return False
         if any(p.window_id == window_id and _same_reset(p.resets_at, resets_at)
                for p in entries):
-            return
+            return True
         entries.append(ClosedPeriod(window_id, resets_at, float(used),
                                     _as_utc(closed_at)))
-        self._rewrite(entries)
+        return self._rewrite(entries)
 
     def periods(self, window_id: str) -> List[ClosedPeriod]:
         """All closed periods of one window, oldest first."""
@@ -133,12 +153,20 @@ class Periods:
 
     # ----------------------------------------------------------- private
 
-    def _iter_file(self) -> Iterator[ClosedPeriod]:
+    def _read_entries(self) -> Optional[List[ClosedPeriod]]:
+        """全行を読む。ファイル無しは []、読み取り失敗は None を返す。
+
+        None と [] を区別しないと、読めなかっただけのファイルを record_closed
+        が 1 件だけで置き換えて既存履歴を消してしまう。"""
         try:
-            lines = self.path.read_bytes().splitlines()
-        except OSError:
-            return
-        for raw_line in lines:
+            raw = self.path.read_bytes()
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            log.warning("periods.jsonl を読めません: %s", exc)
+            return None
+        entries: List[ClosedPeriod] = []
+        for raw_line in raw.splitlines():
             try:
                 line = raw_line.decode("utf-8").strip()
             except UnicodeDecodeError:
@@ -147,10 +175,16 @@ class Periods:
                 continue
             period = decode_line(line)
             if period is not None:
-                yield period
+                entries.append(period)
+        return entries
 
-    def _rewrite(self, entries: List[ClosedPeriod]) -> None:
-        """窓ごとに最新 MAX_PER_WINDOW 件だけ残して原子的に書き直す。"""
+    def _iter_file(self) -> Iterator[ClosedPeriod]:
+        yield from (self._read_entries() or [])
+
+    def _rewrite(self, entries: List[ClosedPeriod]) -> bool:
+        """窓ごとに最新 MAX_PER_WINDOW 件だけ残して原子的に書き直す。
+
+        戻り値は保存できたか (失敗しても例外は出さない)。"""
         by_window = defaultdict(list)
         for entry in entries:
             by_window[entry.window_id].append(entry)
@@ -162,4 +196,9 @@ class Periods:
             for entry in keep:
                 handle.write((encode_period(entry) + "\n").encode("utf-8"))
 
-        atomic_write(self.path, write)
+        try:
+            atomic_write(self.path, write)
+        except OSError as exc:
+            log.warning("periods.jsonl に保存できません: %s", exc)
+            return False
+        return True

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
@@ -38,18 +39,37 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.astimezone().isoformat(timespec="seconds")
 
 
+def _finite(value: Any) -> bool:
+    """JSON に書ける有限の数値か (bool は数値として扱わない)。"""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
+
+
+def _finite_percent(value: Any) -> Optional[float]:
+    """丸めた使用率。NaN/inf は None (そのカード・窓を status.json から除く)。"""
+    rounded = round(value, 1)
+    return rounded if _finite(rounded) else None
+
+
 def _card(pu: ProviderUsage, pace: Optional[Pace], now: datetime) -> Optional[Dict[str, Any]]:
     """カード 1 枚ぶんの dict。取得失敗 (pace=None) は None を返し errors に入れる。"""
     if pace is None:
         return None
     win = pace.window
+    used = _finite_percent(win.used_percent)
+    remaining = _finite_percent(win.remaining_percent)
+    if used is None or remaining is None:
+        # NaN/inf を書くと Swift 側の JSON 読み込みが丸ごと失敗する
+        logging.getLogger(__name__).warning(
+            "status: %s の使用率が非有限のためカードから除外します", win.id)
+        return None
     item = {
         "id": win.id,
         "provider": pu.provider,
         "name": pu.name,
         "label": win.label,
-        "used": round(win.used_percent, 1),
-        "remaining": round(win.remaining_percent, 1),
+        "used": used,
+        "remaining": remaining,
         "status": pace.status.value,
         "status_label": t(_STATUS_LABEL[pace.status]),
         "advice": advice_text(pace, False, now),
@@ -65,7 +85,7 @@ def _card(pu: ProviderUsage, pace: Optional[Pace], now: datetime) -> Optional[Di
         # 取得失敗中も最後の成功データを表示しているとき、その失敗理由。
         # 成功していればキーごと省略する。
         item["stale_error"] = pu.stale_error
-    if pace.previous_used is not None:
+    if _finite(pace.previous_used):
         # 前回の期間の最終使用率 (F3)。無ければ省略。
         item["previous_used"] = round(pace.previous_used, 1)
     if pace.exhausts_at is not None:
@@ -77,26 +97,32 @@ def _card(pu: ProviderUsage, pace: Optional[Pace], now: datetime) -> Optional[Di
     return item
 
 
-def _window_item(pu: ProviderUsage, pace: Pace) -> Dict[str, Any]:
+def _window_item(pu: ProviderUsage, pace: Pace) -> Optional[Dict[str, Any]]:
     """status.json の "windows" 1 要素ぶんの dict。
 
     表示フィルタ前の全窓 (内訳窓 part_of 付きを含む)。判定に必要な項目だけを
     cards と同じ名前・意味で載せる (gate.py と app / 外部ツールが読む)。"""
     win = pace.window
+    used = _finite_percent(win.used_percent)
+    remaining = _finite_percent(win.remaining_percent)
+    if used is None or remaining is None:
+        logging.getLogger(__name__).warning(
+            "status: %s の使用率が非有限のため windows から除外します", win.id)
+        return None
     item: Dict[str, Any] = {
         "id": win.id,
         "provider": pu.provider,
         "key": win.key,
         "part_of": win.part_of,
-        "used": round(win.used_percent, 1),
-        "remaining": round(win.remaining_percent, 1),
+        "used": used,
+        "remaining": remaining,
         "status": pace.status.value,
         "resets_at": _iso(win.resets_at),
         "length": win.length.total_seconds(),
     }
     if win.reset_estimated:
         item["reset_estimated"] = True
-    if pace.projected_leftover is not None:
+    if _finite(pace.projected_leftover) and _finite(pace.leftover_tolerance):
         item["projected_leftover"] = pace.projected_leftover
         item["leftover_tolerance"] = pace.leftover_tolerance
     if pace.exhausts_at is not None:
@@ -251,13 +277,14 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
         "windows": [
             item for pu, pace in (cards if all_windows is None else all_windows)
             if pace is not None
-            for item in (_window_item(pu, pace),)
+            for item in (_window_item(pu, pace),) if item is not None
         ] + local_items,
         "balances": [dict(provider=u.provider, name=u.name, currency=b.currency,
                           amount=b.amount, label=b.label, text=b.text,
                           fetched_at=_iso(u.fetched_at),
                           stale_error=u.stale_error)
-                     for u in usages for b in u.balances],
+                     for u in usages for b in u.balances
+                     if _finite(b.amount)],
         "errors": [
             {"provider": u.provider, "name": u.name, "error": u.error}
             for u in usages if u.error
@@ -291,8 +318,12 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
 
 
 def write_status(payload: Dict[str, Any], path: Path = STATUS_PATH) -> None:
-    """status.json を原子的に書く。"""
-    data = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    """status.json を原子的に書く。
+
+    NaN/Infinity は JSON の標準外で、Swift アプリの読み込みが丸ごと失敗する。
+    allow_nan=False で ValueError にし、壊れたファイルは書かない。"""
+    data = (json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False)
+            + "\n").encode("utf-8")
     _atomic_write(path, lambda handle: handle.write(data))
 
 

@@ -13,6 +13,8 @@ final used % to periods.jsonl (see periods.py), which feeds the
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,13 +23,17 @@ from typing import Any, Iterable, Iterator, List, Optional
 from .atomic import atomic_write
 from .platform_support.paths import data_dir
 from .models import Sample, Window
-from .periods import Periods
+from .periods import ClosedPeriod, Periods, decode_entry
+
+log = logging.getLogger("quotacanvas")
 
 DEFAULT_PATH = data_dir() / "history.jsonl"
 
 PRUNE_AFTER = timedelta(days=8)       # drop samples older than this
 MIN_GAP = timedelta(minutes=10)       # always sample at least this often
 PRUNE_INTERVAL = timedelta(hours=1)   # rewrite the file at most this often
+MAX_PENDING_PERIODS = 32              # periods へ保存できず保持する閉期間の上限
+PENDING_FILENAME = "periods-pending.json"  # 保留中の閉期間の退避先 (history.jsonl と同じフォルダ)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -48,7 +54,7 @@ def _parse_iso(value: Any) -> Optional[datetime]:
         text = text[:-1] + "+00:00"
     try:
         parsed = datetime.fromisoformat(text)
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
     return _as_utc(parsed)
 
@@ -83,14 +89,17 @@ def decode_line(line: str) -> Optional[Sample]:
         at = _parse_iso(obj["t"])
         if at is None:
             return None
+        used = float(obj["u"])
+        if not math.isfinite(used):
+            return None  # NaN/inf は JSON としても表示値としても扱わない
         resets_raw = obj.get("r")
         return Sample(
             str(obj["w"]),
             at,
-            float(obj["u"]),
+            used,
             _parse_iso(resets_raw) if resets_raw else None,
         )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (KeyError, TypeError, ValueError, OverflowError, json.JSONDecodeError):
         return None
 
 
@@ -105,12 +114,21 @@ class History:
         self.periods = Periods(periods_path) if periods_path is not None \
             else Periods(self.path.with_name("periods.jsonl"))
         self._last_prune: Optional[datetime] = None
+        # periods.jsonl へ保存できなかった閉じた期間。履歴サンプルとは独立に
+        # 保持して record のたびに保存を再試行する。再起動で失われないよう、
+        # history.jsonl と同じフォルダの小さなファイルに退避し、生成時に復元する。
+        self._pending_path = self.path.with_name(PENDING_FILENAME)
+        self._pending_periods: List[ClosedPeriod] = self._load_pending()
+        # 保留ファイルへの反映に失敗したら True。リストが変わらなくても、
+        # 次の record で書き直しを再試行する (再起動で保留を失わないため)。
+        self._pending_dirty = False
 
     # ------------------------------------------------------------ public
 
     def record(self, windows: Iterable[Window], now: Optional[datetime] = None) -> List[Sample]:
         """Append a sample per window when something changed (or >=10min passed)."""
         moment = _as_utc(now) if now is not None else datetime.now(timezone.utc)
+        self._flush_pending_periods()
         latest = self.latest_by_window()
         appended: List[Sample] = []
         for window in windows:
@@ -127,13 +145,16 @@ class History:
                     # 前後どちらかの resets_at が不明 (None) のときは、そのサンプルが
                     # 本当に前の期間の最後か分からないので閉じない。
                     if previous.resets_at is not None and window.resets_at is not None:
-                        self.periods.record_closed(window.id, previous.resets_at,
-                                                   previous.used_percent, moment)
+                        self._save_closed(ClosedPeriod(
+                            window.id, previous.resets_at, previous.used_percent, moment))
+                # 閉じた期間を保存できなくても、サンプルは通常どおり追記する。
+                # 保存できなかった期間は _pending_periods が覚えているので、
+                # 履歴を止めなくても復旧後に再試行できる。
                 sample = Sample(window.id, moment, window.used_percent, window.resets_at)
                 appended.append(sample)
                 latest[window.id] = sample
-        if appended:
-            self._append(appended)
+        if appended and not self._append(appended):
+            appended = []
         self._prune_old(moment)
         return appended
 
@@ -154,10 +175,117 @@ class History:
 
     # ----------------------------------------------------------- private
 
+    def _save_closed(self, period: ClosedPeriod) -> bool:
+        """閉じた期間を保存する。失敗したら再試行用に保持して False。"""
+        if self.periods.record_closed(period.window_id, period.resets_at,
+                                      period.used, period.closed_at):
+            return True
+        self._remember_pending(period)
+        log.warning("閉じた期間を保存できないため保留します: %s", period.window_id)
+        return False
+
+    def _remember_pending(self, period: ClosedPeriod) -> None:
+        """同じ (window_id, resets_at) は重複させず、上限を超えたら古い順に捨てる。"""
+        if any(kept.window_id == period.window_id
+               and _same_reset(kept.resets_at, period.resets_at)
+               for kept in self._pending_periods):
+            return
+        self._pending_periods.append(period)
+        while len(self._pending_periods) > MAX_PENDING_PERIODS:
+            dropped = self._pending_periods.pop(0)
+            log.warning("保留中の閉じた期間が上限を超えたため古いものを捨てます: %s",
+                        dropped.window_id)
+        self._persist_pending()
+
+    def _flush_pending_periods(self) -> None:
+        """保持している閉じた期間の保存を再試行する (古い順)。"""
+        if not self._pending_periods:
+            if self._pending_dirty:
+                self._persist_pending()  # 消せなかった保留ファイルの後始末
+            return
+        pending = self._pending_periods
+        remaining: List[ClosedPeriod] = []
+        for index, period in enumerate(pending):
+            if not self.periods.record_closed(period.window_id, period.resets_at,
+                                              period.used, period.closed_at):
+                # 保存障害は環境側 (ディスク等) のことが多いので、1 回失敗したら
+                # この record では打ち切り、残りは次回まとめて再試行する。
+                remaining = pending[index:]
+                break
+        self._pending_periods = remaining
+        if len(remaining) != len(pending) or self._pending_dirty:
+            self._persist_pending()
+
+    def _load_pending(self) -> List[ClosedPeriod]:
+        """保留ファイルから閉じた期間を復元する (History 生成時)。
+
+        壊れた・読めないファイルは警告して無視する。復元できなくても常駐
+        エンジンは落とさない (履歴サンプルの記録は続く)。"""
+        try:
+            raw = self._pending_path.read_bytes()
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            log.warning("保留ファイルを読めないため無視します: %s", exc)
+            return []
+        try:
+            items = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            log.warning("保留ファイルが壊れているため無視します: %s", exc)
+            return []
+        if not isinstance(items, list):
+            log.warning("保留ファイルの形式が違うため無視します: %s", self._pending_path)
+            return []
+        pending: List[ClosedPeriod] = []
+        for item in items:
+            try:
+                period = decode_entry(item)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue  # 壊れた 1 件だけなら他の保留は生かす
+            if period is not None:
+                pending.append(period)
+        return pending[-MAX_PENDING_PERIODS:]
+
+    def _persist_pending(self) -> None:
+        """保留リストをファイルに反映する。空になったらファイルを消す。
+
+        書けなくてもメモリ内での再試行は今までどおり続く (次に書けたときに
+        内容を上書きするので、書けなかった分が二重に復元されることもない)。"""
+        if not self._pending_periods:
+            try:
+                self._pending_path.unlink(missing_ok=True)
+            except OSError as exc:
+                self._pending_dirty = True
+                log.warning("保留ファイルを消せません: %s", exc)
+            else:
+                self._pending_dirty = False
+            return
+        entries = [{"window_id": period.window_id,
+                    "resets_at": _to_iso(period.resets_at),
+                    "used": period.used,
+                    "closed_at": _to_iso(period.closed_at)}
+                   for period in self._pending_periods]
+
+        def write(handle):
+            handle.write(payload.encode("utf-8"))
+
+        try:
+            payload = json.dumps(entries, ensure_ascii=False,
+                                 separators=(",", ":"), allow_nan=False)
+            atomic_write(self._pending_path, write)
+        except (OSError, ValueError) as exc:
+            self._pending_dirty = True
+            log.warning("保留ファイルに書けないためメモリ内で再試行します: %s", exc)
+        else:
+            self._pending_dirty = False
+
     def _iter_file(self) -> Iterator[Sample]:
         try:
             lines = self.path.read_bytes().splitlines()
-        except OSError:
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            log.warning("history.jsonl を読めません: %s", exc)
             return
         for raw_line in lines:
             try:
@@ -170,25 +298,36 @@ class History:
             if sample is not None:
                 yield sample
 
-    def _append(self, samples: List[Sample]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            for sample in samples:
-                handle.write(encode_sample(sample) + "\n")
+    def _append(self, samples: List[Sample]) -> bool:
+        """追記できたら True。書けなくても常駐ループを止めない (次回また試す)。"""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as handle:
+                for sample in samples:
+                    handle.write(encode_sample(sample) + "\n")
+        except OSError as exc:
+            log.warning("history.jsonl に追記できません: %s", exc)
+            return False
+        return True
 
     def _prune_old(self, now: datetime) -> None:
         """Drop samples older than PRUNE_AFTER, rewriting the file at most
         once per PRUNE_INTERVAL."""
         if self._last_prune is not None and (now - self._last_prune) < PRUNE_INTERVAL:
             return
-        self._last_prune = now
         cutoff = now - PRUNE_AFTER
         all_samples = list(self._iter_file())
         keep = [s for s in all_samples if s.at >= cutoff]
-        if len(keep) == len(all_samples):
-            return
-        def write(handle):
-            for sample in keep:
-                handle.write((encode_sample(sample) + "\n").encode("utf-8"))
+        if len(keep) != len(all_samples):
+            def write(handle):
+                for sample in keep:
+                    handle.write((encode_sample(sample) + "\n").encode("utf-8"))
 
-        atomic_write(self.path, write)
+            try:
+                atomic_write(self.path, write)
+            except OSError as exc:
+                # 読めなかった場合も含め、失敗したら次回また試せるよう
+                # _last_prune を進めない (1 時間のスロットルに入れない)。
+                log.warning("history.jsonl を整理できません: %s", exc)
+                return
+        self._last_prune = now

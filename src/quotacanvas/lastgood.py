@@ -25,6 +25,10 @@ log = logging.getLogger("quotacanvas")
 # history.py の DEFAULT_PATH と同じディレクトリ (history.jsonl の隣)。
 DEFAULT_PATH = data_dir() / "last-good.json"
 
+# 窓の長さとして受け入れる上限 (約 10 年)。これを超える値は壊れたファイル
+# とみなして、その窓だけ捨てる (datetime の加減算が OverflowError になるため)。
+MAX_WINDOW_LENGTH = timedelta(days=3660)
+
 
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -44,7 +48,7 @@ def _parse_iso(value: Any) -> Optional[datetime]:
         text = text[:-1] + "+00:00"
     try:
         parsed = datetime.fromisoformat(text)
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
     return _as_utc(parsed)
 
@@ -80,22 +84,64 @@ def _encode_usage(usage: ProviderUsage) -> Dict[str, Any]:
     }
 
 
+def _safe_repr(value: Any, limit: int = 40) -> str:
+    """ログ用。10**400 のような巨大整数でも安全に短く表す。"""
+    try:
+        text = repr(value)
+    except (ValueError, OverflowError):
+        return "<unprintable>"
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 def _decode_window(provider: str, entry: Any) -> Optional[Window]:
     if not isinstance(entry, dict):
         return None  # 壊れた要素 (文字列など) はその窓だけ飛ばす
     try:
-        part_of = entry.get("part_of")      # キーが無い古いファイルは None
-        return Window(
-            provider,
-            str(entry["key"]),
-            str(entry["label"]),
-            float(entry["used_percent"]),
-            _parse_iso(entry.get("resets_at")),
-            timedelta(seconds=float(entry["length"])),
-            None if part_of is None else str(part_of),
-        )
-    except (KeyError, TypeError, ValueError):
+        key = str(entry["key"])
+        label = str(entry["label"])
+        raw_used = entry["used_percent"]
+        raw_length = entry["length"]
+    except (KeyError, TypeError):
         return None
+    try:
+        used = float(raw_used)
+        seconds = float(raw_length)
+    except (TypeError, ValueError, OverflowError):
+        # JSON の整数は Python では任意精度。10**400 のような値は float() が
+        # OverflowError を出し、ここで捕まえないと provider 全体が消える。
+        log.warning("last-good.json の窓 %s:%s の数値を解釈できないため無視します "
+                    "(used_percent=%s, length=%s)", provider, key,
+                    _safe_repr(raw_used), _safe_repr(raw_length))
+        return None
+    resets_at = _parse_iso(entry.get("resets_at"))
+    part_of = entry.get("part_of")      # キーが無い古いファイルは None
+    # NaN/inf をそのまま Window に入れると、表示や再保存で非標準 JSON になる。
+    # length は timedelta の範囲外だと OverflowError でここより下が落ちるため、
+    # 非有限・範囲外はその窓だけ警告付きで除外する (起動を止めない)。
+    if not math.isfinite(used) or not math.isfinite(seconds):
+        log.warning("last-good.json の窓 %s:%s の数値が非有限のため無視します "
+                    "(used_percent=%s, length=%s)", provider, key,
+                    _safe_repr(raw_used), _safe_repr(raw_length))
+        return None
+    if not (0 < seconds <= MAX_WINDOW_LENGTH.total_seconds()):
+        log.warning("last-good.json の窓 %s:%s の長さが範囲外のため無視します: %s",
+                    provider, key, _safe_repr(raw_length))
+        return None
+    try:
+        length = timedelta(seconds=seconds)
+    except (OverflowError, ValueError):
+        log.warning("last-good.json の窓 %s:%s の長さを解釈できないため無視します: %s",
+                    provider, key, _safe_repr(raw_length))
+        return None
+    return Window(
+        provider,
+        key,
+        label,
+        used,
+        resets_at,
+        length,
+        None if part_of is None else str(part_of),
+    )
 
 
 def _decode_credit(entry: Any) -> Optional[ResetCredit]:
@@ -105,7 +151,7 @@ def _decode_credit(entry: Any) -> Optional[ResetCredit]:
             _parse_iso(entry.get("granted_at")),
             _parse_iso(entry.get("expires_at")),
         )
-    except (AttributeError, TypeError):
+    except (AttributeError, TypeError, ValueError):
         return None
 
 
@@ -132,6 +178,18 @@ def _decode_usage(provider: str, entry: Any) -> Optional[ProviderUsage]:
         return None
     try:
         retry_after = entry.get("retry_after")
+        if retry_after is not None:
+            try:
+                retry_after = float(retry_after)
+            except (TypeError, ValueError, OverflowError):
+                log.warning("last-good.json の %s の retry_after を解釈できないため"
+                            "無視します: %s", provider, _safe_repr(entry.get("retry_after")))
+                retry_after = None
+        if retry_after is not None and not math.isfinite(retry_after):
+            # 429 の待ち時間が NaN/inf だとバックオフ計算がおかしくなる
+            log.warning("last-good.json の %s の retry_after が非有限のため無視します: %s",
+                        provider, _safe_repr(entry.get("retry_after")))
+            retry_after = None
         return ProviderUsage(
             provider=provider,
             name=str(entry.get("name") or provider),
@@ -141,11 +199,15 @@ def _decode_usage(provider: str, entry: Any) -> Optional[ProviderUsage]:
             fetched_at=_parse_iso(entry.get("fetched_at")),
             reset_credits=[c for c in (_decode_credit(e) for e in entry.get("reset_credits") or [])
                            if c is not None],
-            retry_after=float(retry_after) if retry_after is not None else None,
+            retry_after=retry_after,
             balances=[b for b in (_decode_balance(e) for e in entry.get("balances") or [])
                       if b is not None],
         )
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        # 窓・残高・クレジット単位の防御で拾えなかった壊れ方の最後の砦。
+        # 黙って provider を消さず、警告してから除外する。
+        log.warning("last-good.json の %s を解釈できないため無視します: %s",
+                    provider, exc)
         return None
 
 
@@ -177,7 +239,9 @@ class LastGood:
             return {}
         try:
             raw = json.loads(text)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, ValueError) as exc:
+            # JSONDecodeError のほか、桁数が多すぎる整数で json が ValueError を
+            # 出すことがある (Python の int 変換上限)。起動を止めずに諦める。
             log.warning("last-good.json が壊れているため無視します: %s", exc)
             return {}
         if not isinstance(raw, dict):
@@ -202,5 +266,5 @@ class LastGood:
         try:
             data = json.dumps(payload, ensure_ascii=False, indent=1).encode("utf-8")
             atomic_write(self.path, lambda handle: handle.write(data))
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             log.warning("last-good.json に保存できません: %s", exc)
