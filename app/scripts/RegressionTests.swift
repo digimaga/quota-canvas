@@ -1117,6 +1117,168 @@ struct RegressionTests {
               && noNightControls.nightEnd == DisplaySettingsView.DisplayControlState.defaultNightEnd,
               "a config without night resets the night controls to their defaults")
 
+        // 指摘: 配置タブ（LayoutSettingsView）も同じ synced 方針。保存は
+        // 「基準値 → 編集中の値」の差分。controlState(confirmed:status:) が
+        // config → 表示値の変換（restoreLayout）を包んで初回読み込みと、
+        // 失敗後の読み直しで共有する。保存に成功したときの表示は
+        // nextControlState が nil を返し、編集中の値のまま保つ。
+        let layoutBaseline = try ConfigDocument(data: Data(#"{"layout":{"panels":[{"main":"alpha:week","size":"large","subs":["alpha:day"]}]}}"#.utf8))
+        let layoutEdited = try ConfigDocument(data: Data(#"{"layout":{"panels":[{"main":"beta:day","size":"small"},{"main":"gamma:day","size":"small"}]}}"#.utf8))
+        let layoutReal = try ConfigDocument(data: Data(#"{"layout":{"panels":[{"main":"delta:week","size":"large"}]}}"#.utf8))
+        var layoutReloadCalls = 0
+
+        // 成功: 画面（doc）も基準値（synced）も保存後の設定に揃い、読み直しは走らない。
+        let layoutSavedOutcome = await ServiceSettingsView.saveAndResync(
+            save: { layoutEdited }, reload: { layoutReloadCalls += 1; return layoutReal })
+        let layoutSaved = ServiceSettingsView.nextDocumentsAfterSave(
+            edited: layoutEdited, baseline: layoutBaseline, outcome: layoutSavedOutcome)
+        check(layoutSavedOutcome.failure == nil && layoutReloadCalls == 0
+              && layoutSaved.doc.layoutPanels.map(\.main) == ["beta:day", "gamma:day"]
+              && layoutSaved.synced.layoutPanels.map(\.main) == ["beta:day", "gamma:day"],
+              "a successful layout save moves the screen and the baseline to the saved panels")
+
+        // 成功でも表示を組み直すと退行になる。まず空き列の 2 段 split:
+        // panelsForSave は両段とも空の列を保存しないので保存後の config には
+        // small が無く、組み直すと split が false に戻って小スロットを選ぶ前に
+        // 分割が解除される。成功のときは nextControlState が nil で画面が保たれる。
+        var emptySplitSlots = LayoutSettingsView.emptySlots()
+        var emptySplitSplits = [Bool](repeating: false, count: LayoutSettingsView.columnCount)
+        emptySplitSlots[LayoutSettingsView.slotIndex(0, 0)].main = "alpha:week"
+        emptySplitSplits[2] = true // 空き列を 2 段に分けた直後
+        let emptySplitSavedPanels = LayoutSettingsView.panelsForSave(slots: emptySplitSlots, splits: emptySplitSplits)
+        check(emptySplitSavedPanels.map(\.main) == ["alpha:week"],
+              "panelsForSave keeps the filled column and drops the empty split column")
+        var emptySplitSavedDoc = layoutSaved.doc
+        emptySplitSavedDoc.layoutPanels = emptySplitSavedPanels
+        let emptySplitControls = LayoutSettingsView.nextControlState(
+            previous: LayoutSettingsView.LayoutControlState(slots: emptySplitSlots, splits: emptySplitSplits),
+            outcome: (doc: emptySplitSavedDoc, failure: nil), status: [])
+        check(emptySplitControls == nil,
+              "a successful save keeps the editing screen so the empty split column survives")
+        check(emptySplitSplits[2] == true,
+              "the empty column stays split while the user picks its small slots")
+
+        // 同じく成功の退行: パネルを入れ替えた直後は status の位置照合（同じ配列
+        // 位置の main・size）が崩れるので、組み直すと解決済み sub が落ちて自動
+        // sub がすべて未選択になる。nil で保たれる。status はまだ入れ替え前の
+        // 並び（前回の描画）のまま。
+        let swappedStatus = try JSONDecoder().decode([LayoutPanel].self, from: Data((
+            #"[{"main":"alpha:week","size":"large","subs":["alpha:resolved"],"main_window":"alpha:week"},"# +
+            #"{"main":"epsilon:week","size":"large","subs":["epsilon:resolved"],"main_window":"epsilon:week"}]"#).utf8))
+        let swappedPrevious = LayoutSettingsView.controlState(
+            confirmed: try ConfigDocument(data: Data(
+                #"{"layout":{"panels":[{"main":"alpha:week","size":"large"},{"main":"epsilon:week","size":"large"}]}}"#.utf8)),
+            status: swappedStatus)
+        check(swappedPrevious.resolvedSubsByMain["alpha:week"] == ["alpha:resolved"]
+              && swappedPrevious.resolvedSubsByMain["epsilon:week"] == ["epsilon:resolved"]
+              && swappedPrevious.resolvedMainWindows["epsilon:week"] == "epsilon:week",
+              "the previous control state holds the resolved subs before the swap")
+        var swappedSavedDoc = layoutSaved.doc
+        swappedSavedDoc.layoutPanels = [
+            ConfigDocument.PanelConfig(main: "epsilon:week", subs: ["epsilon:day"], size: "large"),
+            ConfigDocument.PanelConfig(main: "alpha:week", subs: ["alpha:day"], size: "large")]
+        let swappedControls = LayoutSettingsView.nextControlState(
+            previous: swappedPrevious,
+            outcome: (doc: swappedSavedDoc, failure: nil), status: swappedStatus)
+        check(swappedControls == nil,
+              "a successful save keeps the resolved subs after swapping panels")
+        let swappedRebuilt = LayoutSettingsView.controlState(confirmed: swappedSavedDoc, status: swappedStatus)
+        check(swappedRebuilt.resolvedSubsByMain.isEmpty && swappedRebuilt.resolvedMainWindows.isEmpty,
+              "rebuilding from the stale status after a swap would drop the resolved subs")
+
+        // 失敗して読み直し成功: 失敗した下書き（split への変更）は画面・基準値から
+        // 消えて実際の設定（delta:week）に揃う。表示用 @State も実際の配置に戻る。
+        let layoutResyncedOutcome = await ServiceSettingsView.saveAndResync(
+            save: { throw EngineError(message: "layout save failed") },
+            reload: { layoutReloadCalls += 1; return layoutReal })
+        let layoutResynced = ServiceSettingsView.nextDocumentsAfterSave(
+            edited: layoutEdited, baseline: layoutBaseline, outcome: layoutResyncedOutcome)
+        check(layoutResyncedOutcome.failure != nil
+              && layoutResynced.doc.layoutPanels.map(\.main) == ["delta:week"]
+              && layoutResynced.synced.layoutPanels.map(\.main) == ["delta:week"],
+              "a failed layout save with a working reload shows the real panels")
+        let resyncedStatus = try JSONDecoder().decode([LayoutPanel].self,
+            from: Data(#"[{"main":"delta:week","size":"large","subs":["delta:resolved"]}]"#.utf8))
+        let resyncedLayoutControls = LayoutSettingsView.nextControlState(
+            previous: LayoutSettingsView.LayoutControlState(slots: emptySplitSlots, splits: emptySplitSplits),
+            outcome: layoutResyncedOutcome, status: resyncedStatus)
+        check(resyncedLayoutControls != nil && !resyncedLayoutControls!.splits[0] && !resyncedLayoutControls!.splits[2]
+              && resyncedLayoutControls!.slots[LayoutSettingsView.slotIndex(0, 0)].main == "delta:week"
+              && resyncedLayoutControls!.resolvedSubsByMain["delta:week"] == ["delta:resolved"],
+              "a working reload after a failed save rebuilds the controls from the real panels")
+
+        // 読み直し後も status は保存前の並びのままなので、並びが変わったパネルの
+        // 解決済み sub は位置照合で落ちる。実際の設定にまだいる main は
+        // 画面に残っていた値を引き継ぎ、設定から消えた main は捨てる。
+        let swappedResyncControls = LayoutSettingsView.nextControlState(
+            previous: swappedPrevious,
+            outcome: (doc: swappedSavedDoc, failure: EngineError(message: "layout save failed")),
+            status: swappedStatus)
+        check(swappedResyncControls?.splits[0] == false
+              && swappedResyncControls?.slots[LayoutSettingsView.slotIndex(0, 0)].main == "epsilon:week"
+              && swappedResyncControls?.slots[LayoutSettingsView.slotIndex(1, 0)].main == "alpha:week",
+              "a reload after a failed save still rebuilds the slots from the real panels")
+        check(swappedResyncControls?.resolvedSubsByMain["alpha:week"] == ["alpha:resolved"]
+              && swappedResyncControls?.resolvedSubsByMain["epsilon:week"] == ["epsilon:resolved"]
+              && swappedResyncControls?.resolvedMainWindows["alpha:week"] == "alpha:week",
+              "a reload after a failed save carries over the resolved subs of reordered panels")
+        let droppedResyncControls = LayoutSettingsView.nextControlState(
+            previous: swappedPrevious,
+            outcome: (doc: layoutReal, failure: EngineError(message: "layout save failed")),
+            status: [])
+        check(droppedResyncControls?.resolvedSubsByMain.isEmpty == true,
+              "resolved subs whose main left the confirmed layout are not carried over")
+
+        // 保存も読み直しも失敗: 下書き（編集中の値）と基準値をそのまま残し、
+        // 画面は下書きのまま。次の保存の差分（基準値 → 下書き）に失敗した変更が入る。
+        let layoutBothFailedOutcome = await ServiceSettingsView.saveAndResync(
+            save: { throw EngineError(message: "layout save failed") },
+            reload: { nil })
+        check(layoutBothFailedOutcome.doc == nil && layoutBothFailedOutcome.failure != nil,
+              "a failed layout resync reports no doc so the view keeps its screen")
+        let layoutBothFailed = ServiceSettingsView.nextDocumentsAfterSave(
+            edited: layoutEdited, baseline: layoutBaseline, outcome: layoutBothFailedOutcome)
+        check(layoutBothFailed.doc.layoutPanels.map(\.main) == ["beta:day", "gamma:day"]
+              && layoutBothFailed.synced.layoutPanels.map(\.main) == ["alpha:week"],
+              "a layout save and reload both failing keep the draft and the baseline apart")
+        let bothFailedControls = LayoutSettingsView.nextControlState(
+            previous: LayoutSettingsView.LayoutControlState(slots: emptySplitSlots, splits: emptySplitSplits),
+            outcome: layoutBothFailedOutcome, status: [])
+        check(bothFailedControls == nil && emptySplitSplits[2] == true,
+              "the failed layout draft stays on screen while the engine is unreachable")
+
+        // 実際の CLI でも確かめる: 配置の保存と読み直しが両方失敗したあと復旧して
+        // 次の保存をすると、基準値からの差分に失敗した配置が入って届く。
+        let layoutResyncDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: layoutResyncDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: layoutResyncDir) }
+        try Data("[display]\npaused = false\n".utf8)
+            .write(to: layoutResyncDir.appendingPathComponent("config.toml"))
+        let layoutEngine = layoutResyncDir.appendingPathComponent("engine")
+        try Data(applyOnceFails.utf8).write(to: layoutEngine) // 最初の 1 回の --apply-json を失敗させる
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: layoutEngine.path)
+        let layoutClient = EngineClient(enginePathOverride: layoutEngine.path)
+        let layoutStart = try await layoutClient.getConfig()
+        check(layoutStart.layoutPanels.isEmpty, "the layout fixture starts with auto placement")
+        var layoutDraft = layoutStart
+        layoutDraft.layoutPanels = [ConfigDocument.PanelConfig(main: "alpha:week", subs: ["alpha:day"], size: "large")]
+        let layoutBrokenOutcome = await ServiceSettingsView.saveAndResync(
+            save: { try await layoutClient.saveChanges(from: layoutStart, to: layoutDraft) },
+            reload: { nil })
+        let layoutRecovered = ServiceSettingsView.nextDocumentsAfterSave(
+            edited: layoutDraft, baseline: layoutStart, outcome: layoutBrokenOutcome)
+        check(layoutBrokenOutcome.failure != nil
+              && layoutRecovered.doc.layoutPanels.map(\.main) == ["alpha:week"]
+              && layoutRecovered.synced.layoutPanels.isEmpty,
+              "the both-failure state keeps the layout draft and the baseline separate")
+        let layoutRecoveredSaved = try await layoutClient.saveChanges(from: layoutRecovered.synced, to: layoutRecovered.doc)
+        check(layoutRecoveredSaved.layoutPanels.map(\.main) == ["alpha:week"]
+              && layoutRecoveredSaved.layoutPanels[0].subs == ["alpha:day"],
+              "the next layout save after recovery sends the failed placement in the baseline diff")
+        let layoutRecoveredConfig = try await layoutClient.getConfig()
+        check(layoutRecoveredConfig.layoutPanels.map(\.main) == ["alpha:week"],
+              "the recovered engine config really contains the failed placement")
+
         // MARK: swift-engine 担当分の追加テスト（指摘 1〜5）
 
         // 指摘 4: 通知計画は内容が変わったとき、保留 work の再試行、もしくは

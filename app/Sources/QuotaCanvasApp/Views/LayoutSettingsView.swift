@@ -15,6 +15,10 @@ struct LayoutSettingsView: View {
     private let client = EngineClient()
 
     @State private var doc: ConfigDocument?
+    /// 基準値: 最後にエンジンで確認できた設定（読み込み・保存・読み直しの成功）。
+    /// 編集中の値（doc）と分けて持ち、保存は「基準値 → 編集中の値」の差分で送る。
+    /// 保存と読み直しの両方が失敗しても、未保存の編集が次の保存の差分に入る。
+    @State private var synced: ConfigDocument?
     @State private var windows: [WindowChoice] = []
     @State private var providerColors: [String: String] = [:]
     @State private var slots: [LayoutSlot] = LayoutSettingsView.emptySlots()
@@ -32,6 +36,67 @@ struct LayoutSettingsView: View {
     @State private var alertMessage: String?
     @State private var subLimitHint = false
 
+    /// 操作部品（スロット図・split トグル）が参照する表示用の値。
+    /// 確認できた設定（初回読み込み・保存失敗後の読み直し成功）を @State に
+    /// 揃えるために使う。失敗した下書きを画面に残すと実設定と食い違い、
+    /// 次に別の項目を保存するとき失敗分を基準値に混ぜて消してしまう。
+    /// 保存が成功したときは画面（編集中の値）をそのまま保つ。
+    struct LayoutControlState: Equatable {
+        var slots: [LayoutSlot]
+        var splits: [Bool]
+        var resolvedSubsByMain: [String: [String]] = [:]
+        var resolvedMainWindows: [String: String] = [:]
+    }
+
+    /// 確認できた設定を表示用の値に変える。初回の読み込みと保存失敗後の
+    /// 読み直しで共通に使う。手動配置は config が正、status は解決済みサブ
+    /// などの補助。
+    static func controlState(confirmed: ConfigDocument, status: [LayoutPanel]) -> LayoutControlState {
+        let restored = restoreLayout(config: confirmed.layoutPanels, status: status)
+        return LayoutControlState(slots: restored.slots, splits: restored.splits,
+                                  resolvedSubsByMain: restored.resolvedSubs,
+                                  resolvedMainWindows: restored.resolvedMains)
+    }
+
+    /// 保存の結果から、表示用 @State を組み直す値を決める。nil は「画面を
+    /// 触らない」:
+    /// - 保存に成功: 編集中の値をそのまま保つ。保存後の設定で組み直すと、
+    ///   panelsForSave が両段とも空の列を保存しないせいで空き列の split が
+    ///   戻るし、status との照合（同じ配列位置の main・size）は並べ替えで
+    ///   崩れて解決済み sub が落ちる（このビューはあとの status 更新を
+    ///   購読しないので表示も戻らない）。
+    /// - 保存も読み直しも失敗: 確認できた doc がないので画面は下書きのまま。
+    /// - 失敗して読み直し成功: 実際の設定に揃える。解決済み sub・窓は
+    ///   位置照合で落ちた main について、画面に残っていた値を引き継ぐ
+    ///   （status は保存前のままなので、並べ替え後の照合は当てにならない）。
+    ///   status は組み直すときだけ読む（@autoclosure。保存成功では
+    ///   status.json を読みに行かない）。
+    static func nextControlState(
+        previous: LayoutControlState,
+        outcome: (doc: ConfigDocument?, failure: Error?),
+        status: @autoclosure () -> [LayoutPanel]
+    ) -> LayoutControlState? {
+        guard outcome.failure != nil, let confirmed = outcome.doc else { return nil }
+        var next = controlState(confirmed: confirmed, status: status())
+        let knownMains = Set(confirmed.layoutPanels.map(\.main).filter { !$0.isEmpty })
+        for (main, subs) in previous.resolvedSubsByMain
+        where knownMains.contains(main) && next.resolvedSubsByMain[main] == nil {
+            next.resolvedSubsByMain[main] = subs
+        }
+        for (main, window) in previous.resolvedMainWindows
+        where knownMains.contains(main) && next.resolvedMainWindows[main] == nil {
+            next.resolvedMainWindows[main] = window
+        }
+        return next
+    }
+
+    private func applyControlState(_ state: LayoutControlState) {
+        slots = state.slots
+        splits = state.splits
+        resolvedSubsByMain = state.resolvedSubsByMain
+        resolvedMainWindows = state.resolvedMainWindows
+    }
+
     // MARK: 編集モデル
 
     struct WindowChoice: Identifiable {
@@ -43,7 +108,7 @@ struct LayoutSettingsView: View {
         var partOf: String? = nil
     }
 
-    struct LayoutSlot: Identifiable {
+    struct LayoutSlot: Identifiable, Equatable {
         let id: String     // "c0:large", "c0:top", "c0:bottom", "c1:large"…
         let column: Int    // 0..<columnCount
         let size: String   // "large" | "small"
@@ -586,7 +651,9 @@ struct LayoutSettingsView: View {
 
         let snapshot = StatusStore.loadStatusSnapshot()
         do {
-            doc = try await client.getConfig()
+            let fetched = try await client.getConfig()
+            doc = fetched
+            synced = fetched
             loadFailed = false
         } catch {
             loadFailed = true
@@ -638,11 +705,9 @@ struct LayoutSettingsView: View {
         }
 
         providerColors = snapshot?.colors ?? [:]
-        let restored = Self.restoreLayout(config: doc?.layoutPanels ?? [], status: snapshot?.layout ?? [])
-        slots = restored.slots
-        splits = restored.splits
-        resolvedSubsByMain = restored.resolvedSubs
-        resolvedMainWindows = restored.resolvedMains
+        if let confirmed = doc {
+            applyControlState(Self.controlState(confirmed: confirmed, status: snapshot?.layout ?? []))
+        }
     }
 
     /// 手動配置は config が正。status は自動配置と、対応するパネル（同じ main・size）の
@@ -703,11 +768,10 @@ struct LayoutSettingsView: View {
     /// split の列は上段か下段のどちらかに main があれば上下両方を small で出す（空の段は main ""、
     /// small に subs はない）。両方空なら出さない。
     private func commit() {
-        guard let original = doc else { return }
-        var updated = original
+        guard var updated = doc else { return }
         updated.layoutPanels = Self.panelsForSave(slots: slots, splits: splits)
         doc = updated
-        Task { await save(original, updated) }
+        Task { await save(updated) }
     }
 
     static func panelsForSave(slots: [LayoutSlot], splits: [Bool]) -> [ConfigDocument.PanelConfig] {
@@ -736,14 +800,40 @@ struct LayoutSettingsView: View {
         return panels
     }
 
-    private func save(_ original: ConfigDocument, _ docToSave: ConfigDocument) async {
+    /// ServiceSettingsView と同じ方針: 保存は「基準値（synced）→ 編集中の値」の
+    /// 差分で送る。失敗したら実際の設定を読み直し、doc・synced を確認できた
+    /// 設定に揃える（失敗した下書きを doc や画面に残して次の保存の original
+    /// に使うと、その項目は差分から消えて二度と送られない）。このとき表示用の
+    /// @State も実際の設定に揃える。保存に成功したときは doc・synced だけを
+    /// 更新し、表示は編集中の値のまま（nextControlState のコメント参照）。
+    /// 読み直しも失敗したときは下書き（doc）と基準値をそのまま残し、
+    /// 未保存の編集を次の保存の差分に含める。
+    private func save(_ docToSave: ConfigDocument) async {
+        guard let baseline = synced else { return }
         busy = true
         defer { busy = false }
-        do {
-            doc = try await client.saveChanges(from: original, to: docToSave)
-            EngineClient.scheduleArtifactReload() // 2 秒後に status.json / frame.png を読み直させる
-        } catch {
+        let outcome = await ServiceSettingsView.saveAndResync(
+            save: { try await self.client.saveChanges(from: baseline, to: docToSave) },
+            reload: { try? await self.client.getConfig() })
+        let next = ServiceSettingsView.nextDocumentsAfterSave(
+            edited: docToSave, baseline: baseline, outcome: outcome)
+        doc = next.doc
+        synced = next.synced
+        // 表示用 @State を確認できた設定に揃えるのは失敗して読み直せたとき
+        // だけ（nextControlState のコメント参照）。保存成功のあとに組み直すと
+        // 空き列の split が戻り、並べ替えたパネルの解決済み sub が落ちる。
+        if let nextControls = Self.nextControlState(
+            previous: LayoutControlState(slots: slots, splits: splits,
+                                         resolvedSubsByMain: resolvedSubsByMain,
+                                         resolvedMainWindows: resolvedMainWindows),
+            outcome: outcome,
+            status: StatusStore.loadStatusSnapshot()?.layout ?? []) {
+            applyControlState(nextControls)
+        }
+        if let error = outcome.failure {
             alertMessage = error.localizedDescription
+        } else {
+            EngineClient.scheduleArtifactReload() // 2 秒後に status.json / frame.png を読み直させる
         }
     }
 }
