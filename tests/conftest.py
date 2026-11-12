@@ -123,3 +123,15 @@ def _no_real_muse_cache(tmp_path, monkeypatch):
 
     monkeypatch.setattr(providers.muse, "_action_cache_file",
                         lambda: tmp_path / "muse-action.json")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_app_state(tmp_path, monkeypatch):
+    """app-state.json / app-relaunch-at を tmp_path に向け、run ループを回す
+    テストが実アプリの状態ファイルを読んだり `open` を呼んだりしない。"""
+    from quotacanvas import app_watchdog
+
+    monkeypatch.setattr(app_watchdog, "APP_STATE_PATH",
+                        tmp_path / "app-state.json")
+    monkeypatch.setattr(app_watchdog, "RELAUNCH_MARK_PATH",
+                        tmp_path / "app-relaunch-at")

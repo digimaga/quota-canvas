@@ -762,6 +762,57 @@ struct RegressionTests {
         check(cancelledSleeps == 0 && cancelledReloads == 0,
               "a poll cancelled from the start never sleeps or reloads")
 
+        // app-state.json（エンジンの watchdog が読む生存状態）: キーと値の型、
+        // user_quit の真偽。pid は Python 側で isinstance(int) を要求するので
+        // 整数リテラルでなければならない。
+        let stateLaunched = Date(timeIntervalSince1970: 1_800_000_000)
+        let stateRunning = AppStateFile.encode(bundlePath: "/Applications/QuotaCanvas.app",
+                                               pid: 1234, launchedAt: stateLaunched, userQuit: false)
+        let stateRunningJSON = try JSONSerialization.jsonObject(with: stateRunning) as? [String: Any]
+        check(stateRunningJSON?.count == 4, "app state writes exactly the four contract keys")
+        check(stateRunningJSON?["bundle_path"] as? String == "/Applications/QuotaCanvas.app",
+              "bundle_path is a string")
+        check(stateRunningJSON?["pid"] as? Int == 1234, "pid is an integer")
+        check((stateRunningJSON?["launched_at"] as? NSNumber)?.doubleValue == 1_800_000_000,
+              "launched_at is epoch seconds")
+        check(stateRunningJSON?["user_quit"] as? Bool == false, "user_quit is false while running")
+        check(String(decoding: stateRunning, as: UTF8.self).contains("\"pid\":1234")
+              && String(decoding: stateRunning, as: UTF8.self).contains("\"user_quit\":false"),
+              "pid and user_quit serialize as integer and boolean literals")
+
+        let stateQuit = AppStateFile.encode(bundlePath: "/tmp/QuotaCanvas.app", pid: 99,
+                                            launchedAt: stateLaunched, userQuit: true)
+        let stateQuitJSON = try JSONSerialization.jsonObject(with: stateQuit) as? [String: Any]
+        check(stateQuitJSON?["user_quit"] as? Bool == true, "user_quit is true on normal quit")
+        check(AppStateFile.isUserInitiatedQuit(nil), "an in-app quit (no Apple Event) counts as the user's quit")
+        let quitEvent = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass),
+                                               eventID: AEEventID(kAEQuitApplication),
+                                               targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID),
+                                               transactionID: AETransactionID(kAnyTransactionID))
+        check(!AppStateFile.isUserInitiatedQuit(quitEvent),
+              "a quit Apple Event (logout, system or another process) is not the user's quit")
+        check(String(decoding: stateQuit, as: UTF8.self).contains("\"user_quit\":true"),
+              "quit state serializes user_quit as a true literal")
+
+        // write() は .app 以外の bundleURL では何も書かず、.app では存在しない
+        // ディレクトリごと app-state.json を作る（原子的書き込み）。
+        let stateDir = dir.appendingPathComponent("app-state-test")
+        defer { try? FileManager.default.removeItem(at: stateDir) }
+        let stateFile = stateDir.appendingPathComponent(AppStateFile.fileName)
+        AppStateFile.write(userQuit: false, launchedAt: stateLaunched,
+                           bundleURL: URL(fileURLWithPath: "/usr/local/bin/quota-canvas"),
+                           directory: stateDir, pid: 4321)
+        check(!FileManager.default.fileExists(atPath: stateFile.path),
+              "non-.app launch writes no state file")
+        AppStateFile.write(userQuit: false, launchedAt: stateLaunched,
+                           bundleURL: URL(fileURLWithPath: "/Applications/QuotaCanvas.app"),
+                           directory: stateDir, pid: 4321)
+        let writtenState = try JSONSerialization.jsonObject(with: Data(contentsOf: stateFile)) as? [String: Any]
+        check(writtenState?["bundle_path"] as? String == "/Applications/QuotaCanvas.app"
+              && writtenState?["pid"] as? Int == 4321
+              && writtenState?["user_quit"] as? Bool == false,
+              "state file holds the running app identity")
+
         print("Regression checks: \(checks) passed")
     }
 }

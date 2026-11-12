@@ -139,6 +139,8 @@ See [docs/app-contract.md](docs/app-contract.md) for menu bar app integration. O
 
 [app/](app/) contains QuotaCanvas.app, which displays engine status, recommendations and a screen preview, and provides settings, pause and notifications. With Swift 6.2 or later and macOS 14 or later, run `cd app && ./scripts/build.sh` to build `app/build/QuotaCanvas.app`. See [app/README.md](app/README.md).
 
+If the app quits unexpectedly — disappears during sleep, crashes, or is killed — the engine detects it from `app-state.json` and relaunches it with `open -g` (at most once every 5 minutes). When you quit the app yourself (menu or ⌘Q) it sets `user_quit`, and the engine leaves it off. After a logout or restart the engine also brings the app back. See [docs/app-contract.md](docs/app-contract.md).
+
 The Routing settings tab enables routing, sets the remaining quota floor and data freshness, shows current verdicts, toggles burn mode, and edits and reorders workers and their windows. It also provides copy buttons for the Claude Code / Codex plugin installation commands.
 
 #### Credentials

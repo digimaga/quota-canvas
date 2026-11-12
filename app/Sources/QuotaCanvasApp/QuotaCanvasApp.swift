@@ -3,6 +3,8 @@ import AppKit
 
 @main
 struct QuotaCanvasApp: App {
+    /// app-state.json（エンジン watchdog 用の生存状態）を書く delegate。
+    @NSApplicationDelegateAdaptor(AppStateDelegate.self) private var appDelegate
     @StateObject private var statusStore: StatusStore
 
     init() {

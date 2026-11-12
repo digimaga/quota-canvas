@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PIL import Image
 
-from . import desktop_frame, detect_cache, gate, keychain, macpower, providers
+from . import app_watchdog, desktop_frame, detect_cache, gate, keychain, macpower, providers
 from .i18n import LANGUAGE_CHOICES, current_language, set_language, t, translations
 from .config import (
     DEFAULT_PATH, PROVIDERS, Sleep, Config, ConfigError, apply_config_changes, brightness_for, config_from_dict,
@@ -1577,6 +1577,7 @@ def main(argv=None) -> int:
             providers.grok.set_token_refresh(cfg.providers.grok_token_refresh)
             providers.gemini.set_token_refresh(cfg.providers.gemini_token_refresh)
         current["cfg"] = cfg
+        app_watchdog.check()  # 予期せず終了したメニューバーアプリの起動し直し (macOS のみ、失敗しても止まらない)
         now = datetime.now(timezone.utc)
         interval, redraw = _effective_poll(args, cfg)
         mono = time.monotonic()

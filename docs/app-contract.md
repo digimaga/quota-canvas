@@ -10,6 +10,14 @@ The app finds the CLI at the path stored in its settings (default
 
 ## Files (in `~/Library/Application Support/quota-canvas/`)
 
+- `app-state.json` — written atomically by the menu bar app (only when it runs from a `.app` bundle):
+  `{"bundle_path": "/Applications/QuotaCanvas.app", "pid": 12345, "launched_at": 1794411716.0, "user_quit": false}`.
+  The app writes `user_quit: false` at launch and `true` only when the user quits it from inside the app (menu or ⌘Q).
+  A quit Apple Event (logout, restart, another process) leaves it `false`. Each `quota-canvas run` pass reads it and,
+  when `user_quit` is `false` but `pid` is gone (or now belongs to a process not named `QuotaCanvasApp`), runs
+  `open -g <bundle_path>` — at most once every 5 minutes (`app-relaunch-at` holds the last attempt as its mtime).
+  So after a logout or restart the engine also brings the app back on its first pass.
+
 - `status.json` — written atomically by `quota-canvas run` after every redraw:
 
 ```json
