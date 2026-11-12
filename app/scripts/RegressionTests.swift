@@ -813,6 +813,607 @@ struct RegressionTests {
               && writtenState?["user_quit"] as? Bool == false,
               "state file holds the running app identity")
 
+        // MuseCredentialCoordinator: 削除と取得（muse-ingest）の直列化。削除は実行中の
+        // 取得の完了を待ってからエンジンを呼び、削除中は新しい取得が始まらない。
+        // これで muse-ingest --clear の後に古い・新しい取得が着地して
+        // muse-usage.json（利用枠と「検出」表示）が復活しない。
+        let coordDir = dir.appendingPathComponent("muse-coordinator")
+        try FileManager.default.createDirectory(at: coordDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: coordDir) }
+        let coordScript = coordDir.appendingPathComponent("engine")
+        // 呼ばれた引数を QC_COORD_LOG に追記し、--delete（set-key muse --delete）は
+        // release ファイルができるまで返らない（削除の進行を止めて状態を見る）。
+        let coordPython = #"""
+        #!/usr/bin/python3
+        import os, sys, time
+        with open(os.environ["QC_COORD_LOG"], "a") as f:
+            f.write(" ".join(sys.argv[1:]) + "\n")
+        release = __file__ + ".release"
+        if "--delete" in sys.argv:
+            while not os.path.exists(release):
+                time.sleep(0.01)
+        """#
+        try Data(coordPython.utf8).write(to: coordScript)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: coordScript.path)
+        let coordClient = EngineClient(enginePathOverride: coordScript.path)
+        let coordRelease = URL(fileURLWithPath: coordScript.path + ".release")
+        let coordLog = coordDir.appendingPathComponent("calls.log").path
+        _ = setenv("QC_COORD_LOG", coordLog, 1)
+
+        let coord = MuseCredentialCoordinator()
+        check(coord.beginPoll() == 0 && coord.polling, "a muse poll starts and reports its generation")
+        let deleteTask = Task { try await coord.deleteCredential(client: coordClient, clearWebsiteData: {}) }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        check(coord.deleting == false && !FileManager.default.fileExists(atPath: coordLog),
+              "a muse delete waits for the in-flight poll before calling the engine")
+        coord.endPoll()
+        try Data().write(to: coordRelease) // set-key muse --delete の待ちを解く
+        try await deleteTask.value
+        let coordCalls = try String(contentsOfFile: coordLog, encoding: .utf8)
+        check(coordCalls.contains("set-key muse --delete") && coordCalls.contains("muse-ingest --clear"),
+              "a muse delete removes the key and muse-usage.json after the poll ends")
+        check(coord.generation == 1 && !coord.isCurrent(0),
+              "a muse delete advances the generation so an older poll no longer counts as current")
+        check(!coord.deleting && coord.beginPoll() != nil, "a new muse poll can start after the delete finished")
+        coord.endPoll()
+
+        // 削除の実行中は新しい取得が始まらない（clear の後に取得が着地しないため）。
+        try FileManager.default.removeItem(at: coordRelease)
+        let coordLog2 = coordDir.appendingPathComponent("calls2.log").path
+        _ = setenv("QC_COORD_LOG", coordLog2, 1)
+        let coord2 = MuseCredentialCoordinator()
+        let deleteTask2 = Task { try await coord2.deleteCredential(client: coordClient, clearWebsiteData: {}) }
+        while !FileManager.default.fileExists(atPath: coordLog2) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        check(coord2.deleting, "a muse delete marks itself as running while it works")
+        check(coord2.beginPoll() == nil, "no muse poll can start while a delete is running")
+        try Data().write(to: coordRelease)
+        try await deleteTask2.value
+        check(!coord2.deleting, "a muse delete clears the running mark when finished")
+
+        // ServiceSettingsView.windowKeysForSave: Set の並びのまま config.toml に書かずに
+        // 必ずソートする（Set の順で書くと保存ごとに順番が変わり、同じ内容の差分が付く）。
+        check(ServiceSettingsView.windowKeysForSave(selected: ["win-b", "win-a"], all: ["win-a", "win-b", "win-c"])
+              == ["win-a", "win-b"], "a partial window selection is written sorted")
+        check(ServiceSettingsView.windowKeysForSave(selected: ["win-c", "win-a", "win-b"],
+                                                    all: ["win-a", "win-b", "win-c"]) == [],
+              "a full window selection is stored as the empty array contract")
+        check(ServiceSettingsView.windowKeysForSave(selected: [], all: ["win-a"]) == [],
+              "an empty window selection keeps the empty array contract")
+
+        // ServiceSettingsView.saveAndResync: 保存に失敗したら、失敗した編集の下書きでは
+        // なく実際の設定の読み直しを画面に使う（下書きを残すと、それが次の保存の
+        // original になり、差分なしとみなされて二度と送られない）。
+        let savedDoc = try ConfigDocument(data: Data(#"{"display":{"paused":true}}"#.utf8))
+        let reloadedDoc = try ConfigDocument(data: Data(#"{"display":{"paused":false}}"#.utf8))
+        var reloadCalls = 0
+        let success = await ServiceSettingsView.saveAndResync(save: { savedDoc },
+                                                              reload: { reloadCalls += 1; return reloadedDoc })
+        check(success.doc?.paused == true && reloadCalls == 0 && success.failure == nil,
+              "a successful config save keeps the saved doc without reloading")
+        let failed = await ServiceSettingsView.saveAndResync(
+            save: { throw EngineError(message: "save failed") },
+            reload: { reloadCalls += 1; return reloadedDoc })
+        check(failed.doc?.paused == false && reloadCalls == 1 && failed.failure != nil,
+              "a failed config save resyncs the screen from the real config instead of the draft")
+        let brokenResync = await ServiceSettingsView.saveAndResync(
+            save: { throw EngineError(message: "save failed") },
+            reload: { nil })
+        check(brokenResync.doc == nil && brokenResync.failure != nil,
+              "a failed resync reports no doc so the view keeps its current screen")
+
+        // 指摘: 保存と getConfig()（読み直し）の両方が失敗したときは、基準値
+        // （最後にエンジンで確認できた設定）と編集中の値をそのまま残す。
+        // 次の保存は「基準値 → 編集中の値」の差分なので、失敗した変更も含まれて
+        // 送られる（読み直しが成功したときは従来どおり実設定に一致させる）。
+        let draftDoc = try ConfigDocument(data: Data(#"{"display":{"paused":true,"brightness":75}}"#.utf8))
+        let afterSaved: (doc: ConfigDocument?, failure: Error?) = (doc: savedDoc, failure: nil)
+        let savedMerge = ServiceSettingsView.nextDocumentsAfterSave(
+            edited: draftDoc, baseline: draftDoc, outcome: afterSaved)
+        check(savedMerge.doc.paused && savedMerge.synced.paused,
+              "a successful save moves the screen and the baseline to the saved config")
+        let afterResynced: (doc: ConfigDocument?, failure: Error?) =
+            (doc: reloadedDoc, failure: EngineError(message: "save failed"))
+        let resyncedMerge = ServiceSettingsView.nextDocumentsAfterSave(
+            edited: draftDoc, baseline: draftDoc, outcome: afterResynced)
+        check(resyncedMerge.doc.paused == false && resyncedMerge.synced.paused == false,
+              "a failed save with a working reload shows the real config instead of the draft")
+        let afterBothFailed: (doc: ConfigDocument?, failure: Error?) =
+            (doc: nil, failure: EngineError(message: "save failed"))
+        let bothFailedMerge = ServiceSettingsView.nextDocumentsAfterSave(
+            edited: draftDoc, baseline: reloadedDoc, outcome: afterBothFailed)
+        check(bothFailedMerge.doc.paused && bothFailedMerge.doc.brightness == 75,
+              "a save and reload both failing keeps the unsaved edit on screen")
+        check(!bothFailedMerge.synced.paused,
+              "a save and reload both failing keeps the baseline for the next diff")
+
+        // 実際の CLI でも確かめる: 保存と読み直しの両方が失敗したあと、復旧して
+        // 別の項目を含む保存をすると、基準値からの差分に失敗した変更が入って届く。
+        let resyncDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: resyncDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: resyncDir) }
+        try Data("[display]\npaused = false\nbrightness = 50\n".utf8)
+            .write(to: resyncDir.appendingPathComponent("config.toml"))
+        let resyncEngine = resyncDir.appendingPathComponent("engine")
+        // 最初の 1 回だけ config --apply-json を失敗させる（エンジン一時停止の想定）。
+        let applyOnceFails = #"""
+        #!/usr/bin/python3
+        import os, sys
+        from pathlib import Path
+        repo = os.environ["QUOTA_CANVAS_TEST_REPO"]
+        executable = os.path.join(repo, ".venv", "bin", "python")
+        config = os.path.join(os.path.dirname(__file__), "config.toml")
+        if "--apply-json" in sys.argv and not Path(__file__ + ".applied").exists():
+            Path(__file__ + ".applied").write_text("1")
+            print('{"error":"engine is down"}')
+            sys.exit(1)
+        os.execv(executable, [executable, "-m", "quotacanvas.cli", "--config", config] + sys.argv[1:])
+        """#
+        try Data(applyOnceFails.utf8).write(to: resyncEngine)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: resyncEngine.path)
+        let resyncClient = EngineClient(enginePathOverride: resyncEngine.path)
+        let baselineDoc = try await resyncClient.getConfig()
+        check(!baselineDoc.paused && baselineDoc.brightness == 50,
+              "the resync fixture starts from the written config")
+        var editedBaseline = baselineDoc
+        editedBaseline.paused = true
+        editedBaseline.brightness = 75
+        let brokenOutcome = await ServiceSettingsView.saveAndResync(
+            save: { try await resyncClient.saveChanges(from: baselineDoc, to: editedBaseline) },
+            reload: { nil }) // 読み直しも失敗した状態を再現する
+        let recovered = ServiceSettingsView.nextDocumentsAfterSave(
+            edited: editedBaseline, baseline: baselineDoc, outcome: brokenOutcome)
+        check(brokenOutcome.failure != nil && recovered.doc.paused && !recovered.synced.paused,
+              "the both-failure state keeps the draft on screen and the baseline separate")
+        // 復旧（2 回目の --apply-json は通る）。次の保存は基準値からの差分なので、
+        // いったん失敗した変更がエンジンに届く。
+        let recoveredSaved = try await resyncClient.saveChanges(from: recovered.synced, to: recovered.doc)
+        check(recoveredSaved.paused && recoveredSaved.brightness == 75,
+              "the next save after recovery sends the failed edit in the baseline diff")
+        let recoveredConfig = try await resyncClient.getConfig()
+        check(recoveredConfig.paused && recoveredConfig.brightness == 75,
+              "the recovered engine config really contains the failed edit")
+
+        // 指摘: 振り分けタブの読み直しは、それより新しい操作の値を上書きしない。
+        // 項目ごとの編集の世代（editGeneration）と、保存がまだ着地していない
+        // 項目（pendingFields）で反映の可否を決める。
+        check(RoutingSettingsView.shouldApplyReload(editedAt: nil, reloadGeneration: 3, pending: false),
+              "an item never edited follows the reloaded config")
+        check(RoutingSettingsView.shouldApplyReload(editedAt: 2, reloadGeneration: 3, pending: false),
+              "a failed edit older than the reload is reverted to the real config")
+        check(!RoutingSettingsView.shouldApplyReload(editedAt: 4, reloadGeneration: 3, pending: false),
+              "an edit made after the reload started survives it")
+        check(!RoutingSettingsView.shouldApplyReload(editedAt: 2, reloadGeneration: 3, pending: true),
+              "an item whose save has not landed is not overwritten by the reload")
+        // レビューの筋書き: 保存 A の失敗後に読み直しが走り、その完了前に保存 B が
+        // 成功しても、B の表示は読み直しで古い値に戻らない（A だけ実設定に戻す）。
+        check(RoutingSettingsView.shouldApplyReload(editedAt: 1, reloadGeneration: 1, pending: false)
+              && !RoutingSettingsView.shouldApplyReload(editedAt: 2, reloadGeneration: 1, pending: false),
+              "a reload reverts the failed item but keeps the newer operation")
+
+        // 指摘（手直しラウンド）: 上の判定を実呼び出し順でも検証する。
+        // 保存 A 失敗 → 読み直し開始 → 保存 B → 読み直し完了 → 保存 B 完了。
+        // 読み直しの世代は取得を始める前に控えるので、取得中に始まった保存 B は
+        // 「読み直しより後」になり、古いスナップショットで上書きされない。
+        // 判定は読み直し完了直後（runRoutingSave の返りを待った直後）の状態で行う。
+        let orderTracker = RoutingSettingsView.RoutingSyncTracker()
+        var orderReloadGenerations: [Int] = []
+        let orderSaveAReturn = DeliveryGate() // 保存 A の応答を止める
+        let orderFetch = DeliveryGate()       // 読み直しの取得（getConfig）を止める
+        async let orderSaveA: Error? = RoutingSettingsView.runRoutingSave(
+            tracker: orderTracker, field: .floor,
+            save: { await orderSaveAReturn.deliver(); throw EngineError(message: "save A failed") },
+            reload: { reloadGeneration in
+                orderReloadGenerations.append(reloadGeneration)
+                await orderFetch.deliver() // getConfig の返りを止める
+            })
+        await orderSaveAReturn.waitForStart()
+        orderSaveAReturn.accept() // 保存 A の失敗が返り、読み直しが始まる
+        await orderFetch.waitForStart()
+        check(orderReloadGenerations == [2], // 保存 A の発行 1・着地 2 の後に読み直し
+              "the reload records the generation before its fetch starts")
+        let orderSaveBReturn = DeliveryGate() // 読み直しの取得中に始まる保存 B
+        async let orderSaveB: Error? = RoutingSettingsView.runRoutingSave(
+            tracker: orderTracker, field: .floor,
+            save: { await orderSaveBReturn.deliver() },
+            reload: { _ in }) // B は成功するので読み直しは走らない
+        await orderSaveBReturn.waitForStart()
+        orderFetch.accept() // 読み直しが完了する（保存 B はまだ着地していない）
+        let orderAFailure = await orderSaveA
+        check(!orderTracker.shouldApplyReload(.floor, reloadGeneration: orderReloadGenerations[0]),
+              "a snapshot fetched before save B does not overwrite B's display")
+        orderSaveBReturn.accept() // 保存 B が成功する
+        let orderBFailure = await orderSaveB
+        check(orderAFailure != nil && orderBFailure == nil
+              && orderTracker.shouldApplyReload(.floor, reloadGeneration: 100),
+              "save A reports its failure, save B lands and clears the pending flag")
+
+        // 指摘（手直しラウンド）: 同じ項目に保存 2 回で古い方が先に返る。
+        // 古い保存の完了で未着地（pending）は解除されず、その読み直しは
+        // 新しい保存の表示を上書きしない。新しい保存が返って初めて解除される。
+        let doubleTracker = RoutingSettingsView.RoutingSyncTracker()
+        var doubleReloadGenerations: [Int] = []
+        let doubleOldReturn = DeliveryGate()
+        let doubleNewReturn = DeliveryGate()
+        async let doubleOldSave: Error? = RoutingSettingsView.runRoutingSave(
+            tracker: doubleTracker, field: .enabled,
+            save: { await doubleOldReturn.deliver(); throw EngineError(message: "old save failed") },
+            reload: { reloadGeneration in doubleReloadGenerations.append(reloadGeneration) })
+        await doubleOldReturn.waitForStart() // 古い保存の発行（世代 1）
+        async let doubleNewSave: Error? = RoutingSettingsView.runRoutingSave(
+            tracker: doubleTracker, field: .enabled,
+            save: { await doubleNewReturn.deliver() },
+            reload: { _ in })
+        await doubleNewReturn.waitForStart() // 新しい保存の発行（世代 2・どちらも未着地）
+        doubleOldReturn.accept() // 古い保存が先に失敗して読み直しが走る
+        _ = await doubleOldSave
+        check(doubleReloadGenerations == [3] // 発行 1・2、古い保存の着地 3
+              && !doubleTracker.shouldApplyReload(.enabled, reloadGeneration: doubleReloadGenerations[0]),
+              "the older save's completion keeps the field pending until the newer save lands")
+        doubleNewReturn.accept() // 新しい保存が成功する
+        _ = await doubleNewSave
+        check(doubleTracker.shouldApplyReload(.enabled, reloadGeneration: 100),
+              "the pending flag clears only when the newest save lands")
+
+        // 指摘（再確認ラウンド）: 読み直しの開始前から保存中だった項目も守る。
+        // 保存 B（floor）開始 → 保存 A（stale）失敗 → 読み直しが B の保存前の値を読む
+        // → B 成功 → 読み直し完了。B の着地も世代を進めるので、着地前に始まった
+        // 読み直しは floor の表示を古い値に戻さない（A の stale だけ実設定に戻す）。
+        let earlyTracker = RoutingSettingsView.RoutingSyncTracker()
+        var earlyReloadGenerations: [Int] = []
+        let earlySaveBReturn = DeliveryGate()
+        let earlyFetch = DeliveryGate()
+        async let earlySaveB: Error? = RoutingSettingsView.runRoutingSave(
+            tracker: earlyTracker, field: .floor,
+            save: { await earlySaveBReturn.deliver() },
+            reload: { _ in })
+        await earlySaveBReturn.waitForStart() // B は保存中（未着地）
+        async let earlySaveA: Error? = RoutingSettingsView.runRoutingSave(
+            tracker: earlyTracker, field: .stale,
+            save: { throw EngineError(message: "save A failed") },
+            reload: { reloadGeneration in
+                earlyReloadGenerations.append(reloadGeneration)
+                await earlyFetch.deliver() // B の保存前の値を読んでいる最中
+            })
+        await earlyFetch.waitForStart()
+        earlySaveBReturn.accept() // 読み直しの取得中に B が成功して着地する
+        _ = await earlySaveB
+        earlyFetch.accept() // 読み直しが完了する
+        _ = await earlySaveA
+        check(earlyReloadGenerations.count == 1
+              && !earlyTracker.shouldApplyReload(.floor, reloadGeneration: earlyReloadGenerations[0])
+              && earlyTracker.shouldApplyReload(.stale, reloadGeneration: earlyReloadGenerations[0]),
+              "a reload started before save B landed keeps B's display and reverts only A")
+
+        // 指摘（手直しラウンド）: 表示タブは保存失敗後の読み直しで doc / synced だけ
+        // でなく操作部品の @State（brightness など）も確認済みの設定に揃える。
+        var confirmedDisplay = ConfigDocument(object: [:])
+        confirmedDisplay.gauge = "used"
+        confirmedDisplay.brightness = 40
+        confirmedDisplay.percentColors = false
+        confirmedDisplay.separator = " / "
+        confirmedDisplay.weekStart = "monday"
+        confirmedDisplay.language = "en"
+        confirmedDisplay.sleepWithMac = false
+        confirmedDisplay.night = ConfigDocument.Night(start: "21:30", end: "06:15", brightness: 15)
+        let confirmedControls = DisplaySettingsView.controlState(confirmed: confirmedDisplay)
+        check(confirmedControls.gaugeShowsUsed && confirmedControls.brightness == 40
+              && !confirmedControls.percentColors && confirmedControls.separator == " / "
+              && confirmedControls.weekStart == "monday" && confirmedControls.language == "en"
+              && !confirmedControls.sleepWithMac && confirmedControls.nightOn
+              && confirmedControls.nightBrightness == 15,
+              "the control state mirrors the confirmed config after a reload")
+        check(confirmedControls.nightStart == DisplaySettingsView.parseHHMM("21:30")
+              && confirmedControls.nightEnd == DisplaySettingsView.parseHHMM("06:15"),
+              "night hours parse into the control state dates")
+        var noNightDisplay = ConfigDocument(object: [:])
+        noNightDisplay.brightness = 80
+        noNightDisplay.night = nil
+        let noNightControls = DisplaySettingsView.controlState(confirmed: noNightDisplay)
+        check(noNightControls.brightness == 80 && !noNightControls.nightOn
+              && noNightControls.nightBrightness == 20
+              && noNightControls.nightStart == DisplaySettingsView.DisplayControlState.defaultNightStart
+              && noNightControls.nightEnd == DisplaySettingsView.DisplayControlState.defaultNightEnd,
+              "a config without night resets the night controls to their defaults")
+
+        // MARK: swift-engine 担当分の追加テスト（指摘 1〜5）
+
+        // 指摘 4: 通知計画は内容が変わったとき、保留 work の再試行、もしくは
+        // 低頻度の定期実行（planningRetryInterval）のときだけ起こす。
+        let planCurrent = Data(#"{"cards":[]}"#.utf8)
+        check(StatusStore.shouldPlanNotifications(previous: nil, current: planCurrent, lastPlanAt: nil,
+                                                  hasPendingWork: false, now: now),
+              "the first status read plans notifications")
+        check(!StatusStore.shouldPlanNotifications(previous: planCurrent, current: planCurrent,
+                                                   lastPlanAt: now, hasPendingWork: false, now: now.addingTimeInterval(10)),
+              "an unchanged read inside the interval does not replan")
+        check(StatusStore.shouldPlanNotifications(previous: Data(#"{"cards":[{"id":"x"}]}"#.utf8), current: planCurrent,
+                                                  lastPlanAt: now, hasPendingWork: false, now: now.addingTimeInterval(10)),
+              "a changed read plans notifications")
+        check(StatusStore.shouldPlanNotifications(previous: planCurrent, current: planCurrent,
+                                                  lastPlanAt: now, hasPendingWork: true, now: now.addingTimeInterval(10)),
+              "pending planning or delivery work retries on the next read")
+        check(!StatusStore.shouldPlanNotifications(previous: planCurrent, current: planCurrent,
+                                                   lastPlanAt: now.addingTimeInterval(-StatusStore.planningRetryInterval + 1),
+                                                   hasPendingWork: false, now: now),
+              "just before the interval is not due yet")
+        check(StatusStore.shouldPlanNotifications(previous: planCurrent, current: planCurrent,
+                                                  lastPlanAt: now.addingTimeInterval(-StatusStore.planningRetryInterval),
+                                                  hasPendingWork: false, now: now),
+              "the periodic replan runs after the interval")
+
+        // 指摘 2: .app バンドルの外では LaunchAgent を一切調整しない。
+        // bundledEnginePath が無い（swift run など）ことを無効化と誤認して
+        // 常駐エンジンを bootout しないようにする。
+        let agentBundle = "/tmp/QuotaCanvasTest.app/Contents/Resources/engine/bin/quota-canvas"
+        check(AppEngineAgent.agentAction(enabled: true, bundledEngine: agentBundle, selectedEngine: agentBundle,
+                                         hasConflict: false, screen: true, inAppBundle: false) == .none,
+              "a non-.app launch never touches the LaunchAgents")
+        check(AppEngineAgent.agentAction(enabled: true, bundledEngine: agentBundle, selectedEngine: agentBundle,
+                                         hasConflict: false, screen: true, inAppBundle: true) == .run(screen: true),
+              "a bundled engine with screen enabled installs the screen agent")
+        check(AppEngineAgent.agentAction(enabled: true, bundledEngine: agentBundle, selectedEngine: agentBundle,
+                                         hasConflict: false, screen: false, inAppBundle: true) == .run(screen: false),
+              "a bundled engine without screen installs the headless agent")
+        check(AppEngineAgent.agentAction(enabled: true, bundledEngine: nil, selectedEngine: agentBundle,
+                                         hasConflict: false, screen: true, inAppBundle: true) == .removeAll,
+              "no bundled engine removes the agents")
+        check(AppEngineAgent.agentAction(enabled: true, bundledEngine: agentBundle,
+                                         selectedEngine: "~/dev/quota-canvas/.venv/bin/quota-canvas",
+                                         hasConflict: false, screen: true, inAppBundle: true) == .removeAll,
+              "a selected engine other than the bundle removes the agents")
+        check(AppEngineAgent.agentAction(enabled: true, bundledEngine: agentBundle, selectedEngine: agentBundle,
+                                         hasConflict: true, screen: true, inAppBundle: true) == .removeAll,
+              "a legacy-label conflict removes the agents")
+        check(AppEngineAgent.agentAction(enabled: false, bundledEngine: agentBundle, selectedEngine: agentBundle,
+                                         hasConflict: false, screen: true, inAppBundle: true) == .removeAll,
+              "a disabled bundled engine removes the agents")
+
+        // 指摘 1: コマンドごとの既定タイムアウト。読み取りは短く、保存は長め、
+        // detect（ネットワーク）はさらに長め。
+        check(EngineClient.defaultTimeout(for: ["config", "--json"]) == EngineClient.readTimeout,
+              "config read uses the short default timeout")
+        check(EngineClient.defaultTimeout(for: ["config", "--apply-json"]) == EngineClient.saveTimeout,
+              "config save uses the longer default timeout")
+        check(EngineClient.defaultTimeout(for: ["config", "--set-json"]) == EngineClient.saveTimeout,
+              "config set-json counts as a save")
+        check(EngineClient.defaultTimeout(for: ["notifications-plan"]) == EngineClient.planningTimeout,
+              "notifications-plan uses the planning timeout")
+        check(EngineClient.defaultTimeout(for: ["detect", "--json"]) == EngineClient.detectTimeout,
+              "detect uses the network timeout")
+        check(EngineClient.defaultTimeout(for: ["detect", "--json", "--cached"]) == EngineClient.detectTimeout,
+              "detect --cached keeps the network timeout (cache miss refetches)")
+        check(EngineClient.defaultTimeout(for: ["muse-action-id"]) == EngineClient.museTimeout
+              && EngineClient.defaultTimeout(for: ["muse-ingest", "--status", "200"]) == EngineClient.museTimeout,
+              "muse commands use the muse timeout")
+        check(EngineClient.defaultTimeout(for: ["refresh", "--json"]) == EngineClient.readTimeout
+              && EngineClient.defaultTimeout(for: ["set-key", "demo"]) == EngineClient.readTimeout,
+              "other commands use the read timeout")
+        check(EngineClient.readTimeout < EngineClient.saveTimeout && EngineClient.saveTimeout < EngineClient.detectTimeout,
+              "read, save and detect timeouts are ordered short to long")
+
+        // 指摘 1: SIGTERM を無視する子プロセスは猶予後に SIGKILL され、continuation が
+        // 必ず一度だけ完了する（明示 timeout と既定 timeout の両方）。
+        let savedGrace = EngineClient.killGrace
+        let savedReadTimeout = EngineClient.readTimeout
+        defer {
+            EngineClient.killGrace = savedGrace
+            EngineClient.readTimeout = savedReadTimeout
+        }
+        let ignoreTermCode = """
+        import signal, time
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        time.sleep(30)
+        """
+        EngineClient.killGrace = 0.3
+        let timeoutStartedAt = Date()
+        var explicitTimeoutError: String?
+        do {
+            _ = try await EngineClient(enginePathOverride: "/usr/bin/python3")
+                .run(["-c", ignoreTermCode], timeout: 0.5)
+        } catch {
+            explicitTimeoutError = error.localizedDescription
+        }
+        let explicitTimeoutElapsed = Date().timeIntervalSince(timeoutStartedAt)
+        check(explicitTimeoutError?.contains("打ち切りました") == true,
+              "an explicit timeout throws the cutoff error")
+        check(explicitTimeoutElapsed >= 0.5, "the explicit timeout waits for the deadline")
+        check(explicitTimeoutElapsed < 20, "the SIGKILL fallback unblocks waitUntilExit")
+        EngineClient.readTimeout = 0.4
+        var defaultTimeoutError: String?
+        do {
+            _ = try await EngineClient(enginePathOverride: "/usr/bin/python3")
+                .run(["-c", ignoreTermCode])
+        } catch {
+            defaultTimeoutError = error.localizedDescription
+        }
+        check(defaultTimeoutError?.contains("打ち切りました") == true,
+              "run applies the default timeout when none is passed")
+
+        // 指摘 1 (2 回目): 孫プロセスが stdout / stderr を握ったまま残っても、
+        // 子の終了後 readGrace で読み取りを打ち切り、continuation が完了する。
+        // （直し前は readDataToEndOfFile が EOF を待って止まり、run が戻らない）
+        let savedReadGrace = EngineClient.readGrace
+        let savedKillGrace = EngineClient.killGrace
+        defer {
+            EngineClient.readGrace = savedReadGrace
+            EngineClient.killGrace = savedKillGrace
+        }
+        EngineClient.readGrace = 0.6
+        EngineClient.killGrace = 0.3
+        let gcDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: gcDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: gcDir) }
+        let grandchildScript = gcDir.appendingPathComponent("grandchild-engine")
+        try Data(#"""
+        #!/bin/sh
+        sh -c 'sleep 30' &
+        echo ok
+        exit 0
+        """#.utf8).write(to: grandchildScript)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: grandchildScript.path)
+        let grandchildStartedAt = Date()
+        let grandchildOutput = try await EngineClient(enginePathOverride: grandchildScript.path)
+            .run(["ignored"], timeout: 5)
+        let grandchildElapsed = Date().timeIntervalSince(grandchildStartedAt)
+        check(String(data: grandchildOutput, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "ok",
+              "output is returned even when a grandchild keeps the pipe open")
+        check(grandchildElapsed < 20, "reading is cut off after the child exits instead of waiting for the grandchild")
+
+        // 期限では孫を含むプロセスグループごと止まる。SIGTERM を無視する親の下で
+        // 動く孫（SIGTERM では死ぬが親は死なない）も、最後のグループ SIGKILL と
+        // 親の死亡で書き込みが止まる。孫のログの増加が止まることで確認する。
+        let gcLog = gcDir.appendingPathComponent("grandchild.log")
+        let groupScript = gcDir.appendingPathComponent("group-engine")
+        try Data(#"""
+        #!/usr/bin/python3
+        import signal, subprocess, sys, time
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        subprocess.Popen(["/bin/sh", "-c",
+            "i=0; while :; do echo $i >> \"$1\"; i=$((i+1)); sleep 0.05; done", "sh", sys.argv[1]])
+        time.sleep(30)
+        """#.utf8).write(to: groupScript)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: groupScript.path)
+        var groupTimeoutError: String?
+        let groupStartedAt = Date()
+        do {
+            _ = try await EngineClient(enginePathOverride: groupScript.path)
+                .run([gcLog.path], timeout: 0.5)
+        } catch {
+            groupTimeoutError = error.localizedDescription
+        }
+        let groupElapsed = Date().timeIntervalSince(groupStartedAt)
+        check(groupTimeoutError?.contains("打ち切りました") == true,
+              "the timeout still reports the cutoff error when a grandchild is involved")
+        check(groupElapsed >= 0.5 && groupElapsed < 20,
+              "the group kill unblocks the run within the grace period")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let stoppedSize = (try? Data(contentsOf: gcLog))?.count ?? 0
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let stoppedSizeAgain = (try? Data(contentsOf: gcLog))?.count ?? 0
+        check(stoppedSize > 0 && stoppedSize == stoppedSizeAgain,
+              "the deadline stops the whole process group including the grandchild")
+
+        // 指摘 1〜3 (3 回目): fd の所有管理・stdin の期限付き nonblocking 書き込み・
+        // SIGPIPE 抑制。
+        let savedStdinGrace = EngineClient.stdinWriteGrace
+        defer { EngineClient.stdinWriteGrace = savedStdinGrace }
+        EngineClient.stdinWriteGrace = 0.6
+
+        // 指摘 2: 子は stdin を読まず、読み口を握る孫（python の Popen は fd 0 を
+        // 子に継承する）を残してすぐ終わる。stdin は 8MB で pipe バッファ（64KB）を
+        // 超えるので、blocking な書き込みは永遠に戻らない。子の終了後の猶予で
+        // 書き込みを諦めて run が戻ること（直し前は group.wait() が戻らず、
+        // このテスト自体が永久に終わらなかった）。
+        let stdinHolderScript = gcDir.appendingPathComponent("stdin-holder-engine")
+        try Data(#"""
+        #!/usr/bin/python3
+        import subprocess, sys
+        subprocess.Popen(["/bin/sleep", "30"])
+        sys.exit(0)
+        """#.utf8).write(to: stdinHolderScript)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stdinHolderScript.path)
+        let bigStdin = Data(repeating: 0x61, count: 8 * 1024 * 1024)
+        let stdinStartedAt = Date()
+        let stdinHolderOutput = try await EngineClient(enginePathOverride: stdinHolderScript.path)
+            .run(["ignored"], stdin: bigStdin, timeout: 5)
+        let stdinElapsed = Date().timeIntervalSince(stdinStartedAt)
+        check(stdinElapsed < 20,
+              "a large stdin write gives up when only a non-reading grandchild holds the pipe")
+        check(stdinHolderOutput.isEmpty, "giving up the stdin write still completes the run")
+
+        // 指摘 3: 子は stdin を一切読まずに終わる（孫なし）。読み口が全部閉じた
+        // あとの write は SIGPIPE を出すが、F_SETNOSIGPIPE で EPIPE として受け、
+        // このプロセス（テスト本体）が道連れに終了しないこと。stdin が pipe バッファ
+        // を超えているので、書き込みが子の死亡後も必ず続く（EPIPE に必ず届く）。
+        let exitScript = gcDir.appendingPathComponent("exit-engine")
+        try Data(#"""
+        #!/bin/sh
+        exit 0
+        """#.utf8).write(to: exitScript)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: exitScript.path)
+        _ = try await EngineClient(enginePathOverride: exitScript.path)
+            .run(["ignored"], stdin: bigStdin, timeout: 5)
+        check(true, "stdin writes survive a child that exits without reading (no SIGPIPE death)")
+
+        // 指摘 1: EOF を迎えた読み口は open から外れるだけで閉じられていなかった。
+        // 通常終了・エラー終了・stdin あり・読み取り打ち切り・書き込み打ち切りの
+        // どの経路でも、実行の前後で開いている fd の数が増えないこと。
+        func openFdCount() -> Int {
+            (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd"))?.count ?? -1
+        }
+        let pythonClient = EngineClient(enginePathOverride: "/usr/bin/python3")
+        let grandchildClient = EngineClient(enginePathOverride: grandchildScript.path)
+        let stdinHolderClient = EngineClient(enginePathOverride: stdinHolderScript.path)
+        let exitClient = EngineClient(enginePathOverride: exitScript.path)
+        // 最初の実行で遅延初期化が fd を増やしうるので、各経路を一度回してから測る
+        _ = try? await pythonClient.run(["-c", "print(1)"])
+        _ = try? await pythonClient.run(["-c", "import sys; sys.exit(3)"])
+        _ = try? await pythonClient.run(["-c", "print(1)"], stdin: Data("x".utf8))
+        _ = try? await grandchildClient.run(["ignored"], timeout: 5)
+        _ = try? await stdinHolderClient.run(["ignored"], stdin: bigStdin, timeout: 5)
+        _ = try? await exitClient.run(["ignored"], stdin: bigStdin, timeout: 5)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let baselineFdCount = openFdCount()
+        for _ in 0..<2 {
+            _ = try? await pythonClient.run(["-c", "print(2)"])                                // 通常終了
+            _ = try? await pythonClient.run(["-c", "import sys; sys.exit(3)"])                  // エラー終了
+            _ = try? await pythonClient.run(["-c", "print(3)"], stdin: Data("hello".utf8))      // 小さい stdin
+            _ = try? await grandchildClient.run(["ignored"], timeout: 5)                        // 読み取り打ち切り
+            _ = try? await stdinHolderClient.run(["ignored"], stdin: bigStdin, timeout: 5)      // 書き込み打ち切り
+            _ = try? await exitClient.run(["ignored"], stdin: bigStdin, timeout: 5)             // EPIPE 打ち切り
+        }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let afterFdCount = openFdCount()
+        check(baselineFdCount > 0 && afterFdCount == baselineFdCount,
+              "pipe fds are closed exactly once on every path (before \(baselineFdCount), after \(afterFdCount))")
+
+        // 指摘 2 (2 回目): detect の既定タイムアウトは detect_all の最悪直列時間を
+        // 覆えること。12 サービス直列: HTTP 15s×10 + gemini 30s + muse 20s +
+        // opendesign 51s ≒ 251s。muse の既定は RESOLVE_BUDGET=60s の解決を覆えること。
+        check(EngineClient.detectTimeout >= 251,
+              "detect timeout covers the worst-case serial detect_all (~251s)")
+        check(EngineClient.museTimeout >= 75,
+              "muse timeout covers a full action-id resolve (RESOLVE_BUDGET 60s)")
+
+        // 指摘 5: post に失敗した候補は undelivered に保持され、計画が同じキューを
+        // 作り直せない読み取り（同じ status の再読み取り）で再送される。
+        var lostKeys = Set<String>()
+        var lostPosts: [String] = []
+        var lostShouldFail = false
+        var lostAuthorized = true
+        let plainSpare = Data(#"{"cards":[{"id":"demo:weekly","provider":"demo","status":"spare"}]}"#.utf8)
+        let plainOver = Data(#"{"cards":[{"id":"demo:weekly","provider":"demo","status":"over"}]}"#.utf8)
+        let lostCoordinator = NotificationCoordinator(client: client, enabled: { true }, available: { true },
+            readKeys: { lostKeys }, recordKeys: { lostKeys.formUnion($0) }, authorized: { lostAuthorized },
+            post: { item in
+                if lostShouldFail { throw EngineError(message: "post failed") }
+                lostPosts.append(item.key)
+            })
+        lostShouldFail = true
+        lostCoordinator.enqueue(previous: plainSpare, current: plainOver, now: now)
+        await lostCoordinator.waitUntilIdle()
+        check(lostCoordinator.error != nil && lostKeys.isEmpty && lostPosts.isEmpty,
+              "a failed post keeps the candidate unrecorded")
+        // 権限が無い間は再送しない（:430 の unauthorized の扱いのまま）。
+        lostAuthorized = false
+        lostCoordinator.enqueue(previous: plainOver, current: plainOver, now: now)
+        await lostCoordinator.waitUntilIdle()
+        check(lostKeys.isEmpty && lostCoordinator.error != nil,
+              "unauthorized keeps the undelivered candidate without recording")
+        lostAuthorized = true
+        lostShouldFail = false
+        // previous == current で計画が候補を作り直さない読み取りでも再送される。
+        lostCoordinator.enqueue(previous: plainOver, current: plainOver, now: now)
+        await lostCoordinator.waitUntilIdle()
+        check(lostKeys.count == 1 && lostPosts.count == 1 && lostCoordinator.error == nil,
+              "the next normal read re-sends the undelivered candidate once")
+        // 受理済みなので再送しない。
+        lostCoordinator.enqueue(previous: plainOver, current: plainOver, now: now)
+        await lostCoordinator.waitUntilIdle()
+        check(lostKeys.count == 1 && lostPosts.count == 1, "an accepted candidate is not re-sent")
+
         print("Regression checks: \(checks) passed")
     }
 }

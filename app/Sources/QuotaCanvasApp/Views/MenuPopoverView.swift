@@ -402,6 +402,7 @@ struct MenuPopoverView: View {
             let client = EngineClient()
             let paused = !statusStore.isPaused
             _ = try await client.updateConfig { $0.paused = paused }
+            EngineClient.scheduleArtifactReload() // 2 秒後に status.json / frame.png を読み直させる
             await statusStore.refresh()
         } catch {
             alertMessage = error.localizedDescription

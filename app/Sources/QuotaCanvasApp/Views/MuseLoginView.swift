@@ -2,8 +2,9 @@ import SwiftUI
 import WebKit
 
 /// 「muse.ai にログイン」ウィンドウ: 専用の永続データストアを持つ WKWebView で
-/// muse.ai を開き、「保存」でログイン Cookie を `set-key muse` に渡す。
-/// Cookie の値はログ・画面・引数に出さない（stdin 経由でエンジンに渡す）。
+/// muse.ai を開き、「完了」で利用枠の取得を始める。取得はログイン済みの WebKit が
+/// muse.ai と同じ Server Action の fetch を実行し、その応答をエンジンの
+/// `muse-ingest` に渡す。Cookie の値は読まず、ログ・画面・引数にも出さない。
 struct MuseLoginView: View {
     static let windowID = "muse-login"
 
@@ -53,15 +54,20 @@ struct MuseLoginView: View {
 /// Muse の Cookie 保存と削除の競合を防ぐ共有コーディネーター。
 /// 保存中は設定側の「削除」を、削除中はログイン側の「保存」を無効化する。
 /// 世代番号で、保存処理の途中に削除が走ったことを検出して保存を中止する。
+/// 削除と取得（muse-ingest）もここで直列化する: 削除は実行中の取得の完了を
+/// 待ってから始めるので、`muse-ingest --clear` の後に古い取得が着地して
+/// muse-usage.json が復活することはない。
 @MainActor
 final class MuseCredentialCoordinator: ObservableObject {
     static let shared = MuseCredentialCoordinator()
-    private init() {}
+    init() {}
 
     /// ポーリング実行中（設定側の「削除」を無効化する目印）。
     @Published private(set) var polling = false
     @Published private(set) var deleting = false
     private(set) var generation = 0
+    /// 削除の開始を待っている待機者。endPoll で全員を起こす。
+    private var deleteWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// ポーリング開始。削除中・実行中は nil（重複して走らない）。
     /// 返した世代を ingest 直前に isCurrent で確認する。
@@ -71,21 +77,43 @@ final class MuseCredentialCoordinator: ObservableObject {
         return generation
     }
 
-    func endPoll() { polling = false }
+    func endPoll() {
+        polling = false
+        let waiters = deleteWaiters
+        deleteWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
 
     /// muse-ingest の直前に呼ぶ。世代が進んでいれば（途中で削除された）false。
     func isCurrent(_ generation: Int) -> Bool {
         generation == self.generation && !deleting
     }
 
-    /// 設定側の「削除」。世代を進めてから、残ったキー・専用 WebKit 領域・
-    /// muse-usage.json（muse-ingest --clear）を消す。
-    func deleteCredential(client: EngineClient) async throws {
+    /// 実行中のポーリング（最後の muse-ingest の着地を含む）の完了を待つ。
+    /// 削除は必ずここを通ってから始める。待たずに消すと --clear の後に
+    /// 進行中の取得が着地して、消したはずの muse-usage.json が復活する。
+    /// ポーリングが無ければすぐ戻る。
+    func waitForPollEnd() async {
+        guard polling else { return }
+        await withCheckedContinuation { deleteWaiters.append($0) }
+    }
+
+    /// 設定側の「削除」。実行中の取得があればその完了を待ってから、世代を
+    /// 進め、残ったキー・専用 WebKit 領域・muse-usage.json（muse-ingest --clear）
+    /// を消す。削除が始まると beginPoll は nil を返すので、clear の後に新しい
+    /// 取得が着地することもない。
+    func deleteCredential(client: EngineClient,
+                          clearWebsiteData: (() async -> Void)? = nil) async throws {
+        await waitForPollEnd()
         deleting = true
         generation += 1
         defer { deleting = false }
         try await client.deleteKey(provider: "muse") // 旧 Cookie 版の残りを掃除
-        await MuseLoginModel.clearMuseWebsiteData()
+        if let clearWebsiteData {
+            await clearWebsiteData() // テスト用の注入。通常は下の専用領域の削除。
+        } else {
+            await MuseLoginModel.clearMuseWebsiteData()
+        }
         try await client.museIngestClear()
         NotificationCenter.default.post(name: .museUsageUpdated, object: nil)
     }

@@ -35,6 +35,10 @@ struct DisplaySettingsView: View {
     @AppStorage(NotificationCoordinator.enabledDefaultsKey) private var notificationsOn = true
 
     @State private var doc: ConfigDocument?
+    /// 基準値: 最後にエンジンで確認できた設定。保存は「基準値 → 編集中の値」の
+    /// 差分で送るため、保存に失敗した変更が doc に残っていても、それを次の
+    /// 保存の original に混ぜて消してしまうことがない。
+    @State private var synced: ConfigDocument?
     @State private var loadFailed = false
     @State private var busy = false
     @State private var alertMessage: String?
@@ -52,6 +56,62 @@ struct DisplaySettingsView: View {
     @State private var separator = ""
     @State private var weekStart = "sunday"
     @State private var loginOn = LoginItem.isEnabled
+
+    /// 操作部品（トグル・スライダーなど）が参照する上記 @State の値。
+    /// 確認できた設定（読み込み成功・保存成功・保存失敗後の読み直し成功）を
+    /// @State に揃えるために使う。失敗した下書きを残すと画面が実設定と
+    /// 食い違い、次の別項目の保存にも失敗分が混じらないままになる。
+    struct DisplayControlState: Equatable {
+        var gaugeShowsUsed = false
+        var language = "auto"
+        var brightness: Double = 100
+        var nightOn = false
+        var nightStart = DisplayControlState.defaultNightStart
+        var nightEnd = DisplayControlState.defaultNightEnd
+        var nightBrightness: Double = 20
+        var sleepWithMac = true
+        var percentColors = true
+        var separator = ""
+        var weekStart = "sunday"
+
+        /// night の時刻が読み取れないときの既定（load と同じ 23:00 / 07:00）。
+        static let defaultNightStart = DisplaySettingsView.parseHHMM("23:00")!
+        static let defaultNightEnd = DisplaySettingsView.parseHHMM("07:00")!
+    }
+
+    /// 確認できた設定を操作部品用の値に変える。初回の読み込みと保存後の
+    /// 確認で共通に使う。
+    static func controlState(confirmed: ConfigDocument) -> DisplayControlState {
+        var state = DisplayControlState()
+        state.gaugeShowsUsed = confirmed.gauge == "used"
+        state.language = confirmed.language
+        state.brightness = confirmed.brightness
+        state.nightOn = confirmed.night != nil
+        state.sleepWithMac = confirmed.sleepWithMac ?? true
+        state.percentColors = confirmed.percentColors
+        state.separator = confirmed.separator
+        state.weekStart = confirmed.weekStart
+        if let night = confirmed.night {
+            state.nightStart = Self.parseHHMM(night.start) ?? DisplayControlState.defaultNightStart
+            state.nightEnd = Self.parseHHMM(night.end) ?? DisplayControlState.defaultNightEnd
+            state.nightBrightness = night.brightness
+        }
+        return state
+    }
+
+    private func applyControlState(_ state: DisplayControlState) {
+        gaugeShowsUsed = state.gaugeShowsUsed
+        language = state.language
+        brightness = state.brightness
+        nightOn = state.nightOn
+        nightStart = state.nightStart
+        nightEnd = state.nightEnd
+        nightBrightness = state.nightBrightness
+        sleepWithMac = state.sleepWithMac
+        percentColors = state.percentColors
+        separator = state.separator
+        weekStart = state.weekStart
+    }
 
     private let client = EngineClient()
 
@@ -286,20 +346,9 @@ struct DisplaySettingsView: View {
         do {
             let fetched = try await client.getConfig()
             doc = fetched
+            synced = fetched
             loadFailed = false
-            gaugeShowsUsed = fetched.gauge == "used"
-            language = fetched.language
-            brightness = fetched.brightness
-            nightOn = fetched.night != nil
-            sleepWithMac = fetched.sleepWithMac ?? true
-            percentColors = fetched.percentColors
-            separator = fetched.separator
-            weekStart = fetched.weekStart
-            if let night = fetched.night {
-                nightStart = Self.parseHHMM(night.start) ?? Self.parseHHMM("23:00")!
-                nightEnd = Self.parseHHMM(night.end) ?? Self.parseHHMM("07:00")!
-                nightBrightness = night.brightness
-            }
+            applyControlState(Self.controlState(confirmed: fetched))
         } catch {
             doc = nil
             loadFailed = true
@@ -308,11 +357,10 @@ struct DisplaySettingsView: View {
     }
 
     private func commit(_ mutate: (inout ConfigDocument) -> Void) {
-        guard let original = doc else { return }
-        var updated = original
+        guard var updated = doc else { return }
         mutate(&updated)
         doc = updated
-        Task { await save(original, updated) }
+        Task { await save(updated) }
     }
 
     private func commitNight() {
@@ -325,14 +373,30 @@ struct DisplaySettingsView: View {
         }
     }
 
-    private func save(_ original: ConfigDocument, _ docToSave: ConfigDocument) async {
+    /// ServiceSettingsView と同じ方針: 失敗したら実際の設定を読み直して
+    /// 画面と基準値を一致させ、読み直しも失敗したら編集中の値と基準値を
+    /// そのまま残す（未保存の編集は次の保存の差分に含まれて送られる）。
+    private func save(_ docToSave: ConfigDocument) async {
+        guard let baseline = synced else { return }
         busy = true
         defer { busy = false }
-        do {
-            doc = try await client.saveChanges(from: original, to: docToSave)
-            EngineClient.scheduleArtifactReload() // 2 秒後に status.json / frame.png を読み直させる
-        } catch {
+        let outcome = await ServiceSettingsView.saveAndResync(
+            save: { try await client.saveChanges(from: baseline, to: docToSave) },
+            reload: { try? await self.client.getConfig() })
+        let next = ServiceSettingsView.nextDocumentsAfterSave(
+            edited: docToSave, baseline: baseline, outcome: outcome)
+        doc = next.doc
+        synced = next.synced
+        // 確認できた設定（保存成功・失敗後の読み直し成功）は操作部品の @State にも
+        // 反映する。doc / synced だけを変えると画面に失敗した下書きが残り、
+        // 実設定と食い違ったまま次の保存に出る。
+        if let confirmed = outcome.doc {
+            applyControlState(Self.controlState(confirmed: confirmed))
+        }
+        if let error = outcome.failure {
             alertMessage = error.localizedDescription
+        } else {
+            EngineClient.scheduleArtifactReload() // 2 秒後に status.json / frame.png を読み直させる
         }
     }
 
@@ -367,5 +431,5 @@ struct DisplaySettingsView: View {
 
     private static func hhmm(_ date: Date) -> String { hhmmFormatter.string(from: date) }
 
-    private static func parseHHMM(_ s: String) -> Date? { hhmmFormatter.date(from: s) }
+    static func parseHHMM(_ s: String) -> Date? { hhmmFormatter.date(from: s) } // テストから時刻の比較に使う
 }

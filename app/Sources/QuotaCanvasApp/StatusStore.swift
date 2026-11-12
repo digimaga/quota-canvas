@@ -13,9 +13,13 @@ final class StatusStore: ObservableObject {
     @Published private(set) var isStale = true       // 5 分以上更新が無い
 
     static let staleInterval: TimeInterval = 5 * 60
+    /// 内容が変わらなくても通知計画をやり直す間隔。credit の期限切れのように
+    /// status.json の内容でなく時刻だけで出る候補があるため。
+    nonisolated static let planningRetryInterval: TimeInterval = 5 * 60
     private var timer: Timer?
     private var started = false
     private var previousStatusData: Data?
+    private var lastPlanAt: Date?
     private var reloadObserver: AnyCancellable?
 
     /// メニューバーの点の色。最も悪いカードの状態。カードが無く errors があれば赤。
@@ -60,7 +64,15 @@ final class StatusStore: ObservableObject {
                 status = decoded
                 fileError = nil
                 isStale = Self.engineIsStale(updatedAt: decoded.updatedAt, now: Date())
-                NotificationCoordinator.shared.enqueue(previous: previous, current: data, now: Date())
+                // 10 秒ごとの読み取りのたびに notifications-plan の子プロセスを
+                // 起こさない。内容が変わったとき、保留した work の再試行のとき、
+                // もしくは planningRetryInterval 以上経過したときだけ起こす。
+                if Self.shouldPlanNotifications(previous: previous, current: data, lastPlanAt: lastPlanAt,
+                                                hasPendingWork: NotificationCoordinator.shared.hasPendingWork,
+                                                now: Date()) {
+                    lastPlanAt = Date()
+                    NotificationCoordinator.shared.enqueue(previous: previous, current: data, now: Date())
+                }
             } catch {
                 fileError = String(localized: "status.json を解釈できません: \(error.localizedDescription)")
                 isStale = true
@@ -74,6 +86,18 @@ final class StatusStore: ObservableObject {
             }
         }
         loadedAt = Date()
+    }
+
+    /// 通知計画（notifications-plan の子プロセス）を走らせるか。
+    /// status の内容が変わったとき、計画や配達で保留した work があるとき、
+    /// もしくは前回の計画から planningRetryInterval 以上経過したとき。
+    nonisolated static func shouldPlanNotifications(previous: Data?, current: Data,
+                                                    lastPlanAt: Date?, hasPendingWork: Bool,
+                                                    now: Date) -> Bool {
+        if previous != current { return true }
+        if hasPendingWork { return true }
+        guard let lastPlanAt else { return true }
+        return now.timeIntervalSince(lastPlanAt) >= planningRetryInterval
     }
 
     static func engineIsStale(updatedAt: Date?, now: Date) -> Bool {

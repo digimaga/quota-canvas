@@ -40,6 +40,28 @@ final class AppEngineAgent: ObservableObject {
         }
     }
 
+    /// reconcile の判定。テスト用の純粋関数。
+    /// - `.none`: 何もしない（.app バンドルの外での起動。swift run など）
+    /// - `.removeAll`: 同梱エンジンの LaunchAgent をすべて外す
+    /// - `.run(screen:)`: 指定の形で常駐エンジンをインストールする
+    enum AgentAction: Equatable {
+        case none
+        case removeAll
+        case run(screen: Bool)
+    }
+
+    static func agentAction(enabled: Bool, bundledEngine: String?, selectedEngine: String,
+                            hasConflict: Bool, screen: Bool, inAppBundle: Bool) -> AgentAction {
+        // 開発起動（swift run など .app の外）では bundledEnginePath が nil になるが、
+        // それを「無効化」と誤認して常駐エンジンを bootout してはいけない。
+        guard inAppBundle else { return .none }
+        let selected = (selectedEngine as NSString).expandingTildeInPath
+        guard enabled, let bundledEngine, selected == bundledEngine, !hasConflict else {
+            return .removeAll
+        }
+        return .run(screen: screen)
+    }
+
     func reconcile(completion: (() -> Void)? = nil) {
         queue.async {
             self.reconcileOnQueue(completion: completion)
@@ -52,6 +74,11 @@ final class AppEngineAgent: ObservableObject {
     }
 
     private func reconcileOnQueue(completion: (() -> Void)?) {
+        // .app バンドルの外（swift run など開発起動）では LaunchAgent を一切調整しない。
+        guard Bundle.main.bundleURL.pathExtension == "app" else {
+            DispatchQueue.main.async { completion?() }
+            return
+        }
         let hasConflict = legacyLabels.contains { FileManager.default.fileExists(atPath: plist($0).path) }
         var message: String?
         defer {
@@ -67,9 +94,15 @@ final class AppEngineAgent: ObservableObject {
             let screen = defaults.object(forKey: Self.screenKey) == nil || defaults.bool(forKey: Self.screenKey)
             let bundle = AppDefaults.bundledEnginePath
             let selected = defaults.string(forKey: AppDefaults.enginePathKey).flatMap { $0.isEmpty ? nil : $0 } ?? AppDefaults.enginePath
-            guard enabled, let bundle, (selected as NSString).expandingTildeInPath == bundle, !hasConflict else {
+            switch Self.agentAction(enabled: enabled, bundledEngine: bundle, selectedEngine: selected,
+                                    hasConflict: hasConflict, screen: screen, inAppBundle: true) {
+            case .none:
+                return
+            case .removeAll:
                 for label in labels { try remove(label) }
                 return
+            case .run:
+                break
             }
             let label = screen ? labels[0] : labels[1]
             let other = screen ? labels[1] : labels[0]

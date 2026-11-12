@@ -2,20 +2,68 @@ import SwiftUI
 import AppKit
 
 /// 「振り分け」タブ: AI ワーカー振り分け判定（config.toml の [routing]）の設定。
-/// 判定そのものはエンジン担当。アプリは config --set-json で設定を保存し、
+/// 判定そのものはエンジン担当。アプリは config --apply-json で設定の差分を保存し、
 /// status.json の "routing" で現在の判定を表示し、`routing mode` CLI で
 /// モードを切り替えるだけ（app/README.md の方針どおり直接通信しない）。
 /// 設定保存はアプリ共通の直列化された経路を使う。
 struct RoutingSettingsView: View {
     @State private var doc: ConfigDocument?
     @State private var loadFailed = false
-    @State private var busy = false // 保存（config --set-json）の実行中
+    @State private var busy = false // 保存（config --apply-json）の実行中
     @State private var alertMessage: String?
 
     // UI 状態（doc 読み込み後に反映）
     @State private var routingOn = false
     @State private var floorPercent: Double = 5
     @State private var staleMinutes = 20
+
+    /// [routing] の基本設定の項目。編集の世代と未着地の保存を項目ごとに追跡する。
+    enum RoutingField {
+        case enabled, floor, stale
+    }
+
+    /// [routing] 基本設定の世代管理。保存中も操作は無効にしないので、失敗した
+    /// 保存の復帰（読み直し）が走っている間に別の保存が始まる。読み直しの
+    /// スナップショットは古い値を含むことがあるため:
+    /// - editGeneration: 項目ごとの最後の編集に付けた通し番号
+    /// - pendingSave: 項目ごとの「まだ返っていない最新の保存の世代」。
+    ///   同じ項目への保存が複数走っているとき、古い保存の完了では解除しない。
+    /// 保存の Task と読み直しが同じ値を参照するため参照型にする。
+    @MainActor
+    final class RoutingSyncTracker {
+        private(set) var generation = 0
+        private(set) var editGeneration: [RoutingField: Int] = [:]
+        private(set) var pendingSave: [RoutingField: Int] = [:]
+
+        /// 保存の発行: 世代を進めて、項目を「編集済み・保存が未着地」にする。
+        func beginSave(field: RoutingField) -> Int {
+            generation += 1
+            editGeneration[field] = generation
+            pendingSave[field] = generation
+            return generation
+        }
+
+        /// 保存が返った（成功・失敗どちらでも）。それがまだ返っていない最新の
+        /// 保存なら未着地を解除する。着地も世代を進めて項目の編集世代にする:
+        /// 着地より前に始まった読み直しは、着地前の古い値を読んでいる
+        /// かもしれないので、その項目には反映させない。
+        func saveLanded(field: RoutingField, generation saveGeneration: Int) {
+            generation += 1
+            editGeneration[field] = generation
+            if pendingSave[field] == saveGeneration {
+                pendingSave.removeValue(forKey: field)
+            }
+        }
+
+        /// 読み直しの結果をその項目の表示に反映してよいか。
+        func shouldApplyReload(_ field: RoutingField, reloadGeneration: Int) -> Bool {
+            RoutingSettingsView.shouldApplyReload(editedAt: editGeneration[field],
+                                                  reloadGeneration: reloadGeneration,
+                                                  pending: pendingSave[field] != nil)
+        }
+    }
+
+    @State private var sync = RoutingSyncTracker()
 
     // ワーカーの編集（保存ボタンで明示的に保存する）
     @State private var rows: [WorkerRow] = []
@@ -96,13 +144,13 @@ struct RoutingSettingsView: View {
             Toggle("AI ワーカーの振り分け判定を使う", isOn: Binding(
                 get: { routingOn }, set: { value in
                     routingOn = value
-                    saveRouting { $0.routingEnabled = value }
+                    saveRouting(.enabled) { $0.routingEnabled = value }
                 }))
             Text("残り % に応じてワーカーごとに「使ってよし / 控える / 止める」の判定を出します。エンジン自身は何も止めず、プラグイン経由で Claude Code・Codex のセッション開始時に結果を渡せます。")
                 .font(.caption).foregroundStyle(.secondary)
             Stepper(value: Binding(get: { floorPercent }, set: { value in
                 floorPercent = value
-                saveRouting { $0.routingFloorPercent = value }
+                saveRouting(.floor) { $0.routingFloorPercent = value }
             }), in: 0...50, step: 1) {
                 HStack {
                     Text("止める下限（残り %）")
@@ -112,7 +160,7 @@ struct RoutingSettingsView: View {
             }
             Stepper(value: Binding(get: { staleMinutes }, set: { value in
                 staleMinutes = value
-                saveRouting { $0.routingStaleMinutes = value }
+                saveRouting(.stale) { $0.routingStaleMinutes = value }
             }), in: 5...120, step: 5) {
                 HStack {
                     Text("古いとみなす（分）")
@@ -487,14 +535,68 @@ struct RoutingSettingsView: View {
     }
 
     // 変更した項目だけを、アプリ共通の直列化された保存経路に渡す。
-    private func saveRouting(_ mutate: @escaping (inout ConfigDocument) -> Void) {
+    private func saveRouting(_ field: RoutingField, _ mutate: @escaping (inout ConfigDocument) -> Void) {
         guard doc != nil else { return }
         Task {
-            do {
-                _ = try await client.updateConfig(mutate)
+            let failure = await Self.runRoutingSave(
+                tracker: sync, field: field,
+                save: { _ = try await client.updateConfig(mutate) },
+                reload: { await resyncRoutingState(reloadGeneration: $0) })
+            if let failure {
+                alertMessage = failure.localizedDescription
+            } else {
                 EngineClient.scheduleArtifactReload()
-            } catch { alertMessage = error.localizedDescription }
+            }
         }
+    }
+
+    /// saveRouting の保存 1 件の流れ（テスト可能な抽出）。保存が返ったら
+    /// （成功・失敗どちらでも）未着地扱いを更新し、失敗したら実際の設定の
+    /// 読み直しを始める。読み直しには取得を始める前の世代を渡す: 取得中に
+    /// 完了した編集・保存も「読み直しより後」扱いにして、古いスナップショットで
+    /// 上書きしない。戻り値は保存の失敗（成功なら nil）。
+    static func runRoutingSave(
+        tracker: RoutingSyncTracker, field: RoutingField,
+        save: () async throws -> Void,
+        reload: (_ reloadGeneration: Int) async -> Void
+    ) async -> Error? {
+        let saveGeneration = tracker.beginSave(field: field)
+        do {
+            try await save()
+            tracker.saveLanded(field: field, generation: saveGeneration)
+            return nil
+        } catch {
+            tracker.saveLanded(field: field, generation: saveGeneration)
+            await reload(tracker.generation) // 読み直しの世代は取得を始める前に控える
+            return error
+        }
+    }
+
+    /// 実際の設定を取り直して [routing] の基本設定（トグル・ステッパー）の表示を
+    /// 一致させる。reloadGeneration は取得を始める前の世代: 読み直しより新しい
+    /// 編集と保存がまだ着地していない項目は上書きしない（その項目は表示のままで
+    /// よく、保存が成功すれば表示どおりになる）。
+    /// ワーカー行（rows・savedWorkers）は編集中の下書きと保存済みの
+    /// 基準値なので読み直さない（「元に戻す」が効くよう baseline を壊さない）。
+    private func resyncRoutingState(reloadGeneration: Int) async {
+        guard let fetched = try? await client.getConfig() else { return }
+        doc = fetched
+        if sync.shouldApplyReload(.enabled, reloadGeneration: reloadGeneration) {
+            routingOn = fetched.routingEnabled
+        }
+        if sync.shouldApplyReload(.floor, reloadGeneration: reloadGeneration) {
+            floorPercent = fetched.routingFloorPercent
+        }
+        if sync.shouldApplyReload(.stale, reloadGeneration: reloadGeneration) {
+            staleMinutes = fetched.routingStaleMinutes
+        }
+    }
+
+    /// 読み直しの結果をその項目の表示に反映してよいか。読み直しより後の世代の
+    /// 編集と、保存がまだ着地していない項目は古いスナップショットで上書きしない。
+    static func shouldApplyReload(editedAt: Int?, reloadGeneration: Int, pending: Bool) -> Bool {
+        if pending { return false }
+        return (editedAt ?? 0) <= reloadGeneration
     }
 
     private func saveWorkersValue(_ workers: [ConfigDocument.RoutingWorker]) {

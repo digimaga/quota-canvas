@@ -5,6 +5,10 @@ import AppKit
 struct ServiceSettingsView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var doc: ConfigDocument?
+    /// 基準値: 最後にエンジンで確認できた設定（読み込み・保存・読み直しの成功）。
+    /// 編集中の値（doc）と分けて持ち、保存は「基準値 → 編集中の値」の差分で送る。
+    /// 保存と読み直しの両方が失敗しても、未保存の編集が次の保存の差分に入る。
+    @State private var synced: ConfigDocument?
     @State private var detect: [DetectService] = []
     @State private var loadingDetect = false
     @State private var loadFailed = false
@@ -31,9 +35,6 @@ struct ServiceSettingsView: View {
             }
         }
         .task { await load(includeDetect: true) }
-        .onReceive(NotificationCenter.default.publisher(for: .museKeySaved)) { _ in
-            Task { await reloadDetect() } // Muse ログインの Cookie 保存後は再検出する
-        }
         .onReceive(NotificationCenter.default.publisher(for: .museUsageUpdated)) { _ in
             Task { await reloadDetect() } // muse-usage.json 更新・削除後は再検出する
         }
@@ -112,22 +113,20 @@ struct ServiceSettingsView: View {
                 return HexColor.color(hex) ?? Color(nsColor: .systemGray)
             },
             set: { newColor in
-                guard let original = doc else { return }
-                var updated = original
+                guard var updated = doc else { return }
                 updated.setProviderColor(service.provider, HexColor.hex(newColor))
                 doc = updated
-                Task { await save(original, updated) }
+                Task { await save(updated) }
             }
         )
     }
 
     /// 「既定の色に戻す」: providers.<p>.color の color キーを削除して保存。
     private func resetColor(_ service: DetectService) {
-        guard let original = doc else { return }
-        var updated = original
+        guard var updated = doc else { return }
         updated.removeProviderColor(service.provider)
         doc = updated
-        Task { await save(original, updated) }
+        Task { await save(updated) }
     }
 
     // MARK: bindings
@@ -136,11 +135,10 @@ struct ServiceSettingsView: View {
         Binding<Bool>(
             get: { doc?.providerEnabled(service.provider) ?? false },
             set: { newValue in
-                guard let original = doc else { return }
-                var updated = original
+                guard var updated = doc else { return }
                 updated.setProviderEnabled(service.provider, newValue)
                 doc = updated
-                Task { await save(original, updated) }
+                Task { await save(updated) }
             }
         )
     }
@@ -155,15 +153,21 @@ struct ServiceSettingsView: View {
                 return saved
             },
             set: { selected in
-                guard let original = doc else { return }
-                var updated = original
-                let all = Set(service.windowList.map(\.key))
-                let keys: [String] = (selected == all) ? [] : Array(selected)
+                guard var updated = doc else { return }
+                let keys = Self.windowKeysForSave(
+                    selected: selected, all: Set(service.windowList.map(\.key)))
                 updated.setProviderWindows(service.provider, keys)
                 doc = updated
-                Task { await save(original, updated) }
+                Task { await save(updated) }
             }
         )
+    }
+
+    /// config.toml に書く窓キーの配列。Set の並びのまま書くと保存ごとに順番が
+    /// 変わって同じ内容の差分が付くので、必ずソートする。
+    /// 全選択は空配列（= すべて、コントラクト）。
+    static func windowKeysForSave(selected: Set<String>, all: Set<String>) -> [String] {
+        selected == all ? [] : selected.sorted()
     }
 
     /// トークン自動更新のバインディング（providers.claude.token_refresh）。
@@ -173,11 +177,10 @@ struct ServiceSettingsView: View {
         return Binding<Bool>(
             get: { doc?.providerTokenRefresh(service.provider) != "off" },
             set: { on in
-                guard let original = doc else { return }
-                var updated = original
+                guard var updated = doc else { return }
                 updated.setProviderTokenRefresh(service.provider, on ? "cli" : "off")
                 doc = updated
-                Task { await save(original, updated) }
+                Task { await save(updated) }
             }
         )
     }
@@ -186,7 +189,9 @@ struct ServiceSettingsView: View {
 
     private func load(includeDetect: Bool) async {
         do {
-            doc = try await client.getConfig()
+            let fetched = try await client.getConfig()
+            doc = fetched
+            synced = fetched
             loadFailed = false
             statusColors = StatusStore.loadStatusSnapshot()?.colors ?? [:]
             if includeDetect { await loadCachedDetect() }
@@ -222,14 +227,52 @@ struct ServiceSettingsView: View {
         }
     }
 
-    private func save(_ original: ConfigDocument, _ docToSave: ConfigDocument) async {
+    /// 保存と失敗時の復帰を 1 か所に: 成功なら保存後の設定を返す。失敗したら
+    /// 実際の設定の読み直しを試み、その結果（読み直せなければ nil）を返す。
+    /// 失敗した編集を画面（doc）に残して保存の original に使うと差分が消え、
+    /// 二度と送られなくなるため（config --apply-json の差分適用）。
+    /// 読み直しも失敗したときは nil を返し、呼び出し側は基準値（synced）と
+    /// 編集中の値をそのまま残して、未保存の編集を次の保存の差分に含める。
+    static func saveAndResync(
+        save: () async throws -> ConfigDocument,
+        reload: () async -> ConfigDocument?
+    ) async -> (doc: ConfigDocument?, failure: Error?) {
+        do {
+            return (try await save(), nil)
+        } catch {
+            return (await reload(), error)
+        }
+    }
+
+    /// 保存の結果から、次に使う (画面に表示する値, 保存の基準値) を決める。
+    /// - 保存に成功 / 失敗しても読み直せたとき: 確認できた設定（保存後の実際の
+    ///   設定 / 読み直した実際の設定）を両方に使う。失敗した下書きを画面に
+    ///   残すと実設定と食い違うため消す。
+    /// - 保存も読み直しも失敗: 画面の値（編集中の値）と基準値をそのまま残す。
+    ///   次の保存は「基準値 → 編集中の値」の差分になるので、失敗した変更も
+    ///   含まれて送られる。
+    static func nextDocumentsAfterSave(
+        edited: ConfigDocument, baseline: ConfigDocument,
+        outcome: (doc: ConfigDocument?, failure: Error?)
+    ) -> (doc: ConfigDocument, synced: ConfigDocument) {
+        guard let confirmed = outcome.doc else { return (edited, baseline) }
+        return (confirmed, confirmed)
+    }
+
+    private func save(_ docToSave: ConfigDocument) async {
+        guard let baseline = synced else { return }
         busy = true
         defer { busy = false }
-        do {
-            doc = try await client.saveChanges(from: original, to: docToSave)
-            EngineClient.scheduleArtifactReload() // 2 秒後に status.json / frame.png を読み直させる
-        } catch {
+        let outcome = await Self.saveAndResync(
+            save: { try await client.saveChanges(from: baseline, to: docToSave) },
+            reload: { try? await self.client.getConfig() })
+        let next = Self.nextDocumentsAfterSave(edited: docToSave, baseline: baseline, outcome: outcome)
+        doc = next.doc
+        synced = next.synced
+        if let error = outcome.failure {
             alertMessage = error.localizedDescription
+        } else {
+            EngineClient.scheduleArtifactReload() // 2 秒後に status.json / frame.png を読み直させる
         }
     }
 
@@ -339,7 +382,7 @@ private struct ServiceRow: View {
                     Button(service.detected ? "ログインし直す" : "muse.ai にログイン", action: onMuseLogin)
                         .disabled(busy)
                     Button("削除", role: .destructive, action: onDeleteKey)
-                        .disabled(busy || museCoordinator.polling) // 取得中は削除できない
+                        .disabled(busy || museCoordinator.polling) // 取得中は押せない。押せてしまっても coordinator が取得の完了を待ってから消す
                 }
                 .padding(.leading, 24)
                 Text("ログイン状態はアプリ専用の WebKit 領域に、取得した利用枠はデータフォルダの muse-usage.json に保存されます。アプリが 5 分ごとに更新し、「削除」で両方を消します。")

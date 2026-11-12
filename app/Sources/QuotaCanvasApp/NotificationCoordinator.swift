@@ -31,6 +31,9 @@ final class NotificationCoordinator: ObservableObject {
     private struct Snapshot { let previous: Data?; let current: Data; let now: Date }
     private var queue: [Snapshot] = []
     private static let maxQueued = 30
+    /// post に失敗して受理記録のない候補（キー単位）。同じ status の再読み取りでは
+    /// 計画が候補を作り直さないので、ここから次の通常の読み取りで再送する。
+    private var undelivered: [String: NotificationPresentation.Planned] = [:]
     private var processing = false
     private var authorizationRequested = false
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
@@ -83,6 +86,10 @@ final class NotificationCoordinator: ObservableObject {
         await withCheckedContinuation { idleWaiters.append($0) }
     }
 
+    /// 計画や配達に失敗してまだ処理できていない work があるか。
+    /// StatusStore が内容無変化の読み取りでも再試行のために enqueue するかの判定に使う。
+    var hasPendingWork: Bool { !queue.isEmpty || !undelivered.isEmpty }
+
     private func updateError() {
         error = planningError ?? deliveryErrors.keys.sorted().first.flatMap { deliveryErrors[$0] }
     }
@@ -106,28 +113,53 @@ final class NotificationCoordinator: ObservableObject {
             planningError = nil
             updateError()
             queue.removeFirst()
-            if !planned.isEmpty && (!enabled() || !available()) {
-                recordKeys(planned.map(\.key))
-            } else if !planned.isEmpty {
-                if await authorized() {
-                    for notification in planned {
-                        if readKeys().contains(notification.key) { continue }
-                        do {
-                            try await post(notification)
-                            recordKeys([notification.key])
-                            deliveryErrors.removeValue(forKey: notification.key)
-                        } catch {
-                            deliveryErrors[notification.key] = error.localizedDescription
-                        }
-                        updateError()
-                    }
-                }
-            }
+            await deliver(planned)
         }
         processing = false
         let waiters = idleWaiters
         idleWaiters.removeAll()
         for waiter in waiters { waiter.resume() }
+    }
+
+    /// 候補を配達し、受理できたキーを記録する。配達に失敗した候補は undelivered に
+    /// 殻として保持し、計画が同じキーを作り直せない読み取り（同じ status の再読み取り）で
+    /// 再送する。受理済み（記録済み）のキーは再送しない。
+    private func deliver(_ planned: [NotificationPresentation.Planned]) async {
+        if planned.isEmpty {
+            guard enabled(), available(), await authorized() else { return }
+            for (_, item) in undelivered.sorted(by: { $0.key < $1.key }) {
+                await deliverOne(item)
+            }
+            return
+        }
+        if !enabled() || !available() {
+            recordKeys(planned.map(\.key))
+            for key in planned.map(\.key) { undelivered.removeValue(forKey: key) }
+            return
+        }
+        guard await authorized() else { return }
+        for notification in planned {
+            await deliverOne(notification)
+        }
+    }
+
+    private func deliverOne(_ notification: NotificationPresentation.Planned) async {
+        if readKeys().contains(notification.key) {
+            // 受理済み。過去の失敗が残っていれば解決済みとして掃除する。
+            deliveryErrors.removeValue(forKey: notification.key)
+            undelivered.removeValue(forKey: notification.key)
+            return
+        }
+        do {
+            try await post(notification)
+            recordKeys([notification.key])
+            deliveryErrors.removeValue(forKey: notification.key)
+            undelivered.removeValue(forKey: notification.key)
+        } catch {
+            deliveryErrors[notification.key] = error.localizedDescription
+            undelivered[notification.key] = notification
+        }
+        updateError()
     }
 
     nonisolated private static func storedKeys() -> Set<String> {

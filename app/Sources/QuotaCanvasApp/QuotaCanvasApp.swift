@@ -9,18 +9,22 @@ struct QuotaCanvasApp: App {
 
     init() {
         // 起動時に 1 回だけ:
-        // - F4 通知の権限要求（.app バンドルのときだけ）
         // - status.json の定期読み込み開始。以前は MenuPopoverView の .task が唯一の
         //   呼び出し元で、メニューを閉じている間は通知もメニューバーの点の灰色化も
         //   動かなかった。start() 内の started フラグで二重起動はガード済み。
+        // - F4 通知の権限要求（.app バンドルのときだけ）は別の Task にする。
+        //   初回ダイアログへの応答を待つ間も、status 読み取り・Muse 取得・
+        //   デスクトップ表示・LaunchAgent 調整を始められるようにするため。
         let store = StatusStore()
         _statusStore = StateObject(wrappedValue: store)
         Task { @MainActor in
-            await NotificationCoordinator.shared.requestAuthorizationIfNeeded()
             store.start()
             MuseUsagePoller.shared.start()
             DesktopOverlayController.shared.start()
             AppEngineAgent.shared.reconcile()
+        }
+        Task { @MainActor in
+            await NotificationCoordinator.shared.requestAuthorizationIfNeeded()
         }
     }
 
