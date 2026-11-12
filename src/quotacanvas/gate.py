@@ -184,7 +184,7 @@ def status_windows(status: Optional[dict]) -> List[dict]:
 
 # リセット済みとみなした窓で、リセット前の期間の値なので捨てるキー
 _PERIOD_KEYS = ("exhausts_at", "cautious_exhausts_at", "burst_exhausts_at",
-                "projected_leftover", "leftover_tolerance")
+                "projected_leftover", "leftover_tolerance", "ideal_used")
 
 
 def rolled_entry(entry: dict, now: datetime) -> dict:
@@ -535,10 +535,35 @@ def _burst_held(entry: dict, wid: Any, now: datetime, reset: Optional[datetime],
             and held_reset is not None and held_reset == reset)
 
 
+def _ahead_of_pace(entry: dict) -> bool:
+    """使用率がペース線 (経過時間どおりに使ったときの使用率 ideal_used) より上なら True。
+
+    直近の使い方が落ち着いていると、見込みでは「使い残しが出る (spare)」になっても、
+    期間全体の平均の速さのままならリセット前に尽きる。その状態で boost
+    (積極的に使う) にすると、余っていない枠に作業が集まる (2026-11-12、Devin の
+    週間枠 65% 使用・ペース線 59% で boost になり、20 分で 21% 減った)。"""
+    used, ideal = entry.get("used"), entry.get("ideal_used")
+    return (all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
+                for v in (used, ideal))
+            and used > ideal)
+
+
 def _judge(entry: dict, floor_percent: float, floor_hours: float, now: datetime, holds: dict,
            margin_minutes: Optional[float], long_margin_minutes: float,
            spare_holds: dict, burst_holds: dict, burst_resets: dict) -> Tuple[str, str]:
-    """窓 1 枚の判定。前回の reserve / spare / burst は同じリセットの間だけ保持する。"""
+    """窓 1 枚の判定。前回の reserve / spare / burst は同じリセットの間だけ保持する。
+    boost になる判定でも、使用率がペース線より上なら go に下げる (ahead_of_pace)。"""
+    verdict, reason = _judge_raw(entry, floor_percent, floor_hours, now, holds, margin_minutes,
+                                 long_margin_minutes, spare_holds, burst_holds, burst_resets)
+    if verdict == "boost" and reason in ("spare", "on_track") and _ahead_of_pace(entry):
+        return "go", "ahead_of_pace"
+    return verdict, reason
+
+
+def _judge_raw(entry: dict, floor_percent: float, floor_hours: float, now: datetime, holds: dict,
+               margin_minutes: Optional[float], long_margin_minutes: float,
+               spare_holds: dict, burst_holds: dict, burst_resets: dict) -> Tuple[str, str]:
+    """_judge の本体 (ペース線による boost の下げは _judge で掛ける)。"""
     if entry.get("kind") == "local":
         return judge_local(entry)
     st = norm_status(entry.get("status"))
@@ -960,6 +985,8 @@ def format_worker_segments(result: RoutingResult, now: datetime, lang: Optional[
             text = "%s=%s(%s" % (w.name, w.verdict, pct_str(w.remaining))
         if w.reason == "disabled":
             text += "," + t("routing.gate.disabled")
+        if w.reason == "ahead_of_pace":
+            text += "," + t("routing.gate.ahead_of_pace")
         if w.status == "over" or w.reason in ("over_rounding", "burst"):
             key = ("routing.gate.burst" if w.reason == "burst"
                    else "routing.gate.over" if w.status == "over"

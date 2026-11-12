@@ -1490,3 +1490,52 @@ def test_reset_passed_window_without_length_has_unknown_next_reset():
     entry = win("codex:weekly", "codex", "exhausted", 0.0, resets=NOW - timedelta(minutes=1))
     worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
     assert (worker.verdict, worker.remaining, worker.resets_at) == ("boost", 100.0, None)
+
+
+# --- ペース線より上なら boost にしない (2026-11-12) -----------------------------
+
+
+def test_spare_above_pace_line_is_go_not_boost():
+    """直近が落ち着いていて spare でも、使用率がペース線より上なら boost にしない。
+    実例: Devin 週間枠 65% 使用・ペース線 59%・残り約 2.9 日で spare → boost だった。"""
+    e = win("devin:weekly", "devin", "spare", 35.0)
+    e["ideal_used"] = 59.0
+    result = evaluate(status(e), cfg(workers={"swe2l": ["devin:*"]}), {}, NOW)
+    w = result.worker("swe2l")
+    assert (w.verdict, w.reason) == ("go", "ahead_of_pace")
+    assert "ペース線より上" in format_line(result, NOW)
+    # spare の保持 (次の周回でも boost を続ける) も作らない
+    assert result.spare_holds == {}
+
+
+def test_spare_below_pace_line_stays_boost():
+    e = win("devin:weekly", "devin", "spare", 50.0)
+    e["ideal_used"] = 59.0
+    w = evaluate(status(e), cfg(workers={"swe2l": ["devin:*"]}), {}, NOW).worker("swe2l")
+    assert (w.verdict, w.reason) == ("boost", "spare")
+
+
+def test_spare_without_pace_line_is_unchanged():
+    """ideal_used を書く前のエンジン (別の Mac のコピー) は従来どおり。"""
+    w = evaluate(status(win("glm:5h", "glm", "spare", 30.0)), cfg(), {}, NOW).worker("glm")
+    assert w.verdict == "boost"
+
+
+def test_short_on_track_above_pace_line_is_go():
+    e = win("glm:5h", "glm", "on_track", 40.0, resets=NOW + timedelta(hours=2))
+    e["length"] = 5 * 3600
+    e["ideal_used"] = 55.0
+    w = evaluate(status(e), cfg(), {}, NOW).worker("glm")
+    assert (w.verdict, w.reason) == ("go", "ahead_of_pace")
+
+
+def test_window_item_carries_ideal_used():
+    from quotacanvas.models import Pace, PaceStatus, ProviderUsage, Window
+    from quotacanvas.status import _window_item
+
+    w = Window("devin", "weekly", "週間", 65.0, NOW + timedelta(days=2.86), timedelta(days=7))
+    pace = Pace(window=w, status=PaceStatus.SPARE, elapsed_fraction=0.59, ideal_used_percent=59.14,
+                rate_per_day=7.8, projected_end_percent=87.0, exhausts_at=None,
+                sustainable_per_day=12.0, adjust_percent=50.0)
+    item = _window_item(ProviderUsage("devin", "Devin", [w], None, NOW), pace)
+    assert item["ideal_used"] == 59.1

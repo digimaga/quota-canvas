@@ -246,6 +246,7 @@ struct RoutingSettingsView: View {
         case "burst": reason = String(localized: "直近2時間の勢いだとリセット前に尽きる")
         case "over_near_reset": reason = String(localized: "リセット直前のペース超過（使い切ってよい）")
         case "over_rounding": reason = String(localized: "ペース超過の境界（使用率の端数を見込むと尽きる）")
+        case "ahead_of_pace": reason = String(localized: "使用率がペース線より上（boost にしない）")
         case "tight": reason = String(localized: "ギリギリ")
         case "on_track": reason = String(localized: "順調")
         case "spare": reason = String(localized: "余裕あり")

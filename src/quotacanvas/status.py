@@ -96,6 +96,9 @@ def _window_item(pu: ProviderUsage, pace: Pace) -> Dict[str, Any]:
     }
     if win.reset_estimated:
         item["reset_estimated"] = True
+    if win.resets_at is not None and pace.status.value != "unknown":
+        # 経過時間どおりに使ったときの使用率 (ペース線)。振り分けで boost にしてよいかの材料
+        item["ideal_used"] = round(pace.ideal_used_percent, 1)
     if pace.projected_leftover is not None:
         item["projected_leftover"] = pace.projected_leftover
         item["leftover_tolerance"] = pace.leftover_tolerance
