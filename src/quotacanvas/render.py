@@ -361,13 +361,20 @@ def _fit_font(s, text, weight, size, max_w, min_size=12):
 
 def _fit_text(s, text, weight, size, max_w, min_size=11):
     # type: (_S, str, str, int, float, int) -> Tuple[ImageFont.FreeTypeFont, str]
-    """Shrink, then ellipsize, so `text` fits `max_w`."""
+    """Shrink, then ellipsize, so `text` fits `max_w`.
+
+    残り幅が「…」1 文字にも満たない (0 以下を含む) ときは空文字を返す。
+    「1 文字 + …」を必ず返すと、狭い列でカードの端を越えてしまうため。"""
     font = _fit_font(s, text, weight, size, max_w, min_size)
     if s.textlength(text, font=font) <= max_w:
         return font, text
+    if max_w <= 0 or s.textlength("…", font=font) > max_w:
+        return font, ""
     while len(text) > 1 and s.textlength(text + "…", font=font) > max_w:
         text = text[:-1]
-    return font, text + "…"
+    shown = text + "…"
+    return (font, shown) if s.textlength(shown, font=font) <= max_w \
+        else (font, "")
 
 
 # ------------------------------------------------------------ text format ---
@@ -405,7 +412,19 @@ def _fmt_span(td):
     return t("render.span.m", m=m)
 
 
+def _finite(x):
+    # type: (object) -> bool
+    """True if `x` can be treated as a finite number (NaN / inf are not)."""
+    try:
+        return math.isfinite(float(x))
+    except (TypeError, ValueError):
+        return False
+
+
 def _fmt_num(x):
+    # type: (float) -> str
+    if not _finite(x):
+        return "?"              # 不明 (NaN / inf) を 0 などの正常値に見せない
     s = "%.1f" % float(x)
     if s.endswith(".0"):
         s = s[:-2]
@@ -413,7 +432,37 @@ def _fmt_num(x):
 
 
 def _round(x):
+    # type: (float) -> Optional[int]
+    """Round half up; None for a non-finite value (relative to _fmt_num)."""
+    if not _finite(x):
+        return None
     return int(math.floor(float(x) + 0.5))
+
+
+def _num(x):
+    # type: (float) -> str
+    """Percentage body for "{pct}%" templates ("?" when unknown)."""
+    v = _round(x)
+    return "?" if v is None else str(v)
+
+
+def _pct(x):
+    # type: (float) -> str
+    """Whole percentage for display ("?" when unknown)."""
+    v = _round(x)
+    return "?" if v is None else "%d%%" % v
+
+
+def _window_pct(win, gauge):
+    # type: (Window, str) -> str
+    """Window percentage for display; unknown if used_percent is non-finite.
+
+    Window.remaining_percent は max(0, 100 - NaN) で 0 になるため、NaN を
+    「0% 残り」と描かないよう元の used_percent を見る。"""
+    if not _finite(win.used_percent):
+        return "?"
+    return _pct(win.remaining_percent if gauge == "remaining"
+                else win.used_percent)
 
 
 # --------------------------------------------------------- reset credits ---
@@ -548,8 +597,8 @@ def _prev_line(mp, gauge):
     if prev is None:
         return None
     if gauge == "used":
-        return t("render.card.prev_used", pct=_round(prev))
-    return t("render.card.prev_left", pct=_round(100.0 - prev))
+        return t("render.card.prev_used", pct=_num(prev))
+    return t("render.card.prev_left", pct=_num(100.0 - prev))
 
 
 def _sub_note(mp, subs, now=None):
@@ -606,7 +655,7 @@ def _daily_allowance(pace):
 
 
 def _short_left_advice(head, pct, left_in, bedtime_in):
-    # type: (Optional[str], int, Optional[timedelta], Optional[timedelta]) -> str
+    # type: (Optional[str], Union[int, str], Optional[timedelta], Optional[timedelta]) -> str
     """1日未満の窓 (5時間枠など) のアドバイス行: 「{head} · 残り91% · あと4時間」。
     1時間あたりの許容量ではなく残量と締切までの時間をそのまま出す。締切は
     advice = "bedtime" のとき「寝るまで{span}」、それ以外はリセット基準の
@@ -661,7 +710,8 @@ def advice_text(pace, compact=False, now=None):
     hourly = win.length < timedelta(days=1)
     unit_len = timedelta(hours=1) if hourly else timedelta(days=1)
     last_unit = left_in is not None and left_in < unit_len
-    left = max(0, _round(100.0 - win.used_percent))
+    left = _round(100.0 - win.used_percent)
+    left = "?" if left is None else max(0, left)
 
     # 順調 / 余裕あり はカード右上のバッジと同じ状態語を行頭に繰り返さない。
     # 状態語の代わりに、余裕ありなら「このままだと約◯%余る」から始める。
@@ -680,7 +730,7 @@ def advice_text(pace, compact=False, now=None):
 
     def with_spare_forecast(text):
         if st is PaceStatus.SPARE and pace.projected_leftover is not None:
-            forecast = t("render.advice.spare_forecast", pct=_round(pace.projected_leftover))
+            forecast = t("render.advice.spare_forecast", pct=_num(pace.projected_leftover))
             text = forecast + " · " + text if text else forecast
         text = text or _badge(st)
         return text[:1].upper() + text[1:]
@@ -702,7 +752,7 @@ def advice_text(pace, compact=False, now=None):
                 else "render.advice.compact_reset"
             tail = t(key, span=_fmt_span(left_in))
         elif sust is not None:
-            tail = t("render.advice.compact_per_day", pct=_round(sust))
+            tail = t("render.advice.compact_per_day", pct=_num(sust))
         else:
             tail = None
         if quiet:
@@ -1369,22 +1419,28 @@ def _draw_gauge(s, box, win, pace, fill_color, state_color, gauge,
     r = (y1 - y0) / 2.0
     s.rrect(box, radius=r, fill=TRACK)
     bw = x1 - x0
+    used_ok = _finite(win.used_percent)
 
     if gauge == "remaining":
         head = t("render.word.remaining")
-        value = win.remaining_percent
-        ideal_pos = 100.0 - pace.ideal_used_percent
-        fill_frac = _clamp(value / 100.0, 0.0, 1.0)
+        value = win.remaining_percent if used_ok else float("nan")
+        ideal_pos = 100.0 - pace.ideal_used_percent \
+            if _finite(pace.ideal_used_percent) else float("nan")
     else:
         head = t("render.gauge.used_head")
         value = win.used_percent
         ideal_pos = pace.ideal_used_percent
-        fill_frac = _clamp(value / 100.0, 0.0, 1.0)
+    # 不明 (NaN / inf) はバーを描かない。0% や 100% の正常値に見せない。
+    fill_frac = _clamp(value / 100.0, 0.0, 1.0) if used_ok else 0.0
 
     fill_w = bw * fill_frac
     if fill_w > 2:
         s.rrect((x0, y0, x0 + fill_w, y1), radius=r, fill=fill_color)
 
+    if parts and used_ok:
+        parts = [(p, c) for p, c in parts if _finite(p)]
+    else:
+        parts = []
     if parts:
         if gauge == "remaining":
             # 右側の消費済み区間 [残り%, 100%] を、TRACK と半々に混ぜた
@@ -1394,8 +1450,9 @@ def _draw_gauge(s, box, win, pace, fill_color, state_color, gauge,
             # 消費した区間 [0, 使用%] を左から順に内訳色で塗る
             _paint_parts(s, x0, y0, x1, y1, r, 0.0, fill_frac * 100.0, parts)
 
-    pe = pace.projected_end_percent
-    if pe is not None and gauge == "remaining":
+    pe = pace.projected_end_percent if _finite(pace.projected_end_percent) \
+        else None
+    if pe is not None and gauge == "remaining" and used_ok:
         # hatch the part of the fill predicted to be consumed by the reset
         pred_frac = _clamp(max(0.0, 100.0 - pe) / 100.0, 0.0, 1.0)
         px = x0 + bw * pred_frac
@@ -1411,7 +1468,7 @@ def _draw_gauge(s, box, win, pace, fill_color, state_color, gauge,
             ef, exhausted = _fit_text(s, t("render.gauge.exhausted"), "w7", 13,
                                       max(fill_w - 4, 12), min_size=9)
             s.text((x0 + 2, y0 - 5), exhausted, font=ef, fill=WHITE, anchor="ls")
-    elif pe is not None and pe > win.used_percent:
+    elif pe is not None and used_ok and pe > win.used_percent:
         ext_end = x0 + bw * _clamp(pe / 100.0, 0.0, 1.0)
         if ext_end - (x0 + fill_w) > 2:
             _hatch_rect(s, (x0 + fill_w, y0 + 2, ext_end, y1 - 2),
@@ -1441,10 +1498,11 @@ def _draw_gauge(s, box, win, pace, fill_color, state_color, gauge,
 
     # ideal position: small white triangle pointing at the bar from above
     # (kept 4px clear of the bar so it does not touch the top edge)
-    ix = x0 + bw * _clamp(ideal_pos / 100.0, 0.0, 1.0)
-    s.polygon([(ix - 5 * marker, y0 - 13 * marker),
-               (ix + 5 * marker, y0 - 13 * marker),
-               (ix, y0 - 6 * marker)], fill=WHITE)
+    if _finite(ideal_pos):
+        ix = x0 + bw * _clamp(ideal_pos / 100.0, 0.0, 1.0)
+        s.polygon([(ix - 5 * marker, y0 - 13 * marker),
+                   (ix + 5 * marker, y0 - 13 * marker),
+                   (ix, y0 - 6 * marker)], fill=WHITE)
 
     return t("render.gauge.caption", head=head, value=_fmt_num(value),
              ideal=_fmt_num(ideal_pos))
@@ -1527,20 +1585,17 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
     if stale is not None:
         # 取得失敗中: バッジの真下 (サービス名の行より下) に重ならない位置
         _draw_stale_mark(s, tx1, by1 + 3, stale, cw)
-    nf = _fit_font(s, name, "w7", 20 if narrow else 24,
-                   bx0 - 10 - (tx0 + 20), min_size=13)
+    nf, name_shown = _fit_text(s, name, "w7", 20 if narrow else 24,
+                               bx0 - 10 - (tx0 + 20), min_size=13)
     s.rrect((tx0, (by0 + by1) / 2.0 - 6, tx0 + 12, (by0 + by1) / 2.0 + 6),
             radius=6, fill=theme)
-    s.text((tx0 + 20, (by0 + by1) / 2.0), name, font=nf, fill=TEXT,
+    s.text((tx0 + 20, (by0 + by1) / 2.0), name_shown, font=nf, fill=TEXT,
            anchor="lm")
 
     # -- 2. main window: big number + word + label --------------------------
-    if gauge == "remaining":
-        pct = "%d%%" % _round(win.remaining_percent)
-        word = t("render.word.remaining")
-    else:
-        pct = "%d%%" % _round(win.used_percent)
-        word = t("render.word.used")
+    pct = _window_pct(win, gauge)
+    word = t("render.word.remaining") if gauge == "remaining" \
+        else t("render.word.used")
     pf = _fit_font(s, pct, "w8", 64 if narrow else 84, cw * 0.5, min_size=44)
     pw = s.textlength(pct, font=pf)
     num_base = y0 + (138 if narrow else 150)
@@ -1591,7 +1646,7 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
                  dt=_fmt_time_short(mp.exhausts_at, now),
                  span=_fmt_span(mp.exhausts_at - now))
     elif mp.projected_end_percent is not None:
-        proj = t("render.card.projected", pct=_round(mp.projected_end_percent))
+        proj = t("render.card.projected", pct=_num(mp.projected_end_percent))
     else:
         proj = t("render.card.no_projection")
     reset_span = _fmt_span(win.resets_at - now) if win.resets_at is not None else None
@@ -1617,15 +1672,19 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
         gy0, gy1 = y0 + 210, y0 + 236
     else:
         ix = block_end + 20
-        avail = max(60, tx1 - ix)
-        ind_lines = [el, proj, reset_line]
-        sizes = [_fit_font(s, t, "w4", 17, avail, min_size=12).size
-                 for t in ind_lines]
-        ind_f = F("w4", min(sizes))
-        for k, txt in enumerate(ind_lines):
-            f, shown = _fit_text(s, txt, "w4", ind_f.size, tx1 - ix, min_size=11)
-            s.text((ix, num_base - 38 + k * 26), shown, font=f,
-                   fill=TEXT, anchor="lm")
+        avail = tx1 - ix
+        # 残り幅が指標 1 列に足りないときは何も描かない (「…」だけを端に
+        # はみ出させない)。広いカードでも大きい % とラベルで詰まる場合がある。
+        if avail >= 60:
+            ind_lines = [el, proj, reset_line]
+            sizes = [_fit_font(s, t, "w4", 17, avail, min_size=12).size
+                     for t in ind_lines]
+            ind_f = F("w4", min(sizes))
+            for k, txt in enumerate(ind_lines):
+                f, shown = _fit_text(s, txt, "w4", ind_f.size, avail,
+                                     min_size=11)
+                s.text((ix, num_base - 38 + k * 26), shown, font=f,
+                       fill=TEXT, anchor="lm")
         block_bottom = num_base + 26
         gy0, gy1 = y0 + 192, y0 + 218
 
@@ -1657,13 +1716,12 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
         label = sub["label"]
         lf = _fit_font(s, label, "w6", 16, cw * 0.24, min_size=10)
         if sw.part_of is not None:
-            num = "%d%%" % _round(sw.used_percent)
+            num = _pct(sw.used_percent)
             part_lx = max(part_lx, 4.0 * 2 + 7 + s.textlength(label, font=lf))
             part_rw = max(part_rw, s.textlength(num, font=nf2) + 6
                           + s.textlength(t("render.word.used"), font=wf2))
         else:
-            num = "%d%%" % _round(sw.remaining_percent if gauge == "remaining"
-                                  else sw.used_percent)
+            num = _window_pct(sw, gauge)
             txt = _badge_short(_sub_status(sub["pace"].status))
             row_lx = max(row_lx, s.textlength(label, font=lf))
             row_nw = max(row_nw, s.textlength(num, font=nf2))
@@ -1685,7 +1743,7 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
             s.text((tx0 + dr * 2 + 7, cy), label, font=lf, fill=TEXT,
                    anchor="lm")
             lx = tx0 + part_lx + 12
-            num = "%d%%" % _round(sw.used_percent)
+            num = _pct(sw.used_percent)
             word = t("render.word.used")
             ww = s.textlength(word, font=wf2)
             nx = tx1 - ww - 6 - s.textlength(num, font=nf2)
@@ -1693,7 +1751,8 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
             if gx1 - lx >= 30:
                 br = 3.5
                 s.rrect((lx, cy - br, gx1, cy + br), radius=br, fill=TRACK)
-                used_w = (gx1 - lx) * _clamp(sw.used_percent / 100.0, 0.0, 1.0)
+                used_w = (gx1 - lx) * _clamp(sw.used_percent / 100.0, 0.0, 1.0) \
+                    if _finite(sw.used_percent) else 0.0
                 if used_w > 2:
                     s.rrect((lx, cy - br, lx + used_w, cy + br), radius=br,
                             fill=pcol)
@@ -1705,8 +1764,7 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
         lf = _fit_font(s, label, "w6", 16, cw * 0.24, min_size=10)
         s.text((tx0, cy), label, font=lf, fill=TEXT, anchor="lm")
         lx = tx0 + row_lx + 12
-        num = "%d%%" % _round(sw.remaining_percent if gauge == "remaining"
-                              else sw.used_percent)
+        num = _window_pct(sw, gauge)
         txt = _badge_short(sst)
         nx1 = tx1 - row_bw - 12                   # 数値の右端 (行をまたいで揃える)
         gx1 = nx1 - row_nw - 12
@@ -1753,12 +1811,12 @@ def _draw_error_card(s, box, g, theme):
     cy = (y0 + y1) / 2.0
     s.rrect((tx0, cy - 22, tx0 + 12, cy - 10), radius=6, fill=theme)
     cw = tx1 - (tx0 + 20)
-    tf = _fit_font(s, g["name"], "w7", 22, cw, min_size=13)
-    s.text((tx0 + 20, cy - 16), g["name"], font=tf, fill=TEXT, anchor="lm")
+    tf, name_shown = _fit_text(s, g["name"], "w7", 22, cw, min_size=13)
+    s.text((tx0 + 20, cy - 16), name_shown, font=tf, fill=TEXT, anchor="lm")
     reason = t("render.error.reason",
                reason=g["error"] or t("render.error.unknown"))
-    rf = _fit_font(s, reason, "w4", 17, cw, min_size=12)
-    s.text((tx0, cy + 14), reason, font=rf, fill=TEXT_DIM, anchor="lm")
+    rf, reason_shown = _fit_text(s, reason, "w4", 17, cw, min_size=12)
+    s.text((tx0, cy + 14), reason_shown, font=rf, fill=TEXT_DIM, anchor="lm")
 
 
 def _draw_small_error(s, box, name, error, theme):
@@ -1771,8 +1829,9 @@ def _draw_small_error(s, box, name, error, theme):
     tx1 = x1 - 16
     cy = (y0 + y1) / 2.0
     s.rrect((tx0, cy - 22, tx0 + 10, cy - 12), radius=5, fill=theme)
-    tf = _fit_font(s, name, "w7", 20, tx1 - (tx0 + 18), min_size=12)
-    s.text((tx0 + 18, cy - 17), name, font=tf, fill=TEXT, anchor="lm")
+    tf, name_shown = _fit_text(s, name, "w7", 20, tx1 - (tx0 + 18),
+                               min_size=12)
+    s.text((tx0 + 18, cy - 17), name_shown, font=tf, fill=TEXT, anchor="lm")
     reason = t("render.error.reason",
                reason=error or t("render.error.unknown"))
     rf, shown = _fit_text(s, reason, "w4", 15, tx1 - tx0, min_size=10)
@@ -1833,10 +1892,10 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     name_cy = (by0 + by1) / 2.0
     s.rrect((tx0, name_cy - 5, tx0 + 10, name_cy + 5), radius=5, fill=theme)
     nx = tx0 + 18
-    nf = _fit_font(s, name, "w7", 19, cw * 0.55, min_size=12)
-    s.text((nx, name_cy), name, font=nf, fill=TEXT, anchor="lm")
+    nf, name_shown = _fit_text(s, name, "w7", 19, cw * 0.55, min_size=12)
+    s.text((nx, name_cy), name_shown, font=nf, fill=TEXT, anchor="lm")
     if win.label:
-        nx += s.textlength(name, font=nf)
+        nx += s.textlength(name_shown, font=nf)
         lf, shown = _fit_text(s, " · " + win.label, "w5", 14,
                               bx0 - 10 - nx, min_size=10)
         s.text((nx, name_cy), shown, font=lf, fill=TEXT_FAINT, anchor="lm")
@@ -1851,12 +1910,9 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
         rtxt = _balance_text(balances[0]) + " · " + rtxt
 
     # -- 2. big remaining % ---------------------------------------------------
-    if gauge == "remaining":
-        pct, word = ("%d%%" % _round(win.remaining_percent),
-                     t("render.word.remaining"))
-    else:
-        pct, word = ("%d%%" % _round(win.used_percent),
-                     t("render.word.used"))
+    pct = _window_pct(win, gauge)
+    word = t("render.word.remaining") if gauge == "remaining" \
+        else t("render.word.used")
     pct_y = y0 + (88 if dual else 94)
     pf = _fit_font(s, pct, "w8", 48 if dual else 52, cw * 0.6,
                    min_size=30 if dual else 32)
@@ -1946,8 +2002,7 @@ def _draw_second_bar(s, xs, cy, second, theme, gauge):
     label = sw.label or sw.key
     lf = _fit_font(s, label, "w6", 15, (tx1 - tx0) * 0.3, min_size=10)
     s.text((tx0, cy), label, font=lf, fill=TEXT, anchor="lm")
-    num = "%d%%" % _round(sw.remaining_percent if gauge == "remaining"
-                          else sw.used_percent)
+    num = _window_pct(sw, gauge)
     nf = F("w8", 17)
     s.text((tx1, cy), num, font=nf, fill=_num_color(s, sst, TEXT), anchor="rm")
     lx = tx0 + s.textlength(label, font=lf) + 12
@@ -1978,10 +2033,30 @@ def _draw_balance_card(s, box, g, theme):
             corners=(True, False, False, True))
     x = x0 + 24
     s.text((x, y0 + 24), g["name"], font=F("w7", 20), fill=TEXT, anchor="lm")
-    for i, b in enumerate(usage.balances):
+    # カードの高さ (小パネルは約 193px) から、名前行・行間・stale 表示の
+    # 領域を引いて収まる行数を出す。溢れる分は「ほか N 件」1 行にまとめ、
+    # その行の場所も先に確保する。
+    first_cy = y0 + 58
+    row_step = 27
+    bottom_cy = y1 - (38 if usage.stale_error else 20)
+    max_rows = int((bottom_cy - first_cy) // row_step) + 1 \
+        if bottom_cy >= first_cy else 0
+    balances = list(usage.balances)
+    more = 0
+    if len(balances) > max_rows:
+        shown_count = max(0, max_rows - 1)
+        more = len(balances) - shown_count
+        balances = balances[:shown_count]
+    for i, b in enumerate(balances):
         text = _balance_text(b)
         font, text = _fit_text(s, text, "w5", 18, x1 - x - 16, min_size=10)
-        s.text((x, y0 + 58 + i * 27), text, font=font, fill=TEXT, anchor="lm")
+        s.text((x, first_cy + i * row_step), text, font=font, fill=TEXT,
+               anchor="lm")
+    if more and max_rows > 0:
+        text = t("render.balance.more", n=more)
+        font, text = _fit_text(s, text, "w5", 18, x1 - x - 16, min_size=10)
+        s.text((x, first_cy + len(balances) * row_step), text, font=font,
+               fill=TEXT_DIM, anchor="lm")
     if usage.stale_error:
         _draw_stale_mark(s, x1 - 16, y1 - 25, g["stale"], x1 - x - 16)
 
@@ -2037,9 +2112,9 @@ def _draw_local_card(s, box, g, theme):
     s.text(((bx0 + bx1) / 2.0, hy + 1), badge, font=bf, fill=_on(color),
            anchor="mm")
     s.rrect((tx0, hy - 5, tx0 + 10, hy + 5), radius=5, fill=theme)
-    nf = _fit_font(s, g["name"], "w7", 20 if compact else 22,
-                   bx0 - 10 - (tx0 + 18), min_size=12)
-    s.text((tx0 + 18, hy), g["name"], font=nf, fill=TEXT, anchor="lm")
+    nf, name_shown = _fit_text(s, g["name"], "w7", 20 if compact else 22,
+                               bx0 - 10 - (tx0 + 18), min_size=12)
+    s.text((tx0 + 18, hy), name_shown, font=nf, fill=TEXT, anchor="lm")
 
     # -- 2. big "free/capacity" + waiting count -----------------------------
     # 残量カードと向きを揃え、使用中の本数ではなく空き本数を出す。

@@ -90,6 +90,10 @@ state_free = "free"
 state_full = "full"
 state_queued = "queued"
 
+[balance]
+# Summary row for balances that do not fit in the card height.
+more = "{n} more"
+
 [calendar]
 # calendar panel heading (layout.panels main = "calendar").
 # {month} is the month name from [month]

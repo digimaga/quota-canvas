@@ -91,6 +91,10 @@ state_free = "空きあり"
 state_full = "満杯"
 state_queued = "待ちあり"
 
+[balance]
+# 残高だけのカードで、カードの高さに収まらない分をまとめる行。
+more = "ほか {n} 件"
+
 [calendar]
 # カレンダーパネル (layout.panels の main = "calendar") の見出し。
 # {month} には [month] の月名 (ja は数字) が入る
