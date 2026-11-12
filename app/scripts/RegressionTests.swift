@@ -427,7 +427,8 @@ struct RegressionTests {
         isAuthorized = false
         coordinator.enqueue(previous: nil, current: current, now: now)
         await coordinator.waitUntilIdle()
-        check(keys.isEmpty && posts.isEmpty, "unauthorized does not record")
+        check(keys.count == 1 && posts.isEmpty, "unauthorized records without posting")
+        keys.removeAll()
         isAuthorized = true
         shouldFail = true
         coordinator.enqueue(previous: nil, current: current, now: now)
@@ -1558,23 +1559,421 @@ struct RegressionTests {
         await lostCoordinator.waitUntilIdle()
         check(lostCoordinator.error != nil && lostKeys.isEmpty && lostPosts.isEmpty,
               "a failed post keeps the candidate unrecorded")
-        // 権限が無い間は再送しない（:430 の unauthorized の扱いのまま）。
+        // 権限が無い間は配達せず、無効時と同じくキーを記録して未配達候補を捨てる。
         lostAuthorized = false
         lostCoordinator.enqueue(previous: plainOver, current: plainOver, now: now)
         await lostCoordinator.waitUntilIdle()
-        check(lostKeys.isEmpty && lostCoordinator.error != nil,
-              "unauthorized keeps the undelivered candidate without recording")
+        check(lostKeys.count == 1 && lostPosts.isEmpty && lostCoordinator.error == nil,
+              "unauthorized records the undelivered candidate without posting")
         lostAuthorized = true
         lostShouldFail = false
-        // previous == current で計画が候補を作り直さない読み取りでも再送される。
+        // 古い遷移は記録済みなので、許可後も再送しない。
         lostCoordinator.enqueue(previous: plainOver, current: plainOver, now: now)
         await lostCoordinator.waitUntilIdle()
-        check(lostKeys.count == 1 && lostPosts.count == 1 && lostCoordinator.error == nil,
+        check(lostKeys.count == 1 && lostPosts.isEmpty,
+              "granting authorization does not replay the dropped candidate")
+        // 別の失敗候補は、許可後の通常の読み取りで再送される。
+        let plainExhausted = Data(#"{"cards":[{"id":"demo:weekly","provider":"demo","status":"exhausted"}]}"#.utf8)
+        lostShouldFail = true
+        lostCoordinator.enqueue(previous: plainOver, current: plainExhausted, now: now)
+        await lostCoordinator.waitUntilIdle()
+        check(lostCoordinator.error != nil && lostKeys.count == 1 && lostPosts.isEmpty,
+              "a later failed post stays unrecorded")
+        lostShouldFail = false
+        lostCoordinator.enqueue(previous: plainExhausted, current: plainExhausted, now: now)
+        await lostCoordinator.waitUntilIdle()
+        check(lostKeys.count == 2 && lostPosts.count == 1 && lostCoordinator.error == nil,
               "the next normal read re-sends the undelivered candidate once")
         // 受理済みなので再送しない。
-        lostCoordinator.enqueue(previous: plainOver, current: plainOver, now: now)
+        lostCoordinator.enqueue(previous: plainExhausted, current: plainExhausted, now: now)
         await lostCoordinator.waitUntilIdle()
-        check(lostKeys.count == 1 && lostPosts.count == 1, "an accepted candidate is not re-sent")
+        check(lostKeys.count == 2 && lostPosts.count == 1, "an accepted candidate is not re-sent")
+
+        // 権限なしで記録した遷移は、あとで許可しても通知されない。新しい遷移は通知される。
+        var grantKeys = Set<String>()
+        var grantPosts: [String] = []
+        var grantAuthorized = false
+        let grantSpare = Data(#"{"cards":[{"id":"demo:weekly","provider":"demo","status":"spare"}]}"#.utf8)
+        let grantOver = Data(#"{"cards":[{"id":"demo:weekly","provider":"demo","status":"over"}]}"#.utf8)
+        let grantExhausted = Data(#"{"cards":[{"id":"demo:weekly","provider":"demo","status":"exhausted"}]}"#.utf8)
+        let grant = NotificationCoordinator(client: client, enabled: { true }, available: { true },
+            readKeys: { grantKeys }, recordKeys: { grantKeys.formUnion($0) }, authorized: { grantAuthorized },
+            post: { item in grantPosts.append(item.key) })
+        grant.enqueue(previous: grantSpare, current: grantOver, now: now)
+        await grant.waitUntilIdle()
+        check(grantKeys.count == 1 && grantPosts.isEmpty,
+              "unauthorized transition is recorded without posting")
+        grantAuthorized = true
+        grant.enqueue(previous: grantOver, current: grantOver, now: now)
+        await grant.waitUntilIdle()
+        check(grantKeys.count == 1 && grantPosts.isEmpty,
+              "an old transition is not notified after authorization")
+        grant.enqueue(previous: grantOver, current: grantExhausted, now: now)
+        await grant.waitUntilIdle()
+        check(grantKeys.count == 2 && grantPosts.count == 1,
+              "a new transition after authorization is notified")
+        check(grant.error == nil, "no delivery error after authorization")
+
+        // レビュー指摘: 権限なしで新しい候補を記録するときも、残っている古い未配達の
+        // 候補を捨てる（あとで許可しても古い遷移を出さない）。
+        var mixKeys = Set<String>()
+        var mixPosts: [String] = []
+        var mixShouldFail = true
+        var mixAuthorized = true
+        let mix = NotificationCoordinator(client: client, enabled: { true }, available: { true },
+            readKeys: { mixKeys }, recordKeys: { mixKeys.formUnion($0) }, authorized: { mixAuthorized },
+            post: { item in
+                if mixShouldFail { throw EngineError(message: "post failed") }
+                mixPosts.append(item.key)
+            })
+        mix.enqueue(previous: plainSpare, current: plainOver, now: now) // 失敗して未配達に残る
+        await mix.waitUntilIdle()
+        mixAuthorized = false
+        mix.enqueue(previous: plainOver, current: plainExhausted, now: now) // 権限なしで新しい候補
+        await mix.waitUntilIdle()
+        check(mixKeys.count == 2 && mixPosts.isEmpty && mix.error == nil,
+              "unauthorized drops the old undelivered candidate along with the new one")
+        mixAuthorized = true
+        mixShouldFail = false
+        mix.enqueue(previous: plainExhausted, current: plainExhausted, now: now)
+        await mix.waitUntilIdle()
+        check(mixPosts.isEmpty, "granting authorization replays neither candidate")
+
+        // レビュー指摘: 通知が使えない（.app の外など）ときは authorized() を呼ばない
+        // （UNUserNotificationCenter は .app の外で落ちる）。
+        var probeCalls = 0
+        var probeKeys = Set<String>()
+        let probe = NotificationCoordinator(client: client, enabled: { true }, available: { false },
+            readKeys: { probeKeys }, recordKeys: { probeKeys.formUnion($0) },
+            authorized: { probeCalls += 1; return true },
+            post: { _ in })
+        probe.enqueue(previous: plainSpare, current: plainOver, now: now)
+        await probe.waitUntilIdle()
+        check(probeCalls == 0 && probeKeys.count == 1,
+              "unavailable notifications record without asking for authorization")
+
+        // last-window: 窓が 2 つ以上あるサービスでは、チェックが 1 つだけのとき
+        // その最後の 1 つを外させない（空配列 = 全窓表示に戻り、「チェックした
+        // 窓だけ表示」と食い違うため）。全部隠したいときはサービスをオフにする。
+        let twoWindows: Set<String> = ["win-a", "win-b"]
+        check(ServiceSettingsView.blocksUncheckingLastWindow(
+            selected: ["win-a"], all: twoWindows),
+              "the last checked window of a multi-window service cannot be unchecked")
+        check(!ServiceSettingsView.blocksUncheckingLastWindow(
+            selected: ["win-a", "win-b"], all: twoWindows),
+              "unchecking is allowed while multiple windows are checked")
+        check(!ServiceSettingsView.blocksUncheckingLastWindow(
+            selected: ["win-a"], all: ["win-a"]),
+              "a single-window service keeps its existing behavior (empty means all)")
+        check(!ServiceSettingsView.blocksUncheckingLastWindow(
+            selected: [], all: twoWindows),
+              "an empty selection is not treated as the last window")
+
+        check(!ServiceSettingsView.canUncheckWindow(
+            "win-a", selected: ["win-a"], all: twoWindows),
+              "the checkbox of the last checked window is disabled")
+        check(ServiceSettingsView.canUncheckWindow(
+            "win-a", selected: ["win-a", "win-b"], all: twoWindows),
+              "a checked window can be unchecked while another stays checked")
+        check(ServiceSettingsView.canUncheckWindow(
+            "win-b", selected: ["win-a"], all: twoWindows),
+              "an unchecked window can still be checked")
+        check(ServiceSettingsView.canUncheckWindow(
+            "win-a", selected: ["win-a"], all: ["win-a"]),
+              "a single-window service can still clear its check as before")
+
+        check(ServiceSettingsView.windowSelectionAfterEdit(
+            current: ["win-a"], proposed: [], all: twoWindows) == ["win-a"],
+              "removing the last checked window is ignored (defense behind disabled)")
+        check(ServiceSettingsView.windowSelectionAfterEdit(
+            current: ["win-a", "win-b"], proposed: ["win-b"], all: twoWindows) == ["win-b"],
+              "a normal uncheck is kept")
+        check(ServiceSettingsView.windowSelectionAfterEdit(
+            current: ["win-a"], proposed: [], all: ["win-a"]).isEmpty,
+              "a single-window service can still clear its check as before")
+
+        check(ServiceSettingsView.effectiveWindowSelection(saved: [], all: twoWindows) == twoWindows,
+              "an empty saved array still means all windows checked")
+        check(ServiceSettingsView.effectiveWindowSelection(saved: ["win-b"], all: twoWindows) == ["win-b"],
+              "a partial saved selection is shown as is")
+
+        // MARK: subs-restore 担当分の追加テスト（split 切り替えでの明示サブの退避・復元）
+        //
+        // splitBinding・mainBinding・clearSlot・resetSubsToAuto・swapSlots・save の
+        // 失敗経路が呼ぶ純粋関数（stashSubs / restoredSubs / discardStash /
+        // revertedStash）を、実際の経路と同じ呼び出し順で確かめる。
+
+        func srSlot(_ id: String, _ column: Int, _ size: String,
+                    _ main: String?, _ subs: [String]?) -> LayoutSettingsView.LayoutSlot {
+            LayoutSettingsView.LayoutSlot(id: id, column: column, size: size,
+                                          title: id, main: main, subs: subs)
+        }
+        let srNoSplits = [Bool](repeating: false, count: LayoutSettingsView.columnCount)
+
+        // 退避: 大スロットの明示 subs を「退避元の列 → 主枠の窓 ID」の組で覚える。
+        // 自動（subs == nil）・主枠なし・小スロットは退避しない。同じ列・主枠は
+        // 新しい指定で上書き。明示「サブなし」の [] も退避する。
+        var srStash: [Int: [String: [String]]] = [:]
+        srStash = LayoutSettingsView.stashSubs(
+            for: srSlot("c0:large", 0, "large", "alpha:week", ["alpha:day"]), into: srStash)
+        check(srStash == [0: ["alpha:week": ["alpha:day"]]],
+              "explicit large subs are stashed by column and main window")
+        srStash = LayoutSettingsView.stashSubs(
+            for: srSlot("c1:large", 1, "large", "beta:day", nil), into: srStash)
+        check(srStash.count == 1, "automatic subs stash nothing")
+        srStash = LayoutSettingsView.stashSubs(
+            for: srSlot("c2:large", 2, "large", nil, []), into: srStash)
+        check(srStash.count == 1, "a large slot without a main stashes nothing")
+        srStash = LayoutSettingsView.stashSubs(
+            for: srSlot("c1:top", 1, "small", "beta:day", nil), into: srStash)
+        check(srStash.count == 1, "small slots never stash")
+        srStash = LayoutSettingsView.stashSubs(
+            for: srSlot("c0:large", 0, "large", "alpha:week", ["alpha:5h"]), into: srStash)
+        check(srStash == [0: ["alpha:week": ["alpha:5h"]]],
+              "a new designation overwrites the stash for the same column and main")
+        srStash = LayoutSettingsView.stashSubs(
+            for: srSlot("c3:large", 3, "large", "delta:week", []), into: srStash)
+        check(srStash[3]?["delta:week"] == [], "an explicit empty sub list is stashed too")
+
+        // 復元: 自分の列に退避された明示 subs のうち同じ主枠のものだけ戻す。
+        // 別の主枠・空の主枠は nil（自動のまま）。明示「サブなし」は [] のまま戻る。
+        check(LayoutSettingsView.restoredSubs(
+            forMain: "alpha:week", of: srSlot("c0:large", 0, "large", nil, nil), in: srStash) == ["alpha:5h"],
+              "the same main in the same column restores the stashed subs")
+        check(LayoutSettingsView.restoredSubs(
+            forMain: "delta:week", of: srSlot("c3:large", 3, "large", nil, nil), in: srStash) == [],
+              "an explicit empty stash restores as empty, not automatic")
+        check(LayoutSettingsView.restoredSubs(
+            forMain: "gamma:week", of: srSlot("c0:large", 0, "large", nil, nil), in: srStash) == nil,
+              "a different main restores nothing")
+        check(LayoutSettingsView.restoredSubs(
+            forMain: nil, of: srSlot("c0:large", 0, "large", nil, nil), in: srStash) == nil
+            && LayoutSettingsView.restoredSubs(
+                forMain: "", of: srSlot("c0:large", 0, "large", nil, nil), in: srStash) == nil,
+              "an empty main restores nothing")
+
+        // 指摘 2: 退避は列で仕切る。同じ主枠 A を持つ 2 列を両方 2 段にしても、
+        // 退避は列ごとに分かれて後から上書きされず、他方の列の指定で復元されない。
+        // 片方の列が自動（退避なし）でも、他方の退避で明示指定にならない。
+        var srTwoCols: [Int: [String: [String]]] = [:]
+        srTwoCols = LayoutSettingsView.stashSubs(
+            for: srSlot("c0:large", 0, "large", "alpha:week", ["alpha:day"]), into: srTwoCols)
+        srTwoCols = LayoutSettingsView.stashSubs(
+            for: srSlot("c1:large", 1, "large", "alpha:week", ["alpha:5h"]), into: srTwoCols)
+        check(LayoutSettingsView.restoredSubs(
+            forMain: "alpha:week", of: srSlot("c0:large", 0, "large", nil, nil), in: srTwoCols) == ["alpha:day"]
+            && LayoutSettingsView.restoredSubs(
+                forMain: "alpha:week", of: srSlot("c1:large", 1, "large", nil, nil), in: srTwoCols) == ["alpha:5h"],
+              "two columns with the same main keep their own stashes")
+        let srAutoCol = LayoutSettingsView.stashSubs(
+            for: srSlot("c2:large", 2, "large", "alpha:week", nil), into: srTwoCols)
+        check(LayoutSettingsView.restoredSubs(
+            forMain: "alpha:week", of: srSlot("c2:large", 2, "large", nil, nil), in: srAutoCol) == nil,
+              "an automatic column stays automatic when a sibling column stashed the same main")
+
+        // 無効化: mainBinding・clearSlot・resetSubsToAuto・swapSlots が呼ぶ
+        // discardStash はそのパネル（列。大・小どちらのスロットからでも同じ列）
+        // の退避だけを消し、別の列は残す。
+        var srDiscarded = LayoutSettingsView.discardStash(
+            of: srSlot("c1:top", 1, "small", "alpha:week", nil), in: srStash)
+        check(srDiscarded[1] == nil && srDiscarded[0]?["alpha:week"] == ["alpha:5h"]
+              && srDiscarded[3]?["delta:week"] == [],
+              "discarding via a small slot clears only its own column's stash")
+        srDiscarded = LayoutSettingsView.discardStash(
+            of: srSlot("c0:large", 0, "large", "alpha:week", nil), in: srDiscarded)
+        check(srDiscarded[0] == nil && srDiscarded[3]?["delta:week"] == [],
+              "discarding via the large slot clears the column's stash and keeps other columns")
+        srDiscarded = LayoutSettingsView.discardStash(
+            of: srSlot("c2:large", 2, "large", nil, nil), in: srDiscarded)
+        check(srDiscarded == [3: ["delta:week": []]],
+              "discarding a column without a stash leaves the others untouched")
+
+        // split の往復（splitBinding の on → off と同じ呼び出し順）: 大 → 2 段で
+        // 退避して消え、同じ主枠で 1 段に戻ると復元されて保存に載る。主枠が変わったら
+        // 自動のまま（退避があっても主枠が違うと復元しない）。
+        var srSlots = LayoutSettingsView.emptySlots()
+        var srSplits = srNoSplits
+        let srLargeIdx = LayoutSettingsView.slotIndex(0, 0)
+        let srTopIdx = LayoutSettingsView.slotIndex(0, 1)
+        srSlots[srLargeIdx].main = "alpha:week"
+        srSlots[srLargeIdx].subs = ["alpha:day"]
+        var srFlowStash: [Int: [String: [String]]] = [:]
+        srFlowStash = LayoutSettingsView.stashSubs(for: srSlots[srLargeIdx], into: srFlowStash)
+        srSlots[srTopIdx].main = srSlots[srLargeIdx].main
+        srSlots[srLargeIdx].main = nil
+        srSlots[srLargeIdx].subs = nil
+        srSplits[0] = true
+        check(LayoutSettingsView.panelsForSave(slots: srSlots, splits: srSplits).allSatisfy { $0.subs == nil },
+              "the split column saves no subs while the main is small")
+        srSlots[srTopIdx].main = "beta:day" // 2 段の間に Picker で主枠を変える
+        let srChanged = srSlots[srTopIdx].main
+        srSlots[srLargeIdx].main = srChanged
+        srSlots[srLargeIdx].subs = LayoutSettingsView.restoredSubs(
+            forMain: srChanged, of: srSlots[srLargeIdx], in: srFlowStash)
+        srSlots[srTopIdx].main = nil
+        srSplits[0] = false
+        let srChangedSaved = LayoutSettingsView.panelsForSave(slots: srSlots, splits: srSplits)
+        check(srChangedSaved.map(\.main) == ["beta:day"] && srChangedSaved[0].subs == nil,
+              "a changed main comes back automatic without the stashed subs")
+
+        // 指摘 1・経路「主枠の変更」: 2 段に分けた後の小スロットで Picker を
+        // A → B → A と変えてから 1 段に戻しても、古い退避は復活しない。
+        // mainBinding の set と同じ呼び出し順（discardStash → main/subs の更新）。
+        srSlots = LayoutSettingsView.emptySlots()
+        srSplits = srNoSplits
+        srSlots[srLargeIdx].main = "alpha:week"
+        srSlots[srLargeIdx].subs = ["alpha:day"]
+        srFlowStash = LayoutSettingsView.stashSubs(for: srSlots[srLargeIdx], into: [:])
+        srSlots[srTopIdx].main = srSlots[srLargeIdx].main
+        srSlots[srLargeIdx].main = nil
+        srSlots[srLargeIdx].subs = nil
+        srSplits[0] = true
+        for srPicked in ["beta:day", "alpha:week"] {
+            srFlowStash = LayoutSettingsView.discardStash(of: srSlots[srTopIdx], in: srFlowStash)
+            srSlots[srTopIdx].main = srPicked
+            srSlots[srTopIdx].subs = nil
+        }
+        check(srFlowStash[0] == nil,
+              "re-picking the split column's main through the picker discards its stash")
+        let srRepicked = srSlots[srTopIdx].main
+        srSlots[srLargeIdx].main = srRepicked
+        srSlots[srLargeIdx].subs = LayoutSettingsView.restoredSubs(
+            forMain: srRepicked, of: srSlots[srLargeIdx], in: srFlowStash)
+        srSlots[srTopIdx].main = nil
+        srSplits[0] = false
+        let srRepickedSaved = LayoutSettingsView.panelsForSave(slots: srSlots, splits: srSplits)
+        check(srRepickedSaved.map(\.main) == ["alpha:week"] && srRepickedSaved[0].subs == nil,
+              "a re-picked main comes back automatic without the discarded stash")
+
+        // 指摘 1・経路「空にする」: 2 段の小スロットを clearSlot で空にしてから
+        // 同じ主枠を選び直しても（clearSlot → mainBinding と同じ呼び出し順）、
+        // 1 段に戻すと自動のまま。
+        srSlots = LayoutSettingsView.emptySlots()
+        srSplits = srNoSplits
+        srSlots[srLargeIdx].main = "alpha:week"
+        srSlots[srLargeIdx].subs = ["alpha:day"]
+        srFlowStash = LayoutSettingsView.stashSubs(for: srSlots[srLargeIdx], into: [:])
+        srSlots[srTopIdx].main = srSlots[srLargeIdx].main
+        srSlots[srLargeIdx].main = nil
+        srSlots[srLargeIdx].subs = nil
+        srSplits[0] = true
+        // clearSlot（小スロット）: 退避を消してから main を空にする
+        srFlowStash = LayoutSettingsView.discardStash(of: srSlots[srTopIdx], in: srFlowStash)
+        srSlots[srTopIdx].main = nil
+        srSlots[srTopIdx].subs = nil
+        check(srFlowStash[0] == nil,
+              "clearing the split column's top slot discards its stash")
+        // mainBinding（空 → A）: 退避を消してから主枠を戻す
+        srFlowStash = LayoutSettingsView.discardStash(of: srSlots[srTopIdx], in: srFlowStash)
+        srSlots[srTopIdx].main = "alpha:week"
+        srSlots[srTopIdx].subs = nil
+        srSlots[srLargeIdx].main = srSlots[srTopIdx].main
+        srSlots[srLargeIdx].subs = LayoutSettingsView.restoredSubs(
+            forMain: srSlots[srTopIdx].main, of: srSlots[srLargeIdx], in: srFlowStash)
+        srSlots[srTopIdx].main = nil
+        srSplits[0] = false
+        let srClearedSaved = LayoutSettingsView.panelsForSave(slots: srSlots, splits: srSplits)
+        check(srClearedSaved.map(\.main) == ["alpha:week"] && srClearedSaved[0].subs == nil,
+              "a cleared then re-picked main comes back automatic")
+
+        // 指摘 1・経路「入れ替え」: 2 段の小スロット同士を swapSlots で入れ替えると
+        // 両方のパネルの退避が消え、どちらの列も退避なしで 1 段に戻る。
+        var srSwapSlots = LayoutSettingsView.emptySlots()
+        var srSwapStash: [Int: [String: [String]]] = [:]
+        let srCol1LargeIdx = LayoutSettingsView.slotIndex(1, 0)
+        let srCol1TopIdx = LayoutSettingsView.slotIndex(1, 1)
+        srSwapSlots[srLargeIdx].main = "alpha:week"
+        srSwapSlots[srLargeIdx].subs = ["alpha:day"]
+        srSwapSlots[srCol1LargeIdx].main = "beta:day"
+        srSwapSlots[srCol1LargeIdx].subs = ["beta:5h"]
+        srSwapStash = LayoutSettingsView.stashSubs(for: srSwapSlots[srLargeIdx], into: srSwapStash)
+        srSwapStash = LayoutSettingsView.stashSubs(for: srSwapSlots[srCol1LargeIdx], into: srSwapStash)
+        srSwapSlots[srTopIdx].main = srSwapSlots[srLargeIdx].main
+        srSwapSlots[srLargeIdx].main = nil
+        srSwapSlots[srLargeIdx].subs = nil
+        srSwapSlots[srCol1TopIdx].main = srSwapSlots[srCol1LargeIdx].main
+        srSwapSlots[srCol1LargeIdx].main = nil
+        srSwapSlots[srCol1LargeIdx].subs = nil
+        // swapSlots（small↔small）: 両方の列の退避を消してから main を入れ替える
+        srSwapStash = LayoutSettingsView.discardStash(of: srSwapSlots[srTopIdx], in: srSwapStash)
+        srSwapStash = LayoutSettingsView.discardStash(of: srSwapSlots[srCol1TopIdx], in: srSwapStash)
+        let srMoved0 = srSwapSlots[srTopIdx].main
+        srSwapSlots[srTopIdx].main = srSwapSlots[srCol1TopIdx].main
+        srSwapSlots[srCol1TopIdx].main = srMoved0
+        check(srSwapStash.isEmpty, "swapping two split columns discards both stashes")
+        for srCol in 0..<2 {
+            let srL = LayoutSettingsView.slotIndex(srCol, 0)
+            let srT = LayoutSettingsView.slotIndex(srCol, 1)
+            srSwapSlots[srL].main = srSwapSlots[srT].main
+            srSwapSlots[srL].subs = LayoutSettingsView.restoredSubs(
+                forMain: srSwapSlots[srT].main, of: srSwapSlots[srL], in: srSwapStash)
+            srSwapSlots[srT].main = nil
+        }
+        let srSwappedSaved = LayoutSettingsView.panelsForSave(slots: srSwapSlots, splits: srNoSplits)
+        check(srSwappedSaved.map(\.main) == ["beta:day", "alpha:week"]
+              && srSwappedSaved.allSatisfy { $0.subs == nil },
+              "swapped mains come back automatic in both columns")
+
+        // 指摘 3・経路「save の失敗」: 小スロットを空にして退避を消した直後に保存が
+        // 失敗し、読み直しで確認できた配置に小スロットの A が戻っても、退避は
+        // 保存が最後に成功したときの状態に戻るので、1 段に戻すと subs が復元される。
+        // save の失敗経路と同じ呼び出し順: revertedStash(beforeEdit: stashBeforeSave,
+        // confirmedSlots: 読み直した配置のスロット)。
+        srSlots = LayoutSettingsView.emptySlots()
+        srSplits = srNoSplits
+        srSlots[srLargeIdx].main = "alpha:week"
+        srSlots[srLargeIdx].subs = ["alpha:day"]
+        let srSplitStash = LayoutSettingsView.stashSubs(for: srSlots[srLargeIdx], into: [:])
+        srSlots[srTopIdx].main = srSlots[srLargeIdx].main
+        srSlots[srLargeIdx].main = nil
+        srSlots[srLargeIdx].subs = nil
+        srSplits[0] = true
+        let srAfterSplit = srSlots
+        // clearSlot で小スロットを空にする（退避も消える）→ この保存が失敗したとする
+        var srFailedStash = LayoutSettingsView.discardStash(of: srSlots[srTopIdx], in: srSplitStash)
+        srSlots[srTopIdx].main = nil
+        srSlots[srTopIdx].subs = nil
+        check(srFailedStash.isEmpty,
+              "clearing the top slot discards the stash before the failed save")
+        // 読み直し: 確認できた設定には split のまま上段 A が残る
+        let srConfirmed = LayoutSettingsView.restoreLayout(config: [
+            ConfigDocument.PanelConfig(main: "alpha:week", subs: nil, size: "small"),
+            ConfigDocument.PanelConfig(main: "", subs: nil, size: "small"),
+        ], status: [])
+        let srReverted = LayoutSettingsView.revertedStash(
+            beforeEdit: srSplitStash, confirmedSlots: srConfirmed.slots)
+        check(srReverted == srSplitStash,
+              "a failed save restores the stash from before the edit")
+        // 1 段に戻す: 退避が戻っているので元の明示 subs も復元される
+        srSlots = srAfterSplit
+        srSlots[srLargeIdx].main = srSlots[srTopIdx].main
+        srSlots[srLargeIdx].subs = LayoutSettingsView.restoredSubs(
+            forMain: srSlots[srTopIdx].main, of: srSlots[srLargeIdx], in: srReverted)
+        srSlots[srTopIdx].main = nil
+        srSplits[0] = false
+        let srRecoveredSaved = LayoutSettingsView.panelsForSave(slots: srSlots, splits: srSplits)
+        check(srRecoveredSaved.map(\.main) == ["alpha:week"] && srRecoveredSaved[0].subs == ["alpha:day"],
+              "the restored stash brings back the explicit subs on merge")
+
+        // 指摘 3: 退避を触らない編集（サブのチェックなど）の保存が失敗したときは、
+        // 現在の退避が確認できた配置と整合するのでそのまま残る（現状維持になる）。
+        check(LayoutSettingsView.revertedStash(
+            beforeEdit: srFailedStash, confirmedSlots: srAfterSplit) == srFailedStash
+            && srFailedStash.isEmpty,
+              "a failed unrelated edit keeps the current stash")
+
+        // 指摘 3: 確認できた配置に主枠が現れない列の退避は戻さない（その列に主枠が
+        // 戻らない限り復元先を得られない）。主枠が別の列に移っていても戻さない。
+        check(LayoutSettingsView.revertedStash(
+            beforeEdit: srSplitStash, confirmedSlots: LayoutSettingsView.emptySlots()).isEmpty,
+              "a stash for a column without that main is not restored")
+        let srOtherCol = LayoutSettingsView.restoreLayout(config: [
+            ConfigDocument.PanelConfig(main: "", subs: nil, size: "large"),
+            ConfigDocument.PanelConfig(main: "alpha:week", subs: nil, size: "large"),
+        ], status: [])
+        check(LayoutSettingsView.revertedStash(
+            beforeEdit: srSplitStash, confirmedSlots: srOtherCol.slots).isEmpty,
+              "a stash is not restored into a different column")
 
         print("Regression checks: \(checks) passed")
     }

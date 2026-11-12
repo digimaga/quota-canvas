@@ -126,21 +126,51 @@ final class NotificationCoordinator: ObservableObject {
     /// 再送する。受理済み（記録済み）のキーは再送しない。
     private func deliver(_ planned: [NotificationPresentation.Planned]) async {
         if planned.isEmpty {
-            guard enabled(), available(), await authorized() else { return }
+            guard enabled(), available() else { return }
+            guard await authorized() else {
+                dropUndelivered()
+                return
+            }
             for (_, item) in undelivered.sorted(by: { $0.key < $1.key }) {
                 await deliverOne(item)
             }
             return
         }
+        // 先に enabled・available を見る。.app の外（swift run など）では
+        // authorized() の UNUserNotificationCenter が落ちるので、available が
+        // false のときは呼ばない。
         if !enabled() || !available() {
-            recordKeys(planned.map(\.key))
-            for key in planned.map(\.key) { undelivered.removeValue(forKey: key) }
+            recordWithoutDelivery(planned.map(\.key))
             return
         }
-        guard await authorized() else { return }
+        guard await authorized() else {
+            // 権限なし: 記録だけして、残っている古い未配達の候補も捨てる
+            // （あとで許可しても古い遷移を出さない）。
+            recordWithoutDelivery(planned.map(\.key))
+            dropUndelivered()
+            return
+        }
         for notification in planned {
             await deliverOne(notification)
         }
+    }
+
+    /// 通知の無効時・権限なし時は配達せず、通知済みとして記録だけ行う。
+    /// あとで許可しても古い遷移がまとめて出ないよう、未配達候補も捨てる。
+    private func recordWithoutDelivery(_ keys: [String]) {
+        recordKeys(keys)
+        for key in keys {
+            undelivered.removeValue(forKey: key)
+            deliveryErrors.removeValue(forKey: key)
+        }
+        updateError()
+    }
+
+    /// 未配達候補は役に立たないので、記録して捨てる。
+    private func dropUndelivered() {
+        let keys = undelivered.keys.sorted()
+        if keys.isEmpty { return }
+        recordWithoutDelivery(keys)
     }
 
     private func deliverOne(_ notification: NotificationPresentation.Planned) async {

@@ -326,7 +326,10 @@ output is the envelope so callers can judge freshness:
   carry `card`; `credit` carries `provider`, `name`, and `expires_at`. This command has
   no notification or state side effects. The app processes snapshots in order, formats and
   delivers candidates through the OS, and records keys according to delivery acceptance;
-  when notifications are disabled it records candidates without delivery. Initial card
+  when notifications are disabled it records candidates without delivery. When notification
+  permission is missing (not yet granted or denied), it likewise records candidates without
+  delivery and drops pending undelivered candidates, so granting permission later does not
+  replay old transitions. Initial card
   transitions are not notified; an expiring reset credit can be notified on the first read.
   If planning or candidate decoding fails, the app retains that snapshot and later snapshots
   in order and stops the drain; the next normal status read starts a retry. Planning errors
@@ -489,7 +492,7 @@ balance (USD). A 401/403 means the login expired (`vela login` again).
 | `layout.panels` | array of `{main, subs, size}`, `[]` = auto placement | 表示: 配置エディタ (placement). `main` = window id (`"claude:weekly"`) or provider id (`"gemini"`, engine picks the service's best window / shows a balance-only or error slot) or `"calendar"`（今日の属する月のカレンダーパネル。small/large とも可・サブなし（`subs` は無視）、印は ≥ 1 日の窓のリセット日、週の始まりは `display.week_start`）or `"local:<name>"`（ローカル LLM サーバー 1 枚、small/large とも可・サブなし）or `""` (small のみ可: その段は空き枠になり位置を保つ); `subs` = sub window ids (large panels only, ≤ 3). キー省略または `null` = 自動（主枠と同じサービスの残りの窓、最大 3、ほかのパネルで使った窓は除く。small パネルとローカル・カレンダーはサブなし）、`[]` = 明示的にサブなし。status.json の `layout[].subs` は解決後の配列; `size` = `"large"` \| `"small"`; optional `second_bar` (bool, small only; key absent or `null` = auto: shown for OpenCode Go / OpenDesign Go / Gemini / Devin, `true` = show, `false` = hide) draws a second thin bar for the service's shorter window (5h / daily) under the small panel. status.json `layout[]` carries `second_bar` only when it is set explicitly. Columns are assembled in panel order — 1 `large` or 2 consecutive `small`s per column, at most 5 columns (all-small = up to 10 panels); the engine rejects more with `config --set-json`. status.json の `layout[]` は同じ順序なので、同じ規則 (`render.group_columns`) で列構成を復元できる |
 | `providers.<p>.enabled` | bool | サービス: toggle per detected service |
 | `providers.claude.token_refresh` | `"cli"` \| `"off"`, default `"cli"` | Claude の OAuth トークンの自動更新。`"cli"` = 期限切れ間近 / HTTP 401/403 で `claude -p` を軽く 1 回バックグラウンド実行し、Claude Code CLI 自身にキーチェーンへ書き戻させる（30 分に 1 回まで。成功したら反映要求を出して 1 秒以内に取り直す）。`"off"` = 自動更新しない（401/403 は「トークン期限切れ（claude を一度起動してください）」のエラー表示） |
-| `providers.<p>.windows` | list of window keys, `[]` = all | サービス: checkbox per window the service reports |
+| `providers.<p>.windows` | list of window keys, `[]` = all | サービス: checkbox per window the service reports. A service with 2+ windows keeps its last checked window (unchecking it would save `[]` = all); the UI tells the user to turn the service off to hide every window |
 | `providers.<p>.color` | `"#RRGGBB"` or absent | サービス: theme color picker (bar fill + name dot). Absent = engine default brand color |
 | `routing.enabled` | bool（既定 `false`） | 振り分け: 「AI ワーカーの振り分け判定を使う」トグル。true で `routing line|check|hook` が判定を出し、status.json に `"routing"` が現れる |
 | `routing.floor_percent` | 0–100（既定 5） | 振り分け: 「止める下限（残り %）」Stepper。floor 適用中に残りがこれ未満のワーカーは stop |

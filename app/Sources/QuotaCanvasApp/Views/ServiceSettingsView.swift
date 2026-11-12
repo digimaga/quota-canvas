@@ -147,20 +147,52 @@ struct ServiceSettingsView: View {
     private func windowsBinding(_ service: DetectService) -> Binding<Set<String>> {
         Binding<Set<String>>(
             get: {
-                let saved = Set(doc?.providerWindows(service.provider) ?? [])
-                let all = Set(service.windowList.map(\.key))
-                if saved.isEmpty { return all } // [] = すべて
-                return saved
+                Self.effectiveWindowSelection(
+                    saved: doc?.providerWindows(service.provider) ?? [],
+                    all: Set(service.windowList.map(\.key))) // [] = すべて
             },
             set: { selected in
                 guard var updated = doc else { return }
+                let all = Set(service.windowList.map(\.key))
+                let current = Self.effectiveWindowSelection(
+                    saved: doc?.providerWindows(service.provider) ?? [], all: all)
                 let keys = Self.windowKeysForSave(
-                    selected: selected, all: Set(service.windowList.map(\.key)))
+                    selected: Self.windowSelectionAfterEdit(
+                        current: current, proposed: selected, all: all),
+                    all: all)
                 updated.setProviderWindows(service.provider, keys)
                 doc = updated
                 Task { await save(updated) }
             }
         )
+    }
+
+    /// 保存済みの窓キーを画面上のチェック状態に直す。空配列は全チェック（コントラクト）。
+    static func effectiveWindowSelection(saved: [String], all: Set<String>) -> Set<String> {
+        saved.isEmpty ? all : Set(saved)
+    }
+
+    /// 窓が 2 つ以上あるサービスで、チェックが 1 つだけの状態か。
+    /// 最後の 1 つを外すと config.toml は空配列（= 全窓表示）に戻り、
+    /// 「チェックした窓だけ表示」という説明と食い違うので、外させない。
+    static func blocksUncheckingLastWindow(selected: Set<String>, all: Set<String>) -> Bool {
+        all.count > 1 && selected.count == 1
+    }
+
+    /// 窓 1 つのチェックを外せるか。最後の 1 つ（2 窓以上のサービス）だけ外せない。
+    static func canUncheckWindow(_ key: String, selected: Set<String>, all: Set<String>) -> Bool {
+        !selected.contains(key) || !blocksUncheckingLastWindow(selected: selected, all: all)
+    }
+
+    /// チェック変更後の選択。最後の 1 つを外す変更は無視する
+    /// （UI の disabled をすり抜けた場合の保険）。
+    static func windowSelectionAfterEdit(
+        current: Set<String>, proposed: Set<String>, all: Set<String>
+    ) -> Set<String> {
+        if proposed.isEmpty && blocksUncheckingLastWindow(selected: current, all: all) {
+            return current
+        }
+        return proposed
     }
 
     /// config.toml に書く窓キーの配列。Set の並びのまま書くと保存ごとに順番が
@@ -361,9 +393,16 @@ private struct ServiceRow: View {
                             Text(window.displayLabel)
                         }
                         .toggleStyle(.checkbox)
+                        .disabled(busy || !canUncheck(window.key))
                     }
                 }
                 .padding(.leading, 24)
+                // 最後の 1 つは外せないので、全部隠したいときの手段を案内する。
+                if keepsLastWindow {
+                    Text("すべて隠すにはサービスをオフにします。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.leading, 24)
+                }
             }
 
             if let tokenRefreshBinding {
@@ -419,9 +458,27 @@ private struct ServiceRow: View {
         Binding<Bool>(
             get: { windowsBinding.contains(key) },
             set: { on in
-                if on { windowsBinding.insert(key) } else { windowsBinding.remove(key) }
+                if on {
+                    windowsBinding.insert(key)
+                } else {
+                    // 最後の 1 つは外さない（disabled の保険）。
+                    guard canUncheck(key) else { return }
+                    windowsBinding.remove(key)
+                }
             }
         )
+    }
+
+    private var allWindowKeys: Set<String> { Set(service.windowList.map(\.key)) }
+
+    /// 最後の 1 つのチェックを外せない状態か（= 案内を出す）。
+    private var keepsLastWindow: Bool {
+        ServiceSettingsView.blocksUncheckingLastWindow(
+            selected: windowsBinding, all: allWindowKeys)
+    }
+
+    private func canUncheck(_ key: String) -> Bool {
+        ServiceSettingsView.canUncheckWindow(key, selected: windowsBinding, all: allWindowKeys)
     }
 
     /// カードの色。status.json の colors を初期値に、変更で providers.<p>.color を保存する。

@@ -80,6 +80,7 @@
 "サービスを検出できませんでした。「再検出」を試してください。" = "No services detected. Try \"Re-detect\".";
 "検出されたサービス" = "Detected services";
 "チェックした窓だけが画面に表示されます。すべてチェック（既定）でそのサービスの全窓を表示します。" = "Only checked windows are shown on screen. All checked (default) shows every window of the service.";
+"すべて隠すにはサービスをオフにします。" = "To hide all windows, turn the service off.";
 "プラン: %@" = "Plan: %@";
 "トークンを自動で更新する" = "Refresh token automatically";
 "期限切れ時に claude を軽く 1 回実行して更新させます。オフにすると、切れたらパネルに案内を出すだけになります。" = "Runs claude once to refresh an expired token. When off, the panel only shows guidance after expiry.";

@@ -29,6 +29,15 @@ struct LayoutSettingsView: View {
     /// status.json の layout が教える、サービス ID の主枠 → エンジンが実際に選んだメイン窓
     /// （「2本目の窓」の候補から除く窓の特定に使う）
     @State private var resolvedMainWindows: [String: String] = [:]
+    /// split 切り替えで消える大スロットの明示 subs を、退避元の列（パネルの位置）→
+    /// 主枠の窓 ID の組で退避する。同じ列に同じ主枠が大スロットに戻ったときだけ復元
+    /// して保存する。列で仕切るので、同じ主枠が複数の列にあっても別の列の退避は
+    /// 復元されない。画面の状態だけのメモで設定ファイルには書かない
+    /// （アプリを終了すると消える）。
+    @State private var stashedSubs: [Int: [String: [String]]] = [:]
+    /// 保存が最後に成功したときの退避。保存が失敗して読み直せたときは、確認できた
+    /// 配置と整合するよう退避をここに戻す（成功した編集だけが退避の変更を確定させる）。
+    @State private var stashBeforeSave: [Int: [String: [String]]] = [:]
     @State private var selectedSlotID: String?
     @State private var loading = true
     @State private var loadFailed = false
@@ -464,6 +473,63 @@ struct LayoutSettingsView: View {
         return resolvedSubsByMain[main] ?? []
     }
 
+    // MARK: split 切り替えでの明示サブの退避・復元
+    //
+    // 退避は「列（パネルの位置）→ 主枠の窓 ID → 明示 subs」の 2 段の鍵で持つ。
+    // splitBinding が退避と復元に使い、mainBinding・clearSlot・resetSubsToAuto・
+    // swapSlots は discardStash でそのパネルの退避を消す（ユーザーが明示指定を
+    // 捨てる操作なので、split 往復で古い指定が復活しないように）。save が失敗して
+    // 読み直せたときは revertedStash で退避を保存成功時点の状態に戻す。
+
+    /// 大スロットを 2 段に分けるとき消える明示 subs を、退避元の列と主枠の窓 ID の
+    /// 組で退避する。大以外・主枠なし・自動（subs == nil）は退避しない。
+    /// 同じ列・主枠の退避があるときは新しい指定で上書きする。
+    static func stashSubs(for slot: LayoutSlot, into stash: [Int: [String: [String]]]) -> [Int: [String: [String]]] {
+        guard slot.size == "large", let main = slot.main, !main.isEmpty, let subs = slot.subs else {
+            return stash
+        }
+        var next = stash
+        next[slot.column, default: [:]][main] = subs
+        return next
+    }
+
+    /// 1 段に戻るとき、その列（スロットの column）に退避された明示 subs のうち
+    /// 主枠が一致するものを返す。列が違えば主枠が同じでも復元しない（別のパネルの
+    /// 指定を勝手に付けない。片方の列が自動のときも他方の退避で明示にならない）。
+    /// 明示「サブなし」の [] も戻す。空の主枠・退避の無い主枠（自動だった）は
+    /// nil = 自動のまま。
+    static func restoredSubs(forMain main: String?, of slot: LayoutSlot,
+                             in stash: [Int: [String: [String]]]) -> [String]? {
+        guard let main, !main.isEmpty else { return nil }
+        return stash[slot.column]?[main]
+    }
+
+    /// そのパネル（スロットの column。大・小のどちらのスロットでも同じ列の
+    /// パネル）の退避を消す。主枠の変更・空にする・入れ替えでユーザーが明示指定を
+    /// 捨てたときに呼ぶ。別の列の退避は残す。
+    static func discardStash(of slot: LayoutSlot, in stash: [Int: [String: [String]]]) -> [Int: [String: [String]]] {
+        var next = stash
+        next[slot.column] = nil
+        return next
+    }
+
+    /// 保存が失敗して読み直せたときの退避: この編集の前（保存が最後に成功したとき）
+    /// の退避に戻す。編集は確認できた設定に反映されていないので、退避の変更も
+    /// 確定しない。ただし確認できた配置に主枠が現れない列の退避は戻さない
+    /// （画面は確認できた設定に揃えられるので、その列に主枠が戻らない限り
+    /// 退避は復元先を得られない）。
+    static func revertedStash(beforeEdit: [Int: [String: [String]]],
+                              confirmedSlots: [LayoutSlot]) -> [Int: [String: [String]]] {
+        let filled = confirmedSlots.filter { $0.main?.isEmpty == false }
+        var next: [Int: [String: [String]]] = [:]
+        for (column, entries) in beforeEdit {
+            let mains = Set(filled.filter { $0.column == column }.compactMap(\.main))
+            let kept = entries.filter { mains.contains($0.key) }
+            if !kept.isEmpty { next[column] = kept }
+        }
+        return next
+    }
+
     // MARK: バインディング・スロット操作
 
     private func mainBinding(_ slot: LayoutSlot) -> Binding<String> {
@@ -471,6 +537,11 @@ struct LayoutSettingsView: View {
             get: { slots.first { $0.id == slot.id }?.main ?? "" },
             set: { newValue in
                 guard let index = slots.firstIndex(where: { $0.id == slot.id }) else { return }
+                // 主枠を変える（空に選び直すのも同じ）と明示 subs は自動に戻る。
+                // 大・小どちらのスロットでも、このパネル（列）の退避は捨てた指定と
+                // して消す。2 段に分けた後の小スロットで主枠を変えて元に戻しても、
+                // 古い退避が復活しないように。
+                stashedSubs = Self.discardStash(of: slots[index], in: stashedSubs)
                 slots[index].main = newValue.isEmpty ? nil : newValue
                 slots[index].subs = nil // 主枠を選び直したらサブは自動に戻す
                 slots[index].secondBar = nil // 2 本目のバーも自動に戻す
@@ -548,6 +619,8 @@ struct LayoutSettingsView: View {
                 let ti = Self.slotIndex(col, 1)
                 let bi = Self.slotIndex(col, 2)
                 if on {
+                    // 大を 2 段に分けると明示 subs は消える: 列と主枠の組で退避してから消す
+                    stashedSubs = Self.stashSubs(for: slots[li], into: stashedSubs)
                     if let main = slots[li].main, !main.isEmpty {
                         slots[ti].main = main
                         slots[ti].secondBar = nil // 別の主枠が入るので自動に戻す
@@ -561,7 +634,10 @@ struct LayoutSettingsView: View {
                     let moved = slots[ti].main ?? slots[bi].main
                     if let main = moved, !main.isEmpty {
                         slots[li].main = main
-                        slots[li].subs = nil // 小スロットにサブはないので自動に戻す
+                        // 小に下がっていた主枠が大に戻る: この列に退避された明示 subs の
+                        // うち同じ主枠のものを戻して保存する。退避が無い（自動だった・
+                        // 主枠が変わった・別の列の退避）ときは nil = 自動のまま。
+                        slots[li].subs = Self.restoredSubs(forMain: main, of: slots[li], in: stashedSubs)
                     }
                     slots[ti].main = nil
                     slots[ti].secondBar = nil
@@ -581,6 +657,9 @@ struct LayoutSettingsView: View {
 
     private func clearSlot(_ slot: LayoutSlot) {
         guard let index = slots.firstIndex(where: { $0.id == slot.id }) else { return }
+        // 空にするのも明示 subs を捨てるのと同じ: このパネル（列）の退避も消す。
+        // 2 段に分けた後の小スロットを空にして戻しても古い退避が復活しないように。
+        stashedSubs = Self.discardStash(of: slots[index], in: stashedSubs)
         slots[index].main = nil
         slots[index].subs = nil
         slots[index].secondBar = nil
@@ -592,6 +671,8 @@ struct LayoutSettingsView: View {
     private func resetSubsToAuto(_ slot: LayoutSlot) {
         guard let index = slots.firstIndex(where: { $0.id == slot.id }) else { return }
         slots[index].subs = nil
+        // 自動に戻したら退避した明示 subs も捨てる（split で復えないように）
+        stashedSubs = Self.discardStash(of: slots[index], in: stashedSubs)
         commit()
     }
 
@@ -604,6 +685,9 @@ struct LayoutSettingsView: View {
         }
         for index in splits.indices { splits[index] = false }
         selectedSlotID = nil
+        stashedSubs = [:]
+        // stashBeforeSave は消さない: この保存が失敗して読み直したら、保存成功
+        // 時点の退避に戻す（成功したときに save() が stashedSubs で確定させる）。
         commit() // すべて空 → layout.panels = [] で保存（= 自動配置）
     }
 
@@ -612,6 +696,10 @@ struct LayoutSettingsView: View {
         guard sourceID != targetID,
               let s = slots.firstIndex(where: { $0.id == sourceID }),
               let t = slots.firstIndex(where: { $0.id == targetID }) else { return }
+        // 入れ替えでも両側のパネルで明示 subs の並びが変わる（大↔小なら大側の
+        // 明示は捨てられる）: 両方のパネル（列）の退避を消す
+        stashedSubs = Self.discardStash(of: slots[s], in: stashedSubs)
+        stashedSubs = Self.discardStash(of: slots[t], in: stashedSubs)
         var source = slots[s]
         var target = slots[t]
         swap(&source.main, &target.main)
@@ -807,7 +895,9 @@ struct LayoutSettingsView: View {
     /// @State も実際の設定に揃える。保存に成功したときは doc・synced だけを
     /// 更新し、表示は編集中の値のまま（nextControlState のコメント参照）。
     /// 読み直しも失敗したときは下書き（doc）と基準値をそのまま残し、
-    /// 未保存の編集を次の保存の差分に含める。
+    /// 未保存の編集を次の保存の差分に含める。退避（stashedSubs）も表示用の
+    /// メモなので、失敗して読み直せたときは保存が最後に成功したときの状態
+    /// （stashBeforeSave）に戻し、成功したときだけ編集による変更を確定させる。
     private func save(_ docToSave: ConfigDocument) async {
         guard let baseline = synced else { return }
         busy = true
@@ -829,6 +919,15 @@ struct LayoutSettingsView: View {
             outcome: outcome,
             status: StatusStore.loadStatusSnapshot()?.layout ?? []) {
             applyControlState(nextControls)
+            // 保存は失敗して読み直しが成功した: 画面が確認できた設定に揃ったので、
+            // 退避も保存が最後に成功したときの状態に戻す（この編集による退避の
+            // 変更は確定しない）。確認できた配置に主枠が現れない列の退避は
+            // 復元先を得られないので戻さない。
+            stashedSubs = Self.revertedStash(beforeEdit: stashBeforeSave,
+                                             confirmedSlots: nextControls.slots)
+        } else if outcome.failure == nil {
+            // 保存に成功: この編集までの退避の変更を確定する
+            stashBeforeSave = stashedSubs
         }
         if let error = outcome.failure {
             alertMessage = error.localizedDescription
