@@ -521,3 +521,148 @@ def test_provider_metadata():
     assert devin.PROVIDER.display_name == "Devin"
     assert devin.PROVIDER.needs_key is True
     assert providers.REGISTRY["devin"] is devin.PROVIDER
+
+
+# ------------------------------------------------------ free-model limit
+# CLI のラッパーが書く「無料枠の利用制限の戻る時刻」(epoch 秒) のファイル。
+# 実際のエラー文: "Reached free model rate limit. Upgrade to Max for higher limits,
+# or switch to a different model. Your limit will reset in 18 hours 40 minutes
+# (at Nov 13 06:01 UTC)." → ラッパーが 06:01 UTC (+30 秒) を書く。
+
+FREE_RESET = datetime(2026, 11, 13, 6, 1, 30, tzinfo=timezone.utc)
+FREE_NOW = datetime(2026, 11, 12, 11, 21, 0, tzinfo=timezone.utc)
+
+
+def _free_file(monkeypatch, tmp_path, text):
+    path = tmp_path / "devin-ratelimit"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setenv(devin.FREE_LIMIT_ENV, str(path))
+    return path
+
+
+def test_free_limit_window_while_limited(monkeypatch, tmp_path):
+    _free_file(monkeypatch, tmp_path, "%d\n" % int(FREE_RESET.timestamp()))
+    w = devin.free_limit_window(FREE_NOW)
+    assert w is not None
+    assert w.id == "devin:free"
+    assert w.used_percent == 100.0
+    assert w.resets_at == FREE_RESET
+    assert w.length == FREE_RESET - FREE_NOW
+
+
+@pytest.mark.parametrize("text", ["", "abc", "-5", "1794549690x"])
+def test_free_limit_window_ignores_broken_file(monkeypatch, tmp_path, text):
+    _free_file(monkeypatch, tmp_path, text)
+    assert devin.free_limit_window(FREE_NOW) is None
+
+
+def test_free_limit_window_missing_file_or_past(monkeypatch, tmp_path):
+    monkeypatch.setenv(devin.FREE_LIMIT_ENV, str(tmp_path / "none"))
+    assert devin.free_limit_window(FREE_NOW) is None
+    _free_file(monkeypatch, tmp_path, "%d" % int(FREE_RESET.timestamp()))
+    assert devin.free_limit_window(FREE_RESET + timedelta(seconds=1)) is None
+
+
+def test_fetch_adds_free_window_only_while_limited(monkeypatch, tmp_path):
+    monkeypatch.setattr(devin.keychain, "read", lambda account: "keychain-dummy")
+    monkeypatch.setattr(devin, "http_post_json",
+                        lambda url, headers, body, timeout=providers.TIMEOUT: STATUS)
+    usage = devin.fetch(FREE_NOW)
+    assert "devin:free" not in [w.id for w in usage.windows]
+    _free_file(monkeypatch, tmp_path, "%d" % int(FREE_RESET.timestamp()))
+    usage = devin.fetch(FREE_NOW)
+    ids = [w.id for w in usage.windows]
+    assert "devin:free" in ids and "devin:1d" in ids and "devin:weekly" in ids
+
+
+def test_free_window_is_routing_only(monkeypatch, tmp_path):
+    from quotacanvas.cli import all_window_paces, build_cards
+    from quotacanvas.history import History
+    from quotacanvas.models import ProviderUsage
+
+    _free_file(monkeypatch, tmp_path, "%d" % int(FREE_RESET.timestamp()))
+    _, windows, balances = devin.parse_devin(STATUS, FREE_NOW)
+    windows.append(devin.free_limit_window(FREE_NOW))
+    usage = ProviderUsage("devin", "Devin Pro", windows, None, FREE_NOW, balances=balances)
+    history = History(tmp_path / "history")
+    shown = [pace.window.id for _, pace in build_cards([usage], history, FREE_NOW) if pace]
+    assert "devin:free" not in shown and "devin:1d" in shown
+    named = [pace.window.id for _, pace in
+             build_cards([usage], history, FREE_NOW, order=["devin:free"]) if pace]
+    assert named == ["devin:free"]
+    every = [pace.window.id for _, pace in all_window_paces([usage], history, FREE_NOW) if pace]
+    assert "devin:free" in every
+
+
+def test_swe2_is_stop_while_free_limited(monkeypatch, tmp_path):
+    from quotacanvas.cli import all_window_paces
+    from quotacanvas.config import Routing
+    from quotacanvas.gate import evaluate
+    from quotacanvas.history import History
+    from quotacanvas.models import ProviderUsage
+    from quotacanvas.status import _window_item
+
+    _free_file(monkeypatch, tmp_path, "%d" % int(FREE_RESET.timestamp()))
+    _, windows, balances = devin.parse_devin(STATUS, FREE_NOW)
+    windows.append(devin.free_limit_window(FREE_NOW))
+    usage = ProviderUsage("devin", "Devin Pro", windows, None, FREE_NOW, balances=balances)
+    items = [_window_item(u, p) for u, p in
+             all_window_paces([usage], History(tmp_path / "history"), FREE_NOW) if p]
+    data = {"updated_at": FREE_NOW.isoformat(), "windows": items}
+    routing = Routing(workers={"swe2": ["devin:free"], "swe2l": ["devin:*"]})
+    result = evaluate(data, routing, {}, FREE_NOW)
+    swe2 = result.worker("swe2")
+    assert swe2.verdict == "stop"
+    # 有料の Lightning (swe2l) は無料枠の制限に巻き込まない
+    assert result.worker("swe2l").verdict != "stop"
+    # 制限が無ければ従来どおり窓が無い = 判定できない (?)
+    data_free = {"updated_at": FREE_NOW.isoformat(), "windows": [
+        i for i in items if i.get("id") != "devin:free"]}
+    assert evaluate(data_free, routing, {}, FREE_NOW).worker("swe2").verdict == "unknown"
+
+
+def test_free_window_survives_api_failure_and_skips_recommend(monkeypatch, tmp_path):
+    """API の取得失敗で前回値 (stale) を出していても、制限中なら swe2 は stop。
+    「今使う先」の推奨は devin:free で Devin を使えない扱いにしない。"""
+    from dataclasses import replace
+
+    from quotacanvas.cli import all_window_paces
+    from quotacanvas.config import Routing
+    from quotacanvas.gate import evaluate
+    from quotacanvas.history import History
+    from quotacanvas.models import ProviderUsage
+    from quotacanvas.recommend import recommend
+    from quotacanvas.status import _window_item
+
+    _, windows, balances = devin.parse_devin(STATUS, FREE_NOW)
+    prev = ProviderUsage("devin", "Devin Pro", windows, None, FREE_NOW, balances=balances)
+    # 前回値には制限の窓が無く、今のファイルでは制限中
+    _free_file(monkeypatch, tmp_path, "%d" % int(FREE_RESET.timestamp()))
+    stale = replace(prev, stale_error="HTTP 500")
+    u = devin.with_free_limit(stale, FREE_NOW)
+    assert "devin:free" in [w.id for w in u.windows]
+    history = History(tmp_path / "history")
+    items = [_window_item(x, p) for x, p in all_window_paces([u], history, FREE_NOW) if p]
+    data = {"updated_at": FREE_NOW.isoformat(), "windows": items,
+            "errors": [{"provider": "devin", "error": "HTTP 500"}]}
+    routing = Routing(workers={"swe2": ["devin:free"], "swe2l": ["devin:*"]})
+    result = evaluate(data, routing, {}, FREE_NOW)
+    assert result.worker("swe2").verdict == "stop"
+    assert result.worker("swe2l").verdict == "unknown"  # 有料枠は取得失敗のまま
+    # 制限が明けたら作り直しで窓が消える
+    assert "devin:free" not in [w.id for w in devin.with_free_limit(u, FREE_RESET).windows]
+    # 推奨の材料にしない: 窓の一覧から devin:free を除いた場合と同じ結果
+    ok_usage = devin.with_free_limit(prev, FREE_NOW)
+    with_free = recommend([ok_usage], history, FREE_NOW)
+    without = recommend([prev], history, FREE_NOW)
+    assert with_free == without
+
+
+def test_with_free_limit_leaves_error_card_alone(monkeypatch, tmp_path):
+    from quotacanvas.models import ProviderUsage
+
+    _free_file(monkeypatch, tmp_path, "%d" % int(FREE_RESET.timestamp()))
+    err = ProviderUsage("devin", "Devin", [], "HTTP 500", FREE_NOW)
+    assert devin.with_free_limit(err, FREE_NOW) is err
+    other = ProviderUsage("glm", "GLM", [], None, FREE_NOW)
+    assert devin.with_free_limit(other, FREE_NOW) is other

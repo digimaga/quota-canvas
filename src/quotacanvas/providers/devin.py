@@ -8,16 +8,26 @@ API キーを載せ、日次 (1 日) と週次の残り % を窓にする。残�
 キーの探索順: キーチェーン quota-canvas/devin → Devin CLI の
 ~/.local/share/devin/credentials.toml の windsurf_api_key → Devin デスクトップ
 アプリの state.vscdb の windsurfAuthStatus の apiKey。環境変数は使わない。
+
+無料モデル (SWE-2 など) は Pro の枠を使わず API にも出ないが、無料枠の利用制限
+("Reached free model rate limit ... reset in 18 hours 40 minutes") に当たると
+戻る時刻まで使えない。CLI を呼ぶラッパーがその戻る時刻 (epoch 秒) を
+~/.claude/run/devin-ratelimit に書いていれば、その時刻までのあいだだけ
+"devin:free" の窓 (使用 100%・リセット = 戻る時刻) を足す。routing の
+ワーカーをこの窓に結べば、制限中は stop になる。場所は環境変数
+QUOTA_CANVAS_DEVIN_FREE_LIMIT_FILE で差し替えられる。
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
 import tomllib
 import urllib.parse
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
@@ -47,6 +57,11 @@ DESKTOP_STATE_DB = (
     / "globalStorage" / "state.vscdb"
 )
 DESKTOP_AUTH_KEY = "windsurfAuthStatus"
+
+# 無料モデルの利用制限の戻る時刻 (epoch 秒の 1 行) を CLI のラッパーが書くファイル。
+FREE_LIMIT_FILE = Path.home() / ".claude" / "run" / "devin-ratelimit"
+FREE_LIMIT_ENV = "QUOTA_CANVAS_DEVIN_FREE_LIMIT_FILE"
+FREE_WINDOW_KEY = "free"
 
 # ----------------------------------------------------------- credentials
 
@@ -166,6 +181,52 @@ def detect() -> Detection:
     return Detection(True, t("providers.detect.api_key", name="Devin", source=source))
 
 
+# ------------------------------------------------------ free-model limit
+
+def _free_limit_file() -> Path:
+    """無料モデルの利用制限の戻る時刻のファイル。環境変数で差し替えられる。"""
+    override = os.environ.get(FREE_LIMIT_ENV)
+    if override and override.strip():
+        return Path(override.strip()).expanduser()
+    return FREE_LIMIT_FILE
+
+
+def free_limit_window(now: datetime) -> Optional[Window]:
+    """無料枠の利用制限中なら "devin:free" の窓 (使用 100%) を返す。
+
+    ファイルが無い・読めない・数字でない・戻る時刻を過ぎているときは None
+    (制限中ではない = 窓を出さない)。窓の長さは今から戻る時刻まで
+    (最低 1 分)。"""
+    try:
+        raw = _free_limit_file().read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not raw.isdigit():
+        return None
+    reset_at = _from_epoch(int(raw))
+    if reset_at is None or reset_at <= now:
+        return None
+    length = max(reset_at - now, timedelta(minutes=1))
+    return Window("devin", FREE_WINDOW_KEY, t("providers.window.free_limit"),
+                  100.0, reset_at, length)
+
+
+def with_free_limit(usage: ProviderUsage, now: datetime) -> ProviderUsage:
+    """Devin の usage の devin:free を今のファイルから作り直したものにする。
+
+    Devin 以外・窓が 1 つも無い usage (取得失敗で前回値も無い = エラーカード) は
+    そのまま返す。"""
+    if usage.provider != "devin" or not usage.windows:
+        return usage
+    windows = [w for w in usage.windows if w.key != FREE_WINDOW_KEY]
+    free = free_limit_window(now)
+    if free is not None:
+        windows.append(free)
+    if windows == list(usage.windows):
+        return usage
+    return replace(usage, windows=windows)
+
+
 # --------------------------------------------------------------- parser
 
 def _remaining_percent(value: Any) -> float:
@@ -262,6 +323,9 @@ def fetch(now: datetime) -> ProviderUsage:
         "User-Agent": USER_AGENT,
     }, body)
     name, windows, balances = parse_devin(data, now)
+    free = free_limit_window(now)
+    if free is not None:
+        windows.append(free)
     return ProviderUsage("devin", name, windows, None, now, balances=balances)
 
 

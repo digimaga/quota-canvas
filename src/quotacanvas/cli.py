@@ -27,7 +27,7 @@ from .config import (
 from .atomic import atomic_write
 from .history import History, _parse_iso
 from .lastgood import LastGood
-from .models import Pace, ProviderUsage
+from .models import ROUTING_ONLY_WINDOWS, Pace, ProviderUsage
 from . import refresh as refresh_mod
 from .refresh import REFRESH_MIN_GAP, request_refresh, wait_for_wakeup
 from .pacing import compute_pace
@@ -115,6 +115,8 @@ def build_cards(usages: List[ProviderUsage], history: History, now: datetime,
                 if parent is None:
                     continue  # 親が無い内訳は出せない
             sort_w = parent if parent is not None else w
+            if sort_w.id in ROUTING_ONLY_WINDOWS and (pos is None or sort_w.id not in pos):
+                continue  # 判定専用の窓 (devin:free など) は名指ししない限り表示しない
             if allowed and sort_w.key not in allowed:
                 continue  # providers.<p>.windows のフィルタ (表示時に適用)
             if pos is not None and sort_w.id not in pos:
@@ -310,10 +312,15 @@ class Poller:
                 self.last_good[u.provider] = u
                 if self.record:
                     self.store.set(u)
-                    # 内訳窓 (part_of 付き) は親窓の表示の一部なので履歴は取らない
-                    self.history.record([w for w in u.windows if w.part_of is None],
-                                        now)
+                    # 内訳窓 (part_of 付き) は親窓の表示の一部なので履歴は取らない。
+                    # 判定専用の窓 (devin:free) もペースの材料ではないので取らない
+                    self.history.record([w for w in u.windows if w.part_of is None
+                                         and w.id not in ROUTING_ONLY_WINDOWS], now)
             result.append(u)
+        # Devin の無料枠の利用制限の窓 (devin:free) は API ではなくローカルのファイル
+        # 由来なので、取得失敗で前回値 (last-good) を出すときも毎回今のファイルから
+        # 作り直す (延びた戻る時刻・明けた制限をすぐ反映する)
+        result = [providers.devin.with_free_limit(u, now) for u in result]
         # リセット時刻を過ぎた窓はリセット済みとして返す (保存済みの last-good・
         # 履歴は API の値のまま)。API が古い期間を返し続けても上限超過にしない。
         result = [_rolled_usage(u, now) for u in result]

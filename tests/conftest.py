@@ -8,6 +8,12 @@ def _no_real_grok_login(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_devin_free_limit(tmp_path, monkeypatch):
+    """Devin の無料枠の利用制限ファイルは実機のものを読ませない (既定は無いファイル)。"""
+    monkeypatch.setenv("QUOTA_CANVAS_DEVIN_FREE_LIMIT_FILE", str(tmp_path / "devin-ratelimit-none"))
+
+
+@pytest.fixture(autouse=True)
 def _no_real_gemini_login(monkeypatch):
     """キーチェーン gemini/antigravity (Antigravity CLI の実ログイン) を読ませない。
     使いたいテストは自分でもう一度 monkeypatch すればよい (test_gemini.py)。"""

@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from .i18n import t
 from .config import sleep_for, wants_bedtime  # pacing.sleep → provider ごとの適用判定
-from .models import Pace, PaceStatus, ProviderUsage, Window
+from .models import ROUTING_ONLY_WINDOWS, Pace, PaceStatus, ProviderUsage, Window
 from .pacing import compute_pace
 from .providers import REGISTRY
 from .render import _fmt_num, _fmt_span
@@ -138,7 +138,9 @@ def recommend(usages: Sequence[ProviderUsage], history, now: datetime,
         provider = REGISTRY.get(usage.provider)
         if provider is not None and not provider.recommendable:
             continue  # コーディングに使えないサービスは「〜を使う」に出さない
-        windows = [w for w in usage.windows if w.part_of is None]
+        # 判定専用の窓 (devin:free など) は「今使う先」の材料にしない
+        windows = [w for w in usage.windows
+                   if w.part_of is None and w.id not in ROUTING_ONLY_WINDOWS]
         if not windows:
             continue
         paces = {w.id: compute_pace(w, history.samples(w.id), now,

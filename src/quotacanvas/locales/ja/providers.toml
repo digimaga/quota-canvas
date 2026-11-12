@@ -30,6 +30,7 @@ monthly = "月間"
 five_hours = "5時間"
 days = "{n}日"
 hours = "{n}時間"
+free_limit = "無料枠の制限"
 
 [detect]
 claude = "Claude Code のログイン（キーチェーン）"
