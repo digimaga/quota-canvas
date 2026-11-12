@@ -355,6 +355,102 @@ def test_backoff_substitute_keeps_last_success_fetch_time(tmp_path, monkeypatch)
     assert poller.fetch(later + timedelta(minutes=1))[0].fetched_at == NOW  # バックオフ中
 
 
+# -------------------------------------------- (B2) バックオフの永続化
+
+RATE_LIMIT = "rate-limit.json"
+
+
+class _FrozenDatetime(datetime):
+    """Poller._load_backoff が見る実時計を NOW に固定する。"""
+
+    @classmethod
+    def now(cls, tz=None):
+        return NOW if tz is None else NOW.astimezone(tz)
+
+
+def test_429_backoff_survives_poller_restart(tmp_path, monkeypatch):
+    """429 を受けたら rate-limit.json に待ちを書き、新しい Poller は復元して
+    起き直しでも即再取得しない。解除 (成功) も保存する。"""
+    from quotacanvas import cli
+
+    def behavior(pid, now):
+        if pid == "claude":
+            return _usage(pid, error="HTTP 429", fetched_at=now)
+        return _other(pid, now)
+
+    fake = FakeFetch(monkeypatch, behavior)
+    monkeypatch.setattr(cli, "datetime", _FrozenDatetime)
+    poller = _poller(tmp_path, enabled={"claude"})
+    poller.fetch(NOW)
+    saved = json.loads((tmp_path / RATE_LIMIT).read_text(encoding="utf-8"))
+    until = datetime.fromisoformat(saved["claude"]["until"])
+    assert until == NOW + timedelta(minutes=5)      # 次回取得可能時刻
+    assert saved["claude"]["count"] == 1            # 連続 429 回数
+
+    restarted = _poller(tmp_path, enabled={"claude"})  # 起き直し
+    fake.calls.clear()
+    assert restarted.fetch(NOW + timedelta(minutes=1))[0].error == "HTTP 429"
+    assert fake.times_called("claude") == 0         # 待ちを守って取りに行かない
+    restarted.fetch(NOW + timedelta(minutes=6))
+    assert fake.times_called("claude") == 1         # 期限を過ぎたら再取得
+
+
+def test_backoff_clear_is_persisted(tmp_path, monkeypatch):
+    """成功 (解除) も rate-limit.json に残さないと、起き直したプロセスが
+    古い待ちを復元してしまう。"""
+    from quotacanvas import cli
+
+    state = {"n": 0}
+
+    def behavior(pid, now):
+        if pid != "claude":
+            return _other(pid, now)
+        state["n"] += 1
+        return (_usage(pid, error="HTTP 429", fetched_at=now) if state["n"] == 1
+                else _other(pid, now))
+
+    FakeFetch(monkeypatch, behavior)
+    monkeypatch.setattr(cli, "datetime", _FrozenDatetime)
+    poller = _poller(tmp_path, enabled={"claude"})
+    poller.fetch(NOW)                                # 429
+    poller.fetch(NOW + timedelta(minutes=6))         # 成功で解除
+    saved = json.loads((tmp_path / RATE_LIMIT).read_text(encoding="utf-8"))
+    assert "claude" not in saved
+    restarted = _poller(tmp_path, enabled={"claude"})
+    assert "claude" not in restarted._next_attempt   # 起き直しても復活しない
+
+
+def test_broken_or_expired_backoff_file_is_ignored(tmp_path, monkeypatch):
+    """壊れた・期限切れの rate-limit.json は無視して通常どおり取りに行く。"""
+    from quotacanvas import cli
+
+    fake = FakeFetch(monkeypatch, lambda pid, now: _other(pid, now))
+    monkeypatch.setattr(cli, "datetime", _FrozenDatetime)
+    path = tmp_path / RATE_LIMIT
+    path.write_text("{oops", encoding="utf-8")
+    poller = _poller(tmp_path, enabled={"claude"})
+    assert poller._next_attempt == {}
+    path.write_text(json.dumps({
+        "claude": {"until": (NOW - timedelta(minutes=1)).isoformat(), "count": 4},
+        "bad": "not-a-dict",
+    }), encoding="utf-8")
+    poller = _poller(tmp_path, enabled={"claude"})
+    assert poller._next_attempt == {}               # 期限切れ・不正エントリは捨てる
+    poller.fetch(NOW)
+    assert fake.times_called("claude") == 1
+
+
+def test_read_only_poller_does_not_write_backoff_file(tmp_path, monkeypatch):
+    """record=False (pick など) の Poller は rate-limit.json を書かない。"""
+    FakeFetch(monkeypatch, lambda pid, now:
+              _usage(pid, error="HTTP 429", fetched_at=now)
+              if pid == "claude" else _other(pid, now))
+    poller = _poller(tmp_path, enabled={"claude"}, record=False)
+    poller.fetch(NOW)
+    assert "claude" in poller._next_attempt         # メモリ上の待ちは有効
+    assert not (tmp_path / RATE_LIMIT).exists()     # ファイルは作らない
+
+
 # -------------------------------------------- (C) ローカル枠だけの取り直し
 
 def test_fetch_local_without_local_returns_empty(tmp_path, monkeypatch):

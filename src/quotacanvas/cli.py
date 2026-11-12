@@ -24,6 +24,7 @@ from .config import (
     DEFAULT_PATH, PROVIDERS, Sleep, Config, ConfigError, apply_config_changes, brightness_for, config_from_dict,
     config_to_dict, format_toml, load_config, save_config, sleep_for, wants_bedtime,
 )
+from .atomic import atomic_write
 from .history import History, _parse_iso
 from .lastgood import LastGood
 from .models import Pace, ProviderUsage
@@ -151,7 +152,8 @@ def _rolled_usage(usage: ProviderUsage, now: datetime) -> ProviderUsage:
 class Poller:
     def __init__(self, history: History, enabled: Optional[Set[str]] = None,
                  last_good_path: Optional[Path] = None, record: bool = True,
-                 local: Optional[Dict[str, Any]] = None):
+                 local: Optional[Dict[str, Any]] = None,
+                 backoff_path: Optional[Path] = None):
         self.history = history
         self.enabled = enabled  # None なら全部、集合ならその provider だけ取得
         # ローカル LLM サーバー ([providers.local.<名前>] の {名前: 設定})。
@@ -169,21 +171,64 @@ class Poller:
         self.store = LastGood(path)
         self.last_good.update(self.store.data)
         # HTTP 429 バックオフ: provider ごとの次回取得可能時刻と連続 429 回数、
-        # 代わりに表示する直近の 429 エラー。
+        # 代わりに表示する直近の 429 エラー。次回時刻と回数は rate-limit.json
+        # (既定は last-good.json と同じディレクトリ = DATA_DIR) に永続化し、
+        # 常駐が起き直しても待ちを守る (壊れた・期限切れのファイルは無視)。
+        self._backoff_path = Path(backoff_path) if backoff_path is not None \
+            else history.path.with_name("rate-limit.json")
         self._next_attempt: Dict[str, datetime] = {}
         self._rate_limited: Dict[str, int] = {}
         self._last_429: Dict[str, ProviderUsage] = {}
+        self._load_backoff()
 
     # ------------------------------------------------------- 429 backoff
+
+    def _load_backoff(self) -> None:
+        """保存済みのバックオフ状態を復元する。壊れた・期限切れのファイルは無視。"""
+        try:
+            data = json.loads(self._backoff_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        now = datetime.now(timezone.utc)
+        for pid, entry in data.items():
+            if not isinstance(pid, str) or not isinstance(entry, dict):
+                continue
+            until = _parse_iso(entry.get("until"))
+            if until is None or until <= now:
+                continue  # 待ちが済んでいる分は復元しない
+            # 保存時は BACKOFF_MAX までに抑えているので、それを超える待ちは
+            # 時計の巻き戻しや手書きのファイル。待ちすぎず BACKOFF_MAX に丸める。
+            until = min(until, now + BACKOFF_MAX)
+            count = entry.get("count")
+            self._next_attempt[pid] = until
+            self._rate_limited[pid] = count if isinstance(count, int) and count >= 1 else 1
+
+    def _save_backoff(self) -> None:
+        """バックオフ状態を rate-limit.json に原子的に書く (読み取り専用では書かない)。
+        書けなくても常駐は止めない (メモリ上の待ちは有効なまま)。"""
+        if not self.record:
+            return
+        payload = (json.dumps(
+            {pid: {"until": until.isoformat(), "count": self._rate_limited.get(pid, 1)}
+             for pid, until in self._next_attempt.items()},
+            ensure_ascii=False) + "\n").encode("utf-8")
+        try:
+            atomic_write(self._backoff_path, lambda handle: handle.write(payload))
+        except OSError as exc:
+            log.warning("rate-limit.json を書けません: %s", exc)
 
     def _backing_off(self, pid: str, now: datetime) -> bool:
         until = self._next_attempt.get(pid)
         return until is not None and now < until
 
     def _clear_backoff(self, pid: str) -> None:
-        self._next_attempt.pop(pid, None)
-        self._rate_limited.pop(pid, None)
+        next_attempt = self._next_attempt.pop(pid, None)
+        rate_limited = self._rate_limited.pop(pid, None)  # or 短絡で残さないよう両方 pop
         self._last_429.pop(pid, None)
+        if next_attempt is not None or rate_limited is not None:
+            self._save_backoff()  # 解除も保存しないと起き直したとき待ちが復活する
 
     def _start_backoff(self, usage: ProviderUsage, now: datetime) -> None:
         """429 を受けたら Retry-After (または倍々) で次回取得を延期する。"""
@@ -205,6 +250,7 @@ class Poller:
         self._last_429[pid] = usage
         minutes = max(1, round(delay.total_seconds() / 60))
         log.warning("%s: HTTP 429、%d 分後に再取得します", pid, minutes)
+        self._save_backoff()
 
     def _deferred_usage(self, pid: str, now: datetime) -> ProviderUsage:
         """バックオフ中の provider の代役: last_good があれば経過時間に関係なく
@@ -356,7 +402,7 @@ def _write_app_files(cfg: Config, cards: List[Card], usages: List[ProviderUsage]
         write_status(build_status(cfg, cards, usages, now, layout=layout,
                                   recommendation=recommendation, all_windows=all_windows,
                                   burn=burn, previous=previous, off=off))
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001 - 値の異常 (NaN 等) でも常駐は止めない
         log.warning("status.json を書けません: %s", exc)
     if img is not None:
         try:
@@ -483,9 +529,12 @@ def _apply_brightness(screen, cfg: Config, applied: Optional[int]) -> Optional[i
     if screen is None or desired == applied:
         return applied
     try:
-        screen.brightness(desired)
+        sent = screen.brightness(desired)
     except Exception as exc:  # USB unplugged, etc.
         log.warning("明るさを設定できません: %s", exc)
+        return applied
+    if not sent:  # 送信自体は成功したが画面が応答しなかった → 次の周回で再試行
+        log.warning("画面に明るさを設定できませんでした (応答なし)")
         return applied
     log.info("画面の明るさを %d に設定しました", desired)
     return desired
@@ -513,9 +562,12 @@ def _sleep_screen(screen) -> bool:
     if screen is None:
         return True  # 画面が無い (--no-screen / 未接続) ときは消すものも無い
     try:
-        screen.brightness(0)
+        sent = screen.brightness(0)
     except Exception as exc:  # USB unplugged, etc.
         log.warning("明るさを 0 にできません: %s", exc)
+        return False
+    if not sent:
+        log.warning("明るさを 0 にできません (画面が応答しませんでした)")
         return False
     black = Image.new("RGB", (1920, 462), (0, 0, 0))
     _output(black, screen, None)
@@ -750,13 +802,17 @@ def _cmd_refresh(args) -> int:
 # ------------------------------------------------------------------ pick
 
 PICK_MAX_AGE = timedelta(minutes=20)   # status.json を「新しい」とみなす上限
+# updated_at が未来なのは時計ずれか他の Mac からのコピー。小さなずれだけ許し、
+# 許容誤差を超えた未来は古い扱いにする (過去方向の 20 分とは別の判定)。
+PICK_FUTURE_SKEW = timedelta(minutes=2)
 
 
 def _status_recommendation(now: datetime, path: Path = STATUS_PATH) -> Tuple[bool, Optional[dict]]:
     """status.json の "recommendation" を dict で返す。
 
-    ファイルが無い・壊れている・20 分以上古いときは (False, None) を返す
-    (呼び出し側が 1 回だけ取得して計算し直す)。新しいが推奨なしなら (True, None)。
+    ファイルが無い・壊れている・20 分以上古い・許容誤差を超えて未来のときは
+    (False, None) を返す (呼び出し側が 1 回だけ取得して計算し直す)。
+    新しいが推奨なしなら (True, None)。
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -765,7 +821,8 @@ def _status_recommendation(now: datetime, path: Path = STATUS_PATH) -> Tuple[boo
     if not isinstance(data, dict):
         return False, None
     updated = _parse_iso(data.get("updated_at"))
-    if updated is None or (now - updated) >= PICK_MAX_AGE:
+    if (updated is None or (now - updated) >= PICK_MAX_AGE
+            or (updated - now) > PICK_FUTURE_SKEW):
         return False, None
     rec = data.get("recommendation")
     return True, rec if isinstance(rec, dict) else None
@@ -897,6 +954,9 @@ def _cmd_routing_check(args, cfg: Config) -> int:
 
 
 def _routing_check_impl(args, cfg: Config) -> int:
+    """判定で終了コードを確定させてから表示する: 表示の失敗 (非有限値の round
+    など) で確定済みのコード (stop の 3) が exit 0 に化けないように分離する。
+    判定そのものの失敗は呼び出し側 (_cmd_routing_check) の fail-open で 0。"""
     name = args.name
     lang = current_language()
     known = set(cfg.routing.workers) | set(gate.KNOWN_PROVIDERS)
@@ -904,58 +964,46 @@ def _routing_check_impl(args, cfg: Config) -> int:
         return 2
     state, data, detail, _path = _load_gate_status(args, cfg)
     off = gate.load_off(gate.OFF_PATH)
+    now = gate.now_local()
+    worker = None
+    code: Optional[int] = None
     if name not in known:
-        now = gate.now_local()
         if state == "ok":
             result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
                                    previous=data.get("routing"), off=off)
         else:
             result = gate.RoutingResult(workers=_disabled_for_stale(data, cfg, now))
         worker = gate.model_verdict(name, cfg.routing.models[name], result)
+        code = 3 if worker.verdict == "stop" else 0
+    elif name in off and state != "ok":
+        result = gate.evaluate(data, cfg.routing, {}, now, off=off)
+        worker = result.worker(name)
+        if worker is not None:
+            worker.stale = True
+            code = 3
+    if worker is None:
+        if state != "ok":  # 無し / 古い / 壊れ → unknown (fail-open、起動は止めない)
+            worker = gate.WorkerResult(name=name, verdict="unknown",
+                                       reason=gate.stale_reason(detail), stale=True)
+            code = 0
+        else:
+            result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
+                                   previous=data.get("routing"), off=off)
+            worker = result.worker(name)
+            if worker is None:
+                # そのワーカーの窓もエラーも status に無い → unknown (missing)
+                worker = gate.WorkerResult(name=name, verdict="unknown", reason="missing")
+            code = 3 if worker.verdict == "stop" else 0
+    try:
         if args.json:
             _print_json(worker.to_dict())
         else:
             message = gate.check_message(worker, now, lang)
             if message:
                 print(message, file=sys.stderr)
-        return 3 if worker.verdict == "stop" else 0
-    if name in off and state != "ok":
-        now = gate.now_local()
-        result = gate.evaluate(data, cfg.routing, {}, now, off=off)
-        worker = result.worker(name)
-        if worker is not None:
-            worker.stale = True
-            if args.json:
-                _print_json(worker.to_dict())
-            else:
-                print(gate.check_message(worker, now, lang), file=sys.stderr)
-            return 3
-    if state != "ok":  # 無し / 古い / 壊れ → unknown (fail-open、起動は止めない)
-        worker = gate.WorkerResult(name=name, verdict="unknown",
-                                   reason=gate.stale_reason(detail), stale=True)
-        if args.json:
-            _print_json(worker.to_dict())
-            return 0
-        message = gate.check_message(worker, gate.now_local(), lang)
-        if message:
-            print(message, file=sys.stderr)
-        return 0
-    now = gate.now_local()
-    result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
-                           previous=data.get("routing"), off=off)
-    worker = result.worker(name)
-    if worker is None:  # そのワーカーの窓もエラーも status に無い → unknown (missing)
-        worker = gate.WorkerResult(name=name, verdict="unknown", reason="missing")
-    if args.json:
-        _print_json(worker.to_dict())
-        return 0 if worker.verdict != "stop" else 3
-    message = gate.check_message(worker, now, lang)
-    if worker.verdict == "stop":
-        print(message, file=sys.stderr)
-        return 3
-    if message:
-        print(message, file=sys.stderr)
-    return 0
+    except Exception as exc:  # noqa: BLE001 - 表示に失敗しても確定したコードで終える
+        print("routing: %s" % str(exc).replace("\n", " ").replace("\r", " "), file=sys.stderr)
+    return code
 
 
 def _print_hook_context(event: str, context: str) -> None:

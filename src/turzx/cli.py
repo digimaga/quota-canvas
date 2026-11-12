@@ -56,19 +56,27 @@ def main(argv=None) -> int:
         print(exc, file=sys.stderr)
         return 1
 
-    if args.command == "show":
-        ok = screen.show(args.path)
-    elif args.command == "show-raw":
-        ok = screen.show_raw(args.path)
-    elif args.command == "test":
-        ok = screen.show(test_pattern())
-    elif args.command == "brightness":
-        screen.brightness(args.value)
-        ok = True
-    else:
-        reply = screen.sync()
-        print(bytes(reply).rstrip(b"\0").hex(" ") if reply is not None else "no reply")
-        ok = reply is not None
+    try:
+        if args.command == "show":
+            ok = screen.show(args.path)
+        elif args.command == "show-raw":
+            ok = screen.show_raw(args.path)
+        elif args.command == "test":
+            ok = screen.show(test_pattern())
+        elif args.command == "brightness":
+            ok = screen.brightness(args.value)
+            if not ok:
+                print("screen did not acknowledge the brightness command", file=sys.stderr)
+                return 1
+            return 0
+        else:
+            reply = screen.sync()
+            print(bytes(reply).rstrip(b"\0").hex(" ") if reply is not None else "no reply")
+            ok = reply is not None
+    except Exception as exc:
+        # 画像が読めない (無い・壊れている) や USB エラーを traceback にしない
+        print(f"turzx {args.command}: {exc}", file=sys.stderr)
+        return 1
     return 0 if ok else 1
 
 

@@ -266,6 +266,7 @@ class _FakeScreen:
 
     def brightness(self, value):
         self.calls.append(("brightness", value))
+        return True
 
 
 def test_output_reopens_and_resends_when_show_returns_false(monkeypatch):

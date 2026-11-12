@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import timedelta
 from pathlib import Path
 
@@ -124,6 +125,40 @@ def test_consume_unlink_failure_warns_but_consumes(monkeypatch, tmp_path):
     p.write_text("new request", encoding="utf-8")
     assert refresh.consume_refresh_request(p) is True
     assert refresh.consume_refresh_request(p) is False
+
+
+def test_consume_stat_failure_warns_once_per_error(monkeypatch, tmp_path, caplog):
+    """stat() が OSError で失敗しても False を返し、warning は同じ障害につき
+    1 回だけ (毎秒確認される経路なので)。errno が変わればまた出し、
+    復旧したら次の失敗でまた出す。"""
+    refresh._failed_stat.clear()
+    p = tmp_path / "refresh-request"
+    p.touch()
+    real_stat = Path.stat
+    failure = {"exc": PermissionError(13, "denied")}
+
+    def fake_stat(self, *a, **k):
+        if self == p and failure["exc"] is not None:
+            raise failure["exc"]
+        return real_stat(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    try:
+        with caplog.at_level(logging.WARNING, logger="quotacanvas"):
+            assert refresh.consume_refresh_request(p) is False
+            assert refresh.consume_refresh_request(p) is False  # 同じ障害は 1 回だけ
+            failure["exc"] = OSError(5, "io error")
+            assert refresh.consume_refresh_request(p) is False  # errno が変われば出す
+            failure["exc"] = None                               # 復旧
+            assert refresh.consume_refresh_request(p) is True   # 要求を消化する
+            failure["exc"] = PermissionError(13, "denied")
+            p.touch()
+            assert refresh.consume_refresh_request(p) is False  # 復旧後はまた出す
+    finally:
+        refresh._failed_stat.clear()
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 3
+    assert str(p) in warnings[0].getMessage() and "denied" in warnings[0].getMessage()
 
 
 def test_request_refresh_creates_file_and_parents(tmp_path):
@@ -371,6 +406,7 @@ class FakeScreen:
 
     def brightness(self, value):
         self.calls.append(("brightness", value))
+        return True  # 実機の Screen.brightness は送れたかどうかを返す
 
 
 def _run_with_screen(monkeypatch, tmp_path, clock, screen, config_text=CONFIG_TOML):
@@ -637,6 +673,7 @@ class FlakyScreen(FakeScreen):
             self.calls.append(("brightness-fail", 0))
             raise RuntimeError("usb busy")
         self.calls.append(("brightness", value))
+        return True
 
 
 def test_dim_retry_when_brightness_zero_fails(monkeypatch, tmp_path):

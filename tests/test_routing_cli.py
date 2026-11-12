@@ -257,6 +257,49 @@ def test_check_stale_status_reports_unknown_exit0(tmp_path):
     assert "unknown" in err and "stale" in err
 
 
+def test_check_stop_keeps_exit3_when_display_fails(tmp_path, monkeypatch):
+    """stop (exit 3) が確定したあと表示生成が例外を出しても 3 のまま。
+
+    表示の失敗を確定済みの終了コードから切り離す分離のテスト: 以前は外側の
+    fail-open が例外を exit 0 (起動してよい) に変えていた。
+    """
+    status = tmp_path / "status.json"
+    _write_status(status, [_win("glm:5h", "glm", "exhausted", 0.0)])
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("round of non-finite value")
+
+    monkeypatch.setattr(gate, "check_message", _boom)
+    rc, out, err = _run(tmp_path, ["routing", "check", "glm"], status=status)
+    assert rc == 3 and out == ""
+    assert err.splitlines() == ["routing: round of non-finite value"]  # 簡易な 1 行
+
+
+def test_check_stop_json_keeps_exit3_when_display_fails(tmp_path, monkeypatch):
+    """--json の表示 (WorkerResult.to_dict) が失敗しても確定した 3 で終わる。"""
+    status = tmp_path / "status.json"
+    _write_status(status, [_win("glm:5h", "glm", "exhausted", 0.0)])
+    monkeypatch.setattr(gate.WorkerResult, "to_dict",
+                        lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+    rc, out, err = _run(tmp_path, ["routing", "check", "glm", "--json"], status=status)
+    assert rc == 3 and out == ""
+    assert err.splitlines() == ["routing: boom"]
+
+
+def test_check_verdict0_stays_0_when_display_fails(tmp_path, monkeypatch):
+    """確定コードが 0 のときも同じ分離: 表示の失敗でコードは変わらない。"""
+    status = tmp_path / "status.json"
+    _write_status(status, [_win("glm:5h", "glm", "over", 80.0)])  # reserve → 0
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(gate, "check_message", _boom)
+    rc, out, err = _run(tmp_path, ["routing", "check", "glm"], status=status)
+    assert rc == 0 and out == ""
+    assert err.splitlines() == ["routing: boom"]
+
+
 # ------------------------------------------------------------------ status / env / fallback
 
 

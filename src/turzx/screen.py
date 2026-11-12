@@ -62,19 +62,26 @@ def _backend():
 class Screen:
     def __init__(self, rotation: int = DEFAULT_ROTATION):
         self.rotation = rotation
-        self.dev = usb.core.find(idVendor=VENDOR_ID, idProduct=PRODUCT_ID, backend=_backend())
-        if self.dev is None:
-            raise RuntimeError("TURZX screen (1cbe:0092) not found on USB")
         try:
-            self.dev.set_configuration()
-        except usb.core.USBError:
-            pass  # already configured
+            self.dev = usb.core.find(idVendor=VENDOR_ID, idProduct=PRODUCT_ID, backend=_backend())
+            if self.dev is None:
+                raise RuntimeError("TURZX screen (1cbe:0092) not found on USB")
+            try:
+                self.dev.set_configuration()
+            except usb.core.USBError:
+                pass  # already configured
+        except (usb.core.USBError, ValueError) as exc:
+            # 列挙中に同じハブの別デバイスが抜き差しされると USBError (OSError 系)
+            # や ValueError が上がる。呼び出し側は RuntimeError だけを見るので揃える。
+            raise RuntimeError(f"cannot open TURZX screen (1cbe:0092): {exc}") from exc
 
     def sync(self):
         return operations.send_sync_command(self.dev)
 
-    def brightness(self, value: int) -> None:
-        operations.send_brightness_command(self.dev, max(0, min(100, value)))
+    def brightness(self, value: int) -> bool:
+        """明るさを 0-100 に設定する。送れなかった (USB エラーで応答なし) とき False。"""
+        return operations.send_brightness_command(
+            self.dev, max(0, min(100, value))) is not None
 
     def show(self, source: ImageSource) -> bool:
         """Display a landscape image (scaled to fill 1920x462)."""

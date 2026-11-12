@@ -33,6 +33,17 @@ PathLike = Union[str, Path]
 # 削除できなかった要求だけを記録し、同じファイルで繰り返し起床しない。
 _failed_requests = {}
 
+# stat() 自体が失敗したパスごとの直前の errno。毎秒確認される経路なので、
+# 同じ障害を毎秒ログに出さないよう、errno が変わったときだけ warning を出す。
+_failed_stat = {}
+
+
+def _warn_stat_once(p: Path, exc: OSError) -> None:
+    marker = (exc.errno, exc.__class__.__name__)  # errno が無い OSError も区別する
+    if _failed_stat.get(p) != marker:
+        log.warning("反映要求ファイル %s を確認できません (%s)", p, exc)
+        _failed_stat[p] = marker
+
 
 def request_refresh(path: Optional[PathLike] = None) -> Path:
     """反映要求ファイルを作る (空でよい)。作ったパスを返す。"""
@@ -49,9 +60,12 @@ def consume_refresh_request(path: Optional[PathLike] = None) -> bool:
         st = p.stat()
     except FileNotFoundError:
         _failed_requests.pop(p, None)
+        _failed_stat.pop(p, None)
         return False
-    except OSError:
+    except OSError as exc:
+        _warn_stat_once(p, exc)
         return False
+    _failed_stat.pop(p, None)
     state = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
     if _failed_requests.get(p) == state:
         return False
