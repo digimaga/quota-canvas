@@ -38,7 +38,7 @@ from ..i18n import t
 from ..models import ProviderUsage, Window
 from ._base import (
     USER_AGENT, CredentialError, Detection, Provider,
-    _parse_iso, _utc_now, _window_identity, http_get_json,
+    _parse_iso, _utc_now, _window_identity, finite_number, http_get_json,
 )
 
 log = logging.getLogger("quotacanvas.grok")
@@ -129,13 +129,39 @@ def set_token_refresh(mode: str) -> None:
 
 
 def _kill_running_child() -> None:
-    """起動中の子プロセス (grok models) がいれば killpg する。"""
+    """起動中 (または前回止められなかった) 子プロセス (grok models) がいれば killpg する。
+
+    終了を確認できたときだけ _child を手放す。確認できないときは残して、
+    atexit の次の呼び出しや、次回起動前の _stop_previous_child で再試行する。
+    """
+    global _child
     proc = _child
-    if proc is not None and proc.poll() is None:
-        _kill_process_group(proc)
+    if proc is not None and proc.poll() is None and _kill_process_group(proc):
+        _child = None
 
 
 atexit.register(_kill_running_child)  # 終了時にもみ消し (実行中の grok を残さない)
+
+
+def _stop_previous_child() -> bool:
+    """前回の更新で止められなかった子がまだ生きていれば、もう一度止める。
+
+    終了を確認できたら True。生き残っていれば警告を出して False を返すので、
+    呼び出し側は新しい子を起動しない (同じ CLI を並走させない)。
+    """
+    global _child
+    proc = _child
+    if proc is None:
+        return True
+    if proc.poll() is not None:
+        _child = None
+        return True
+    if _kill_process_group(proc):
+        _child = None
+        return True
+    log.warning("前回の grok CLI (pid=%s) がまだ終了していない。"
+                "並走させないため今回の更新を見送る", proc.pid)
+    return False
 
 
 def _find_grok_cli(search_path: Optional[str] = None) -> Optional[str]:
@@ -178,6 +204,8 @@ def _refresh_via_cli() -> bool:
     """
     global _cooldown_until, _child, _last_not_found, _soon_retries
     now = time.monotonic()
+    if not _stop_previous_child():  # 前回止められなかった子と並走させない
+        return False
     if _cooldown_until is not None and now < _cooldown_until:
         log.debug("grok CLI でのトークン更新はクールダウン中")
         return False
@@ -209,9 +237,13 @@ def _refresh_via_cli() -> bool:
     try:
         returncode = proc.wait(timeout=CLI_REFRESH_TIMEOUT)
     except subprocess.TimeoutExpired:
-        _kill_process_group(proc)
-        _child = None
-        log.warning("grok CLI が %s 秒で終わらないため強制終了した", CLI_REFRESH_TIMEOUT)
+        if _kill_process_group(proc):
+            _child = None
+            log.warning("grok CLI が %s 秒で終わらないため強制終了した", CLI_REFRESH_TIMEOUT)
+        else:
+            # 終了を確認できない子は _child に残す (atexit / off / 次回起動前の再試行で止める)
+            log.warning("grok CLI が %s 秒で終わらない。強制終了を確認できないため追跡を続ける",
+                        CLI_REFRESH_TIMEOUT)
         return False
     _child = None
     if returncode != 0:
@@ -305,25 +337,28 @@ def parse_grok(data: Dict[str, Any], now: Optional[datetime] = None) -> Tuple[st
 
     config.productUsage があれば各製品 (GrokBuild / GrokTasks / ...) を
     メイン窓の内訳として part_of 付きの Window にする。形が違う・壊れて
-    いる応答では内訳を諦めてメイン窓だけ返す。"""
+    いる応答では内訳を諦めてメイン窓だけ返す。proto3 の JSON は 0 の項目を
+    省くため、期間が分かるのに creditUsagePercent が無いときは 0% とみなす
+    (リセット直後の正常な 0%)。"""
     config = data.get("config") or {}
     period = config.get("currentPeriod") or {}
     start = _parse_iso(period.get("start") or config.get("billingPeriodStart"))
     end = _parse_iso(period.get("end") or config.get("billingPeriodEnd"))
     used = config.get("creditUsagePercent")
     if used is None and start and end:
-        # proto3 の JSON は 0 の項目を省く。リセット直後 (使用率 0%) は
-        # creditUsagePercent が来ないので、期間があれば 0% とみなす。
+        # リセット直後 (使用率 0%) は creditUsagePercent が来ないので、
+        # 期間があれば 0% とみなす。
         used = 0.0
     windows: List[Window] = []
     if used is not None and start and end and end > start:
+        used = finite_number(used)
         key, label, length = _window_identity(int((end - start).total_seconds()))
-        main = Window("grok", key, label, float(used), end, length)
+        main = Window("grok", key, label, used, end, length)
         windows.append(main)
         products = config.get("productUsage")
         if isinstance(products, list):
             seen = set()            # 正規化後の key (重複は後のものを捨てる)
-            budget = float(used)    # 内訳の累計はメイン窓の使用率を超えない
+            budget = used           # 内訳の累計はメイン窓の使用率を超えない
             for item in products:
                 if not isinstance(item, dict):
                     continue
@@ -333,6 +368,7 @@ def parse_grok(data: Dict[str, Any], now: Optional[datetime] = None) -> Tuple[st
                     continue
                 if isinstance(usage, bool) or not isinstance(usage, (int, float)):
                     continue
+                usage = finite_number(usage)
                 if usage <= 0:
                     continue  # 0 / 負の値の製品は内訳にしない
                 name = _split_grok_prefix(product)
@@ -340,7 +376,7 @@ def parse_grok(data: Dict[str, Any], now: Optional[datetime] = None) -> Tuple[st
                 if key in seen:
                     continue
                 seen.add(key)
-                seg = min(float(usage), budget)  # メイン窓を超える分は切り詰める
+                seg = min(usage, budget)  # メイン窓を超える分は切り詰める
                 if seg <= 0.0:                  # 切り詰めて 0 になった分は捨てる
                     continue
                 budget -= seg
@@ -378,6 +414,10 @@ def fetch(now: datetime) -> ProviderUsage:
         _spawn_refresh_thread()
         raise CredentialError(t("providers.login_expired_refreshing")) from None
     name, windows = parse_grok(data, now)
+    if not windows:
+        # 識別できる窓が 1 つも無い 200 応答: 成功 (窓 0 個) にせず取得失敗にする
+        # (呼び出し側が前回の正常値を空で上書きしないように)。
+        return ProviderUsage("grok", name, [], t("providers.gemini.no_quota"), now)
     return ProviderUsage("grok", name, windows, None, now)
 
 

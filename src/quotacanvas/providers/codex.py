@@ -33,7 +33,8 @@ from ..i18n import t
 from ..models import ProviderUsage, ResetCredit, Window
 from ._base import (
     USER_AGENT, CredentialError, Detection, Provider,
-    _from_epoch, _parse_iso, _short_reason, _window_identity, http_get_json,
+    _from_epoch, _parse_iso, _short_reason, _window_identity,
+    finite_number, http_get_json,
 )
 
 log = logging.getLogger("quotacanvas.codex")
@@ -105,13 +106,39 @@ def set_token_refresh(mode: str) -> None:
 
 
 def _kill_running_child() -> None:
-    """起動中の子プロセス (codex exec) がいれば killpg する。"""
+    """起動中 (または前回止められなかった) 子プロセス (codex exec) がいれば killpg する。
+
+    終了を確認できたときだけ _child を手放す。確認できないときは残して、
+    atexit の次の呼び出しや、次回起動前の _stop_previous_child で再試行する。
+    """
+    global _child
     proc = _child
-    if proc is not None and proc.poll() is None:
-        _kill_process_group(proc)
+    if proc is not None and proc.poll() is None and _kill_process_group(proc):
+        _child = None
 
 
 atexit.register(_kill_running_child)  # 終了時にもみ消し (実行中の codex を残さない)
+
+
+def _stop_previous_child() -> bool:
+    """前回の更新で止められなかった子がまだ生きていれば、もう一度止める。
+
+    終了を確認できたら True。生き残っていれば警告を出して False を返すので、
+    呼び出し側は新しい子を起動しない (同じ CLI を並走させない)。
+    """
+    global _child
+    proc = _child
+    if proc is None:
+        return True
+    if proc.poll() is not None:
+        _child = None
+        return True
+    if _kill_process_group(proc):
+        _child = None
+        return True
+    log.warning("前回の codex CLI (pid=%s) がまだ終了していない。"
+                "並走させないため今回の更新を見送る", proc.pid)
+    return False
 
 
 def _find_codex_cli(search_path: Optional[str] = None) -> Optional[str]:
@@ -165,6 +192,8 @@ def _refresh_via_cli() -> bool:
     """
     global _cooldown_until, _child, _last_not_found
     now = time.monotonic()
+    if not _stop_previous_child():  # 前回止められなかった子と並走させない
+        return False
     if _cooldown_until is not None and now < _cooldown_until:
         log.debug("codex CLI でのトークン更新はクールダウン中")
         return False
@@ -197,9 +226,13 @@ def _refresh_via_cli() -> bool:
     try:
         returncode = proc.wait(timeout=CLI_REFRESH_TIMEOUT)
     except subprocess.TimeoutExpired:
-        _kill_process_group(proc)
-        _child = None
-        log.warning("codex CLI が %s 秒で終わらないため強制終了した", CLI_REFRESH_TIMEOUT)
+        if _kill_process_group(proc):
+            _child = None
+            log.warning("codex CLI が %s 秒で終わらないため強制終了した", CLI_REFRESH_TIMEOUT)
+        else:
+            # 終了を確認できない子は _child に残す (atexit / off / 次回起動前の再試行で止める)
+            log.warning("codex CLI が %s 秒で終わらない。強制終了を確認できないため追跡を続ける",
+                        CLI_REFRESH_TIMEOUT)
         return False
     _child = None
     if returncode != 0:
@@ -285,7 +318,7 @@ def parse_codex(data: Dict[str, Any], now: Optional[datetime] = None) -> Tuple[s
             continue
         key, label, length = _window_identity(int(seconds))
         windows.append(Window(
-            "codex", key, label, float(used),
+            "codex", key, label, finite_number(used),
             _from_epoch(entry.get("reset_at")), length,
         ))
     plan = str(data.get("plan_type") or "").strip().capitalize()

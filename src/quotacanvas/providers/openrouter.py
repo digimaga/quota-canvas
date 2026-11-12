@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..i18n import t
 from ..models import Balance, ProviderUsage, Window
@@ -24,12 +24,18 @@ def detect() -> Detection:
     return detect_api_key("openrouter", "OpenRouter", "OPENROUTER_API_KEY")
 
 
-def _usage_balance(payload: Dict[str, Any]) -> Balance:
-    """今月の使用額 (無ければ累計) を表示専用の残高行にする。"""
+def _usage_balance(payload: Dict[str, Any]) -> Optional[Balance]:
+    """今月の使用額 (無ければ累計) を表示専用の残高行にする。
+
+    usage_monthly / usage のどちらも無ければ None (使用額の行を省く)。
+    """
     monthly = payload.get("usage_monthly")
     if monthly is not None:
         return Balance("USD", finite_number(monthly), t("providers.monthly_usage"))
-    return Balance("USD", finite_number(payload["usage"]), t("providers.total_usage"))
+    usage = payload.get("usage")
+    if usage is not None:
+        return Balance("USD", finite_number(usage), t("providers.total_usage"))
+    return None
 
 
 def parse_key(data: Dict[str, Any], now: datetime) -> Tuple[List[Window], List[Balance]]:
@@ -38,7 +44,9 @@ def parse_key(data: Dict[str, Any], now: datetime) -> Tuple[List[Window], List[B
     limit = payload["limit"]
     remaining = payload.get("limit_remaining")
     if limit is None or remaining is None:
-        return [], [_usage_balance(payload)]  # 上限が無い・残りが分からないときは使用額を出す
+        # 上限が無い・残りが分からないときは使用額を出す (無ければ行を省く)
+        balance = _usage_balance(payload)
+        return [], ([balance] if balance is not None else [])
 
     limit = finite_number(limit)
     remaining = finite_number(remaining)
@@ -86,6 +94,10 @@ def fetch(now: datetime) -> ProviderUsage:
             log.warning("OpenRouter credits unavailable: %s", reason)
         else:
             log.debug("OpenRouter credits unavailable: %s", reason)
+    if not windows and not balances:
+        # 表示できるデータが何も無い (limit / remaining が null で使用額も無く、
+        # /credits も取れない): 空の成功にせず取得失敗のままにする。
+        raise ValueError("no usage data")
     return ProviderUsage("openrouter", "OpenRouter", windows, None, now, balances=balances)
 
 

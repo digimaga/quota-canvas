@@ -14,7 +14,7 @@ from ..i18n import t
 from ..models import ProviderUsage, Window
 from ._base import (
     USER_AGENT, CredentialError, Detection, Provider,
-    _from_epoch_millis, _window_identity, http_get_json,
+    _from_epoch_millis, _window_identity, finite_number, http_get_json,
 )
 
 GLM_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
@@ -67,7 +67,7 @@ def parse_glm(data: Dict[str, Any], now: Optional[datetime] = None) -> Tuple[str
             continue
         key, label, length = _window_identity(int(unit_seconds * number))
         windows.append(Window(
-            "glm", key, label, float(used),
+            "glm", key, label, finite_number(used),
             _from_epoch_millis(limit.get("nextResetTime")), length,
         ))
     level = str(payload.get("level") or "").strip().capitalize()

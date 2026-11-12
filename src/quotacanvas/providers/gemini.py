@@ -15,11 +15,13 @@
 カード全体は失敗にしない (名前は "Gemini" になる)。
 
 providers.gemini.token_refresh は過去の設定ファイルとの互換で受け付けるだけ
-(値の検査のみで何もしない)。
+(トークンの更新は agy が行う)。"off" への切り替えと終了時 (atexit) には、
+走っている agy を killpg で止め直す (claude / grok / codex と同じ形)。
 """
 
 from __future__ import annotations
 
+import atexit
 import base64
 import json
 import logging
@@ -36,7 +38,8 @@ from ..platform_support.process import kill_group as _kill_process_group
 from ..i18n import t
 from ..models import ProviderUsage, Window
 from ._base import (
-    CredentialError, Detection, Provider, _parse_iso, http_post_json,
+    CredentialError, Detection, Provider, _parse_iso, finite_number,
+    http_post_json,
 )
 
 log = logging.getLogger("quotacanvas.gemini")
@@ -77,12 +80,15 @@ _BUCKETS: Tuple[Tuple[str, str, Optional[str], Optional[str], int], ...] = (
 def set_token_refresh(mode: str) -> None:
     """(互換) providers.gemini.token_refresh の値の検査だけする。
 
-    トークンの更新は agy 自身が行うため、この設定で quota-canvas 側は
-    何もしない。既存の設定ファイルや cli 側の呼び出しが壊れないように、
-    値の組み合わせの確認だけ残す。
+    トークンの更新は agy 自身が行うため、この設定で quota-canvas 側はトークン
+    を扱わない。既存の設定ファイルや cli 側の呼び出しが壊れないように、値の
+    組み合わせの確認だけ残す。"off" への切り替えのときは、走っている (または
+    前回止められなかった) agy がいれば killpg する。
     """
     if mode not in TOKEN_REFRESH_MODES:
         raise ValueError("token_refresh は %s のいずれか" % (TOKEN_REFRESH_MODES,))
+    if mode == "off":
+        _kill_running_child()
 
 
 # ----------------------------------------------------------- credentials
@@ -128,16 +134,63 @@ def _find_agy(search_path: Optional[str] = None) -> Optional[str]:
                             candidates_first=True, which=shutil.which)
 
 
+# 時間切れで止められなかった agy (次回起動前に止め直す)。fetch は常駐ループから
+# 直列に呼ばれるので、同時に起動する agy は 1 つだけ。止められなかった子を
+# 手放さず追跡することで、次の取得で 2 つ目を並走させない。
+_child: Optional[subprocess.Popen] = None
+
+
+def _stop_previous_child() -> bool:
+    """前回の取得で止められなかった agy がまだ生きていれば、もう一度止める。
+
+    終了を確認できたら True。生き残っていれば警告を出して False を返すので、
+    呼び出し側は新しい agy を起動しない (並走させない)。
+    """
+    global _child
+    proc = _child
+    if proc is None:
+        return True
+    if proc.poll() is not None:
+        _child = None
+        return True
+    if _kill_process_group(proc):
+        _child = None
+        return True
+    log.warning("前回の agy (pid=%s) がまだ終了していない。"
+                "並走させないため今回の取得を見送る", proc.pid)
+    return False
+
+
+def _kill_running_child() -> None:
+    """起動中 (または前回止められなかった) agy がいれば killpg する。
+
+    終了を確認できたときだけ _child を手放す。確認できないときは残して、
+    atexit の次の呼び出しや、次回取得前の _stop_previous_child で再試行する。
+    """
+    global _child
+    proc = _child
+    if proc is not None and proc.poll() is None and _kill_process_group(proc):
+        _child = None
+
+
+atexit.register(_kill_running_child)  # 終了時にもみ消し (実行中の agy を残さない)
+
+
 def _agy_usage(timeout: float = USAGE_TIMEOUT) -> Dict[str, Any]:
     """`agy -p "/usage" --output-format json` を実行し、command.data を返す。
 
     agy はトークンの更新を自分で行う (ここではリフレッシュしない)。子は独自の
     プロセスグループ (start_new_session) で起動し、timeout を過ぎたら
     os.killpg でグループごと SIGKILL してから時間切れのエラーにする (claude.py
-    の CLI 実行と同じ形)。stderr にはログが出ることがあるので無視する。
+    の CLI 実行と同じ形)。SIGKILL 後も終了を確認できない子は _child に残し、
+    次の取得で起動前に止め直す (止められないあいだは取得を見送る)。
+    stderr にはログが出ることがあるので無視する。
     agy 無し・status が SUCCESS 以外・形が違う応答は CredentialError
     (メッセージは秘密を含まない)。
     """
+    global _child
+    if not _stop_previous_child():  # 前回の子と並走させない
+        raise CredentialError(t("providers.gemini.agy_timeout"))
     env = process.limited_env()
     agy = _find_agy(env["PATH"])
     if not agy:
@@ -152,11 +205,15 @@ def _agy_usage(timeout: float = USAGE_TIMEOUT) -> Dict[str, Any]:
         )
     except OSError:
         raise CredentialError(t("providers.gemini.agy_failed")) from None
+    _child = proc
     try:
         stdout, _stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        _kill_process_group(proc)
+        if _kill_process_group(proc):
+            _child = None
+        # 終了を確認できない子は _child に残す (次の取得の前に止め直す)
         raise CredentialError(t("providers.gemini.agy_timeout")) from None
+    _child = None
     try:
         data = json.loads((stdout or b"").decode("utf-8", "replace"))
     except ValueError:
@@ -199,7 +256,8 @@ def parse_usage(payload: Dict[str, Any]) -> List[Window]:
     """窓のリスト (指定順) from the agy /usage command.data。
 
     バケットは id で識別する (グループ名・バケット名は将来変わりうる)。
-    未知の id、remaining_fraction が数値でないバケットは無視する。使用率 =
+    未知の id、remaining_fraction が数値でないバケットは無視する。数値でも
+    NaN / inf は壊れた応答として ValueError。使用率 =
     (1 - remaining_fraction) * 100、リセット時刻 = reset_time。
     """
     buckets: Dict[str, Dict[str, Any]] = {}
@@ -222,7 +280,8 @@ def parse_usage(payload: Dict[str, Any]) -> List[Window]:
         remaining = bucket.get("remaining_fraction")
         if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
             continue
-        used = max(0.0, min(100.0, (1.0 - float(remaining)) * 100.0))
+        remaining = finite_number(remaining)  # NaN / inf はクランプの前に弾く
+        used = max(0.0, min(100.0, (1.0 - remaining) * 100.0))
         label = t(msg_key) if msg_key else (literal or key)
         windows.append(Window("gemini", key, label, used,
                               _parse_iso(bucket.get("reset_time")),

@@ -4,8 +4,9 @@
 - providers.claude.token_refresh = "cli": 期限切れ間近か HTTP 401/403 のとき
   `claude -p` を軽く 1 回バックグラウンドで実行し、CLI 自身にキーチェーンへ
   書き戻させる。`run` のあいだだけ有効で、30 分に 1 回まで (ただし exit 0 でも
-  expiresAt が進まなかったときは 5 分後に再試行)。成功したら run ループに
-  反映要求を出して取り直させる。fetch はブロックしない。
+  expiresAt が進まなかったときは 5 分後に再試行し、それが 3 回続いたら 30 分に
+  戻す)。成功したら run ループに反映要求を出して取り直させる。fetch は
+  ブロックしない。
 - "off": CLI は呼ばない。401/403 は「claude を一度起動してください」のエラー。
 - 未設定 (None): run 以外 (once / detect など)。CLI は起動せず "off" と同じ。
 """
@@ -33,7 +34,7 @@ from ..i18n import t
 from ..models import ProviderUsage, Window
 from ._base import (
     TIMEOUT, USER_AGENT, CredentialError, Detection, Provider,
-    _from_epoch_millis, _parse_iso, http_get_json,
+    _from_epoch_millis, _parse_iso, finite_number, http_get_json,
 )
 
 log = logging.getLogger("quotacanvas.claude")
@@ -43,6 +44,7 @@ CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLI_REFRESH_TIMEOUT = 120.0        # claude -p 1 回の上限 (秒)
 CLI_REFRESH_COOLDOWN = 30 * 60.0   # claude -p を起動してよい最小間隔 (秒)
 CLI_RETRY_SOON = 5 * 60.0          # exit 0 でも expiresAt が進まなかったときの再試行間隔
+CLI_RETRY_SOON_MAX = 3             # 5 分での再試行が続いてよい回数。超えたら 30 分あける
 EXPIRY_MARGIN = timedelta(minutes=5)  # これより先に切れるなら先回りで更新する
 
 TOKEN_REFRESH_MODES = ("cli", "off")  # providers.claude.token_refresh の値
@@ -55,6 +57,7 @@ _refresh_mode: Optional[str] = None        # None = 未設定 (run 以外は触�
 _cooldown_until: Optional[float] = None    # 次に claude -p を起動してよい monotonic 時刻
 _last_not_found: Optional[float] = None    # 最後に「CLI が見つからない」警告を出した時刻
 _last_expiry: Optional[datetime] = None    # 最後にキーチェーンを読んだときの expiresAt
+_soon_retries = 0                          # 続けて 5 分再試行にした回数
 _refresh_lock = threading.Lock()           # 同時に走る更新スレッドは 1 本まで
 _refresh_thread: Optional[threading.Thread] = None
 _refresh_started_at: Optional[float] = None  # 更新スレッドの開始時刻 (反映要求の待ちに使う)
@@ -83,9 +86,11 @@ def _read_keychain_payload() -> Tuple[str, Optional[str], Optional[datetime]]:
     """(access_token, subscription_type, expires_at) from the login keychain item.
 
     expires_at は claudeAiOauth.expiresAt (epoch ミリ秒) から。無ければ None。
-    読めた値は _last_expiry にも記録する (fetch の期限前更新で使う)。
+    読めた値は _last_expiry にも記録する (fetch の期限前更新で使う)。前回見た
+    値より新しければ、CLI の外で再ログインされたとみなして 5 分再試行の回数を
+    数え直す (ログインし直したのに 30 分待たされるのを防ぐ)。
     """
-    global _last_expiry
+    global _last_expiry, _soon_retries
     try:
         proc = security.run(
             ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
@@ -109,6 +114,9 @@ def _read_keychain_payload() -> Tuple[str, Optional[str], Optional[datetime]]:
         raise CredentialError(t("providers.malformed")) from None
     if not token:
         raise CredentialError(t("providers.no_credentials"))
+    if (expires_at is not None and _last_expiry is not None
+            and expires_at > _last_expiry):
+        _soon_retries = 0  # 外部でログインし直された (期限が進んだ)
     _last_expiry = expires_at
     return token, subscription, expires_at
 
@@ -141,13 +149,39 @@ def set_token_refresh(mode: str) -> None:
 
 
 def _kill_running_child() -> None:
-    """起動中の子プロセス (claude -p) がいれば killpg する。"""
+    """起動中 (または前回止められなかった) 子プロセス (claude -p) がいれば killpg する。
+
+    終了を確認できたときだけ _child を手放す。確認できないときは残して、
+    atexit の次の呼び出しや、次回起動前の _stop_previous_child で再試行する。
+    """
+    global _child
     proc = _child
-    if proc is not None and proc.poll() is None:
-        _kill_process_group(proc)
+    if proc is not None and proc.poll() is None and _kill_process_group(proc):
+        _child = None
 
 
 atexit.register(_kill_running_child)  # 終了時にもみ消し (実行中の claude を残さない)
+
+
+def _stop_previous_child() -> bool:
+    """前回の更新で止められなかった子がまだ生きていれば、もう一度止める。
+
+    終了を確認できたら True。生き残っていれば警告を出して False を返すので、
+    呼び出し側は新しい子を起動しない (同じ CLI を並走させない)。
+    """
+    global _child
+    proc = _child
+    if proc is None:
+        return True
+    if proc.poll() is not None:
+        _child = None
+        return True
+    if _kill_process_group(proc):
+        _child = None
+        return True
+    log.warning("前回の claude CLI (pid=%s) がまだ終了していない。"
+                "並走させないため今回の更新を見送る", proc.pid)
+    return False
 
 
 def _find_claude_cli(search_path: Optional[str] = None) -> Optional[str]:
@@ -171,10 +205,14 @@ def _refresh_via_cli() -> bool:
     クールダウンは「起動できたとき」だけ記録する (見つからない・起動失敗は記録
     しない。ただし「見つからない」警告は 30 分に 1 回)。30 分のところ、exit 0 でも
     expiresAt が進まなかったときだけ 5 分にする (CLI は期限前にはまだ更新しない
-    ので、期限切れ後すぐ再試行できるように)。
+    ので、期限切れ後すぐ再試行できるように)。ただし 5 分の再試行が続くときは
+    CLI_RETRY_SOON_MAX 回で 30 分に戻す (ログインが必要な状態で取得のたびに
+    claude -p を起動し続けない)。成功したら回数を数え直す。
     """
-    global _cooldown_until, _child, _last_not_found
+    global _cooldown_until, _child, _last_not_found, _soon_retries
     now = time.monotonic()
+    if not _stop_previous_child():  # 前回止められなかった子と並走させない
+        return False
     if _cooldown_until is not None and now < _cooldown_until:
         log.debug("claude CLI でのトークン更新はクールダウン中")
         return False
@@ -214,9 +252,13 @@ def _refresh_via_cli() -> bool:
         try:
             returncode = proc.wait(timeout=CLI_REFRESH_TIMEOUT)
         except subprocess.TimeoutExpired:
-            _kill_process_group(proc)
-            _child = None
-            log.warning("claude CLI が %s 秒で終わらないため強制終了した", CLI_REFRESH_TIMEOUT)
+            if _kill_process_group(proc):
+                _child = None
+                log.warning("claude CLI が %s 秒で終わらないため強制終了した", CLI_REFRESH_TIMEOUT)
+            else:
+                # 終了を確認できない子は _child に残す (atexit / off / 次回起動前の再試行で止める)
+                log.warning("claude CLI が %s 秒で終わらない。強制終了を確認できないため追跡を続ける",
+                            CLI_REFRESH_TIMEOUT)
             return False
         _child = None
         if returncode != 0:
@@ -225,9 +267,13 @@ def _refresh_via_cli() -> bool:
         after = _current_expiry()
         if after is None or (before is not None and after <= before):
             # exit 0 でも更新されていない: 期限が切れたあとすぐ再試行できるよう 5 分だけ空ける
-            _cooldown_until = now + CLI_RETRY_SOON
+            # (続くようなら CLI_RETRY_SOON_MAX 回で 30 分に戻す)
+            if _soon_retries < CLI_RETRY_SOON_MAX:
+                _soon_retries += 1
+                _cooldown_until = now + CLI_RETRY_SOON
             log.warning("claude CLI は終了したがキーチェーンのトークンは更新されなかった")
             return False
+        _soon_retries = 0
         log.info("claude CLI を実行して OAuth トークンを更新した")
         return True
     finally:
@@ -320,7 +366,7 @@ def parse_claude(data: Dict[str, Any], now: Optional[datetime] = None,
         if not isinstance(entry, dict) or entry.get("utilization") is None:
             continue
         windows.append(Window(
-            "claude", key, label, float(entry["utilization"]),
+            "claude", key, label, finite_number(entry["utilization"]),
             _parse_iso(entry.get("resets_at")), length,
         ))
     for limit in data.get("limits") or []:
@@ -337,7 +383,7 @@ def parse_claude(data: Dict[str, Any], now: Optional[datetime] = None,
         windows.append(Window(
             "claude", "weekly_" + name.lower(),
             t("providers.claude.weekly_scoped", model=name),
-            float(used), _parse_iso(limit.get("resets_at")), timedelta(days=7),
+            finite_number(used), _parse_iso(limit.get("resets_at")), timedelta(days=7),
         ))
     suffix = str(subscription_type or "").strip().capitalize()
     return ("Claude " + suffix).strip(), windows

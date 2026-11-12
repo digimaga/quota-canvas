@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from dataclasses import replace
+import logging
 import signal
 import subprocess
+import sys
 import tempfile
+import textwrap
 import types
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -89,14 +93,24 @@ class PopenError(Exception):
         self.exc = exc
 
 
-class FakeProc:
-    """Popen の戻り値の置き換え。outcome: communicate の出力 (bytes) か例外。"""
+class StuckAgy:
+    """FakeAgy 用: communicate がタイムアウトし、killpg 後の wait も終わらない子。"""
 
-    def __init__(self, outcome):
+
+class FakeProc:
+    """Popen の戻り値の置き換え。outcome: communicate の出力 (bytes) か例外。
+
+    wait_timeout=True は killpg 後の wait もタイムアウトし続ける子 (終了を
+    確認できない子)。poll は生きているあいだ None を返す。
+    """
+
+    def __init__(self, outcome, wait_timeout=False):
         self.pid = 42424
         self.outcome = outcome
+        self.wait_timeout = wait_timeout
         self.comm_timeouts = []
         self.waits = []
+        self.alive = True
 
     def communicate(self, timeout=None):
         self.comm_timeouts.append(timeout)
@@ -106,15 +120,18 @@ class FakeProc:
 
     def wait(self, timeout=None):
         self.waits.append(timeout)
+        if self.wait_timeout:
+            raise subprocess.TimeoutExpired(cmd="agy", timeout=timeout)
+        self.alive = False
         return 0
 
     def poll(self):
-        return 0
+        return None if self.alive else 0
 
 
 class FakeAgy:
     """gemini.subprocess の置き換え。outcomes: communicate の出力 (bytes) か
-    例外 / PopenError (起動失敗)。足りなければ最後の outcome を使い回す。"""
+    例外 / PopenError (起動失敗) / StuckAgy。足りなければ最後の outcome を使い回す。"""
 
     def __init__(self, monkeypatch, outcomes=None):
         self.outcomes = list(outcomes) if outcomes is not None else [_agy_stdout()]
@@ -129,7 +146,11 @@ class FakeAgy:
         outcome = self.outcomes[min(len(self.calls) - 1, len(self.outcomes) - 1)]
         if isinstance(outcome, PopenError):
             raise outcome.exc
-        proc = FakeProc(outcome)
+        if isinstance(outcome, StuckAgy):
+            proc = FakeProc(subprocess.TimeoutExpired(cmd="agy", timeout=gemini.USAGE_TIMEOUT),
+                            wait_timeout=True)
+        else:
+            proc = FakeProc(outcome)
         self.procs.append(proc)
         return proc
 
@@ -264,7 +285,55 @@ def test_agy_usage_timeout_waits_after_kill(monkeypatch):
     monkeypatch.setattr(gemini.process.os, "killpg", lambda pgid, sig: None)
     with pytest.raises(gemini.CredentialError):
         gemini._agy_usage()
-    assert fake.procs[0].waits == [None]  # kill 後に wait で回収する
+    assert fake.procs[0].waits == [5.0]  # kill 後に wait で回収する (上限 5 秒)
+    assert gemini._child is None         # 終了を確認できたので手放す
+
+
+def test_agy_usage_timeout_keeps_child_when_kill_cannot_be_confirmed(monkeypatch):
+    """killpg 後も終了を確認できない agy は追跡を続ける (次の取得前に止め直す)。"""
+    fake = FakeAgy(monkeypatch, [StuckAgy()])
+    monkeypatch.setattr(gemini, "_find_agy", lambda path=None: "/fake/bin/agy")
+    monkeypatch.setattr(gemini.process.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(gemini.process.os, "killpg", lambda pgid, sig: None)
+
+    with pytest.raises(gemini.CredentialError):
+        gemini._agy_usage()
+    assert gemini._child is fake.procs[0]  # 止められないので手放さない
+    assert fake.procs[0].waits == [5.0]    # kill 後の回収もタイムアウト
+
+
+def test_agy_usage_skips_launch_while_previous_child_alive(monkeypatch, caplog):
+    """止められない agy が生きているあいだは、新しい agy を起動しない。"""
+    fake = FakeAgy(monkeypatch, [StuckAgy(), _agy_stdout()])
+    monkeypatch.setattr(gemini, "_find_agy", lambda path=None: "/fake/bin/agy")
+    monkeypatch.setattr(gemini.process.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(gemini.process.os, "killpg", lambda pgid, sig: None)
+
+    with pytest.raises(gemini.CredentialError):
+        gemini._agy_usage()
+    with caplog.at_level(logging.WARNING, logger="quotacanvas.gemini"):
+        with pytest.raises(gemini.CredentialError) as ei:
+            gemini._agy_usage()
+    assert str(ei.value) == "agy が時間内に応答しない"
+    assert len(fake.calls) == 1  # 2 つ目を並走させない
+    assert gemini._child is fake.procs[0]
+    assert any("見送る" in record.getMessage() for record in caplog.records)
+
+
+def test_agy_usage_retries_kill_before_next_launch(monkeypatch):
+    """次の取得の前に止め直せたら、取得を続ける (ずっと詰まらせない)。"""
+    fake = FakeAgy(monkeypatch, [StuckAgy(), _agy_stdout()])
+    monkeypatch.setattr(gemini, "_find_agy", lambda path=None: "/fake/bin/agy")
+    monkeypatch.setattr(gemini.process.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(gemini.process.os, "killpg", lambda pgid, sig: None)
+
+    with pytest.raises(gemini.CredentialError):
+        gemini._agy_usage()
+    fake.procs[0].wait_timeout = False  # 今度は SIGKILL で終わる
+
+    assert gemini._agy_usage()["groups"] == USAGE_GROUPS
+    assert len(fake.calls) == 2
+    assert gemini._child is None
 
 
 def test_agy_usage_oserror(monkeypatch, fake_agy):
@@ -449,6 +518,12 @@ def _reset_plan_cache(monkeypatch):
     monkeypatch.setattr(gemini, "_plan_fetched_at", None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_child(monkeypatch):
+    """止められなかった agy の追跡をテスト間で持ち越さない。"""
+    monkeypatch.setattr(gemini, "_child", None)
+
+
 def test_plan_name_is_cached_for_6h(real_keychain, fake_agy, monkeypatch):
     """成功したプラン名は 6 時間は取り直さない (常駐ループで毎回 HTTP しない)。"""
     FakeKeychain(monkeypatch, [_raw(expiry=FRESH_ISO)])
@@ -517,13 +592,109 @@ def test_detect_all_reports_gemini(real_keychain, fake_agy, monkeypatch):
 
 
 # ------------------------------------------------- 互換: token_refresh 設定
+# トークンの更新は agy 自身が行うが、"off" への切り替えと終了時 (atexit) には
+# 走っている agy を止め直す (claude / grok / codex と同じ形)。
 
-def test_set_token_refresh_is_accepted_but_unused():
-    """providers.gemini.token_refresh は過去の設定ファイルとの互換で受けるだけ。"""
-    gemini.set_token_refresh("cli")
+# import 時の atexit.register を確認する隔離 subprocess 用スクリプト (claude /
+# grok / codex のテストと同じもの): atexit.register を spy に差し替えてから
+# モジュールを import し、_kill_running_child が登録されたかを JSON で出力する。
+_ATEXIT_SPY = textwrap.dedent("""
+    import atexit, json, sys
+    registered = []
+    real_register = atexit.register
+    def spy(func=None, *args, **kwargs):
+        registered.append(func)
+        return func
+    atexit.register = spy
+    try:
+        mod = __import__(sys.argv[1], fromlist=["*"])
+    finally:
+        atexit.register = real_register
+    print(json.dumps({
+        "registered": [str(getattr(f, "__module__", None)) + ":"
+                       + str(getattr(f, "__qualname__", repr(f)))
+                       for f in registered],
+        "target_index": [i for i, f in enumerate(registered)
+                         if f is getattr(mod, "_kill_running_child", None)],
+    }))
+""")
+
+_SRC_ROOT = Path(gemini.__file__).resolve().parents[2]
+
+
+def test_atexit_register_is_executed_on_import():
+    """import 時の `atexit.register(_kill_running_child)` を隔離 subprocess で
+    確かめる (register 行が消えたら赤くなる)。"""
+    name = "quotacanvas.providers.gemini"
+    proc = subprocess.run([sys.executable, "-c", _ATEXIT_SPY, name],
+                          capture_output=True, text=True,
+                          env=dict(os.environ, PYTHONPATH=str(_SRC_ROOT)), timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads(proc.stdout.splitlines()[-1])
+    assert name + ":_kill_running_child" in report["registered"]  # 登録されている
+    assert report["target_index"]  # 登録されたのは本体の _kill_running_child そのもの
+
+
+def test_kill_running_child_kills_alive_agy(monkeypatch):
+    """atexit で登録したのと同じ _kill_running_child が、生きた agy を killpg する。"""
+    killed = []
+
+    def fake_kill(proc):
+        killed.append(proc)
+        proc.alive = False  # SIGKILL したことにする
+        return True
+
+    monkeypatch.setattr(gemini, "_kill_process_group", fake_kill)
+    child = FakeProc(b"{}")
+    gemini._child = child
+
+    gemini._kill_running_child()
+    assert killed == [child]
+    assert gemini._child is None       # 終了を確認できたので手放す
+    gemini._kill_running_child()       # 終わったあとの 2 回目は何もしない
+    assert killed == [child]
+
+
+def test_kill_running_child_keeps_unconfirmed_agy(monkeypatch):
+    """killpg しても終了を確認できない agy は _child に残す (追跡を失わない)。"""
+    monkeypatch.setattr(gemini, "_kill_process_group", lambda proc: False)
+    child = FakeProc(b"{}")
+    gemini._child = child
+
+    gemini._kill_running_child()
+
+    assert gemini._child is child  # 止められないので手放さない
+
+
+def test_set_token_refresh_off_kills_running_child(monkeypatch):
+    killed = []
+    monkeypatch.setattr(gemini, "_kill_process_group", lambda proc: killed.append(proc))
+    child = FakeProc(b"{}")
+    gemini._child = child
+
     gemini.set_token_refresh("off")
+
+    assert killed == [child]
+
+
+def test_set_token_refresh_off_ignores_finished_child(monkeypatch):
+    killed = []
+    monkeypatch.setattr(gemini, "_kill_process_group", lambda proc: killed.append(proc))
+    child = FakeProc(b"{}")
+    child.alive = False  # すでに終わっている
+    gemini._child = child
+
+    gemini.set_token_refresh("off")
+
+    assert killed == []
+
+
+def test_set_token_refresh_other_modes_do_not_kill(monkeypatch):
+    monkeypatch.setattr(gemini, "_kill_process_group",
+                        lambda proc: pytest.fail("cli では kill しない"))
+    gemini.set_token_refresh("cli")
     with pytest.raises(ValueError):
-        gemini.set_token_refresh("auto")
+        gemini.set_token_refresh("auto")  # 値の検査は従来どおり
 
 
 # ------------------------------------------------------- config / 例ファイル

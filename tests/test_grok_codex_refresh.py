@@ -12,6 +12,7 @@ grok / codex CLI・auth.json・ネットワークには絶対に触れない (au
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -189,19 +190,30 @@ class FakeStates:
 
 
 class FakeProc:
-    """Popen の戻り値。script = {"exit": rc} か {"timeout": True}。"""
+    """Popen の戻り値。script = {"exit": rc} か {"timeout": True}。
+
+    timeout の子は killpg 後の wait では終わる (実機の SIGKILL 相当)。
+    {"timeout": True, "killable": False} は killpg 後も wait がタイムアウトし続け、
+    poll は生きているあいだ None を返す (終了を確認できない子)。
+    """
 
     def __init__(self, script):
         self.pid = 42424
         self.script = script
         self.returncode = script.get("exit", 0)
         self.waits = []
+        self.alive = bool(script.get("timeout"))
 
     def wait(self, timeout=None):
         self.waits.append(timeout)
-        if self.script.get("timeout") and timeout is not None:
+        if self.script.get("timeout") and (
+                not self.script.get("killable", True) or len(self.waits) == 1):
             raise subprocess.TimeoutExpired(cmd="cli", timeout=timeout)
+        self.alive = False
         return self.returncode
+
+    def poll(self):
+        return None if self.alive else self.returncode
 
 
 class FakeCli:
@@ -552,9 +564,69 @@ def test_timeout_kills_process_group(monkeypatch, mod, clock, cli):
 
     assert mod._refresh_via_cli() is False
     assert killed == [(42424 + 1, signal.SIGKILL)]  # proc.pid のグループを kill
-    assert cli[mod].procs[0].waits == [120.0, None]  # timeout 付き待ち → kill 後の始末待ち
-    assert mod._child is None                        # 子の記録は片付く
+    assert cli[mod].procs[0].waits == [120.0, 5.0]  # timeout 付き待ち → kill 後の始末待ち (上限 5 秒)
+    assert mod._child is None                        # 終了を確認できたので手放す
     assert mod._cooldown_until == 1000.0 + mod.CLI_REFRESH_COOLDOWN  # 30 分
+
+
+def test_timeout_keeps_child_when_kill_group_cannot_confirm(monkeypatch, mod, clock, cli):
+    """killpg 後も終了を確認できない子は _child に残す。
+
+    atexit / set_token_refresh("off") の停止処理でもう一度止められるようにする。
+    """
+    FakeStates(monkeypatch, mod, [stale_state(mod)])
+    cli[mod].configure({"timeout": True, "killable": False})
+    monkeypatch.setattr(mod.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(mod.os, "killpg", lambda pgid, sig: None)
+
+    assert mod._refresh_via_cli() is False
+    assert mod._child is cli[mod].procs[0]        # 止められないので手放さない
+    assert cli[mod].procs[0].waits == [120.0, 5.0]  # kill 後の回収もタイムアウト
+
+
+def test_next_refresh_skips_launch_while_previous_child_alive(
+        monkeypatch, mod, clock, cli, caplog):
+    """前回止められなかった子が生きているあいだは、次の CLI を起動しない。"""
+    FakeStates(monkeypatch, mod, [stale_state(mod)])
+    cli[mod].configure({"timeout": True, "killable": False})
+    monkeypatch.setattr(mod.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(mod.os, "killpg", lambda pgid, sig: None)
+
+    assert mod._refresh_via_cli() is False   # 1 回目: タイムアウトして止められない
+    assert len(cli[mod].popens) == 1
+    clock.advance(mod.CLI_REFRESH_COOLDOWN + 1.0)
+
+    with caplog.at_level(logging.WARNING, logger=mod.log.name):
+        assert mod._refresh_via_cli() is False  # 2 回目: 止め直しにも失敗
+    assert len(cli[mod].popens) == 1            # 並走させない
+    assert mod._child is cli[mod].procs[0]
+    assert any("見送る" in record.getMessage() for record in caplog.records)
+
+
+def test_off_retries_kill_until_child_is_gone(monkeypatch, mod, clock):
+    """off の停止処理は、止められなかった子を次の機会にもう一度止める。"""
+    killed = []
+    child = RunningProc(alive=True)
+
+    def failing_kill(proc):
+        killed.append(proc)
+        return False
+
+    monkeypatch.setattr(mod, "_kill_process_group", failing_kill)
+    mod._child = child
+    mod.set_token_refresh("off")
+    assert killed == [child]
+    assert mod._child is child  # 止められなければ追跡を続ける
+
+    def successful_kill(proc):
+        killed.append(proc)
+        proc.alive = False
+        return True
+
+    monkeypatch.setattr(mod, "_kill_process_group", successful_kill)
+    mod._kill_running_child()  # atexit 相当
+    assert killed == [child, child]
+    assert mod._child is None  # 終了を確認できたので手放す
 
 
 def test_launch_env_is_restricted_and_args_match(monkeypatch, mod, clock, cli):

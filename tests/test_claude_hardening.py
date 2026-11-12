@@ -53,7 +53,7 @@ def test_refresh_uses_private_empty_project_directory_and_cleans_up(
         return FakeProcess()
 
     monkeypatch.setattr(claude.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(claude, "_kill_process_group", lambda proc: killed.append(proc))
+    monkeypatch.setattr(claude, "_kill_process_group", lambda proc: killed.append(proc) or True)  # 止められた (kill_group と同じ戻り値)
 
     assert claude._refresh_via_cli() is (outcome == "success")
     assert len(project_dirs) == 1

@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from quotacanvas.providers.grok import parse_grok
 
 # Shape of cli-chat-proxy.grok.com/v1/billing?format=credits (2026-10-24)
@@ -162,3 +164,20 @@ def test_parse_grok_weekly_label_english():
         assert windows[1].label == "Weekly Build"
     finally:
         i18n.set_language("ja")
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"),
+                                   "nan", "inf", "1e999"])
+def test_parse_grok_non_finite_usage_is_invalid(value):
+    """NaN / inf (JSON の NaN・Infinity・1e999、文字列) は 0% などに丸めず失敗。"""
+    cfg = dict(SAMPLE["config"], creditUsagePercent=value, productUsage=[])
+    with pytest.raises(ValueError):
+        parse_grok({"config": cfg})
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_parse_grok_non_finite_product_usage_is_invalid(value):
+    cfg = dict(SAMPLE["config"], productUsage=[
+        {"product": "GrokBuild", "usagePercent": value}])
+    with pytest.raises(ValueError):
+        parse_grok({"config": cfg})

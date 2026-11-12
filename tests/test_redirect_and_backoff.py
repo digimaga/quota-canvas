@@ -64,8 +64,15 @@ def test_get_and_post_share_the_guarded_opener(monkeypatch):
         def __exit__(self, *args):
             return False
 
-        def read(self):
-            return b'{"ok": true}'
+        def __init__(self):
+            self._body = b'{"ok": true}'
+
+        def read(self, amt=None):
+            # 本物の HTTPResponse と同じく、amt 指定ならその分だけ返し、尽きたら b""
+            if amt is None:
+                amt = len(self._body)
+            chunk, self._body = self._body[:amt], self._body[amt:]
+            return chunk
 
     def open_request(request, timeout):
         calls.append((request, timeout))

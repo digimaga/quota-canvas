@@ -10,6 +10,7 @@ shutil.which をすべてモックし、実際の claude / security / ネット�
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import stat
@@ -119,6 +120,7 @@ def _reset_state(monkeypatch, tmp_path):
     monkeypatch.setattr(claude, "_cooldown_until", None)
     monkeypatch.setattr(claude, "_last_not_found", None)
     monkeypatch.setattr(claude, "_last_expiry", None)
+    monkeypatch.setattr(claude, "_soon_retries", 0)
     monkeypatch.setattr(claude, "_refresh_thread", None)
     monkeypatch.setattr(claude, "_refresh_started_at", None)
     monkeypatch.setattr(claude, "_child", None)
@@ -187,19 +189,30 @@ class FakeKeychain:
 
 
 class FakeProc:
-    """Popen の戻り値。script = {"exit": rc} か {"timeout": True}。"""
+    """Popen の戻り値。script = {"exit": rc} か {"timeout": True}。
+
+    timeout の子は killpg 後の wait では終わる (実機の SIGKILL 相当)。
+    {"timeout": True, "killable": False} は killpg 後も wait がタイムアウトし続け、
+    poll は生きているあいだ None を返す (終了を確認できない子)。
+    """
 
     def __init__(self, script):
         self.pid = 42424
         self.script = script
         self.returncode = script.get("exit", 0)
         self.waits = []
+        self.alive = bool(script.get("timeout"))
 
     def wait(self, timeout=None):
         self.waits.append(timeout)
-        if self.script.get("timeout") and timeout is not None:
+        if self.script.get("timeout") and (
+                not self.script.get("killable", True) or len(self.waits) == 1):
             raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
+        self.alive = False
         return self.returncode
+
+    def poll(self):
+        return None if self.alive else self.returncode
 
 
 class FakeCli:
@@ -380,6 +393,60 @@ def test_refresh_success_requires_expiry_advance(monkeypatch, clock, requested_r
     assert len(cli.popens) == 2
 
 
+def test_refresh_unadvanced_retries_soon_up_to_limit(monkeypatch, clock):
+    """exit 0 でも期限が進まないときの 5 分再試行は CLI_RETRY_SOON_MAX 回まで。
+    その次は 30 分あける (ログインが必要な状態で取得のたびに CLI を起動しない)。"""
+    for _ in range(claude.CLI_RETRY_SOON_MAX):
+        FakeKeychain(monkeypatch, [creds("tok-old", expires_in=60),
+                                   creds("tok-old", expires_in=60)])
+        FakeCli(monkeypatch, launches=({"exit": 0},))
+        assert claude._refresh_via_cli() is False
+        assert claude._cooldown_until == clock.now + claude.CLI_RETRY_SOON
+        clock.advance(claude.CLI_RETRY_SOON + 1.0)
+
+    FakeKeychain(monkeypatch, [creds("tok-old", expires_in=60),
+                               creds("tok-old", expires_in=60)])
+    FakeCli(monkeypatch, launches=({"exit": 0},))
+    assert claude._refresh_via_cli() is False
+    assert claude._cooldown_until == clock.now + claude.CLI_REFRESH_COOLDOWN
+
+    clock.advance(claude.CLI_REFRESH_COOLDOWN + 1.0)
+    FakeKeychain(monkeypatch, [creds("tok-old", expires_in=60),
+                               creds("tok-new", expires_in=3600)])
+    FakeCli(monkeypatch, launches=({"exit": 0},))
+    assert claude._refresh_via_cli() is True
+    assert claude._soon_retries == 0  # 成功で数え直し
+
+
+def _fake_keychain_payload(monkeypatch, expires_in):
+    """security.run を差し替え、expiresAt つきのダミー JSON を返す。"""
+    expires = NOW + timedelta(seconds=expires_in)
+    payload = {"claudeAiOauth": {
+        "accessToken": "tok-dummy",
+        "expiresAt": int(expires.timestamp() * 1000),
+    }}
+    monkeypatch.setattr(claude, "security", types.SimpleNamespace(
+        run=lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout=json.dumps(payload))))
+    return expires
+
+
+def test_external_relogin_resets_soon_retries(monkeypatch, clock):
+    """CLI の外で再ログインして expiresAt が前回より進んだら 5 分再試行の
+    回数を数え直す (次の期限前の未更新で即 30 分待ちにしない)。"""
+    monkeypatch.setattr(claude, "_last_expiry", NOW + timedelta(minutes=1))
+    monkeypatch.setattr(claude, "_soon_retries", claude.CLI_RETRY_SOON_MAX)
+
+    _fake_keychain_payload(monkeypatch, expires_in=3600)
+    claude._read_keychain_payload()
+    assert claude._soon_retries == 0
+
+    # 期限が進んでいない (同じ値) なら数え直さない
+    monkeypatch.setattr(claude, "_soon_retries", claude.CLI_RETRY_SOON_MAX)
+    claude._read_keychain_payload()
+    assert claude._soon_retries == claude.CLI_RETRY_SOON_MAX
+
+
 def test_refresh_nonzero_exit_fails(monkeypatch, clock):
     FakeKeychain(monkeypatch, [creds("tok-old", expires_in=60)])
     cli = FakeCli(monkeypatch, launches=({"exit": 1},))
@@ -413,9 +480,70 @@ def test_timeout_kills_process_group(monkeypatch, clock):
 
     assert claude._refresh_via_cli() is False
     assert killed == [(42424 + 1, signal.SIGKILL)]  # proc.pid のグループを kill
-    assert cli.procs[0].waits == [120.0, None]      # timeout 付き待ち → kill 後の始末待ち
-    assert claude._child is None                    # 子の記録は片付く
+    assert cli.procs[0].waits == [120.0, 5.0]      # timeout 付き待ち → kill 後の始末待ち (上限 5 秒)
+    assert claude._child is None                    # 終了を確認できたので手放す
     assert claude._cooldown_until == 1000.0 + claude.CLI_REFRESH_COOLDOWN  # 30 分
+
+
+def test_timeout_keeps_child_when_kill_group_cannot_confirm(monkeypatch, clock):
+    """killpg 後も終了を確認できない子は _child に残す。
+
+    atexit / set_token_refresh("off") の停止処理でもう一度止められるようにする。
+    """
+    FakeKeychain(monkeypatch, [creds("tok-old", expires_in=60)])
+    cli = FakeCli(monkeypatch, launches=({"timeout": True, "killable": False},))
+    monkeypatch.setattr(claude.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(claude.os, "killpg", lambda pgid, sig: None)
+
+    assert claude._refresh_via_cli() is False
+    assert claude._child is cli.procs[0]        # 止められないので手放さない
+    assert cli.procs[0].waits == [120.0, 5.0]   # kill 後の回収もタイムアウト
+    assert claude._cooldown_until == 1000.0 + claude.CLI_REFRESH_COOLDOWN
+
+
+def test_next_refresh_skips_launch_while_previous_child_alive(
+        monkeypatch, clock, caplog):
+    """前回止められなかった子が生きているあいだは、次の claude を起動しない。"""
+    FakeKeychain(monkeypatch, [creds("tok-old", expires_in=60)])
+    cli = FakeCli(monkeypatch, launches=({"timeout": True, "killable": False},))
+    monkeypatch.setattr(claude.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(claude.os, "killpg", lambda pgid, sig: None)
+
+    assert claude._refresh_via_cli() is False   # 1 回目: タイムアウトして止められない
+    assert len(cli.popens) == 1
+    clock.advance(claude.CLI_REFRESH_COOLDOWN + 1.0)
+
+    with caplog.at_level(logging.WARNING, logger="quotacanvas.claude"):
+        assert claude._refresh_via_cli() is False  # 2 回目: 止め直しにも失敗
+    assert len(cli.popens) == 1                 # 並走させない
+    assert claude._child is cli.procs[0]
+    assert any("見送る" in record.getMessage() for record in caplog.records)
+
+
+def test_off_retries_kill_until_child_is_gone(monkeypatch, clock):
+    """off の停止処理は、止められなかった子を次の機会にもう一度止める。"""
+    killed = []
+    child = RunningProc(alive=True)
+
+    def failing_kill(proc):
+        killed.append(proc)
+        return False
+
+    monkeypatch.setattr(claude, "_kill_process_group", failing_kill)
+    claude._child = child
+    claude.set_token_refresh("off")
+    assert killed == [child]
+    assert claude._child is child  # 止められなければ追跡を続ける
+
+    def successful_kill(proc):
+        killed.append(proc)
+        proc.alive = False
+        return True
+
+    monkeypatch.setattr(claude, "_kill_process_group", successful_kill)
+    claude._kill_running_child()  # atexit 相当
+    assert killed == [child, child]
+    assert claude._child is None  # 終了を確認できたので手放す
 
 
 def test_launch_env_is_restricted_and_args_match(monkeypatch, clock, tmp_path):

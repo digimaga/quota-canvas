@@ -18,7 +18,7 @@ import usb.core
 from PIL import Image
 
 from quotacanvas import cli
-from quotacanvas.config import load_config
+from quotacanvas.config import brightness_for, load_config
 from turzx import cli as tcli
 from turzx import screen as tscreen
 
@@ -148,19 +148,21 @@ def test_apply_brightness_retries_when_screen_does_not_ack(caplog):
         return False
 
     screen.brightness = brightness
+    want = brightness_for(cfg)  # 夜間帯なら night.brightness (実行時刻に依存させない)
     assert cli._apply_brightness(screen, cfg, None) is None  # 適用済みにしない
     assert cli._apply_brightness(screen, cfg, None) is None  # 次の周回で再試行する
-    assert screen.calls == [100, 100]
+    assert screen.calls == [want, want]
 
 
 def test_apply_brightness_marks_applied_on_success(caplog):
     cfg = load_config(None)
     screen = SimpleNamespace(calls=[],
                              brightness=lambda v: screen.calls.append(v) or True)
-    assert cli._apply_brightness(screen, cfg, None) == 100
+    want = brightness_for(cfg)  # 夜間帯なら night.brightness (実行時刻に依存させない)
+    assert cli._apply_brightness(screen, cfg, None) == want
     # 適用済みなら同じ周回以降は送らない
-    assert cli._apply_brightness(screen, cfg, 100) == 100
-    assert screen.calls == [100]
+    assert cli._apply_brightness(screen, cfg, want) == want
+    assert screen.calls == [want]
 
 
 def test_sleep_screen_false_when_brightness_zero_not_acked(caplog):
