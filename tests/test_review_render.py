@@ -192,3 +192,17 @@ def test_balance_card_summarizes_rows_that_do_not_fit(text_calls, stale):
                for _xy, text in rows)
     limit = y1 - (38 if stale else 20)
     assert all(xy[1] <= limit for xy, _text in rows)
+
+
+def test_elapsed_line_without_reset_tolerates_non_finite_fraction():
+    """リセット時刻が不明な窓で elapsed_fraction が NaN / inf でも落ちず、経過 0 として描く。"""
+    from types import SimpleNamespace
+    from datetime import datetime, timedelta, timezone
+    from quotacanvas import render
+
+    now = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+    win = SimpleNamespace(resets_at=None, length=timedelta(days=7))
+    zero = render._elapsed_line(SimpleNamespace(window=win, elapsed_fraction=0.0), now)
+    for frac in (float("nan"), float("inf")):
+        mp = SimpleNamespace(window=win, elapsed_fraction=frac)
+        assert render._elapsed_line(mp, now) == zero

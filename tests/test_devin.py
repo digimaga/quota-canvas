@@ -99,6 +99,20 @@ def test_parse_devin_used_percent_is_100_minus_remaining():
     assert all(w.resets_at is None for w in windows)
 
 
+def test_parse_devin_accepts_numeric_string_percent():
+    # 同じ API の int64 系フィールドと同じく、残り % が数字の文字列で来ても読む
+    data = _status({"dailyQuotaRemainingPercent": "40",
+                    "weeklyQuotaRemainingPercent": "75.5"})
+    _, windows, _ = devin.parse_devin(data, NOW)
+    assert [w.used_percent for w in windows] == pytest.approx([60.0, 24.5])
+
+
+@pytest.mark.parametrize("bad", ["abc", "", "nan", "inf", True])
+def test_parse_devin_rejects_non_numeric_percent(bad):
+    with pytest.raises(ValueError):
+        devin.parse_devin(_status({"dailyQuotaRemainingPercent": bad}), NOW)
+
+
 def test_parse_devin_omitted_zero_with_reset_is_100_percent():
     # proto3 はゼロを省略する: 残り % が無くリセットだけある窓は使用率 100%
     data = _status({"dailyQuotaResetAtUnix": 1793779200})
@@ -199,7 +213,7 @@ def test_parse_devin_percent_is_clamped(remaining, expected_used):
     assert windows[0].used_percent == pytest.approx(expected_used)
 
 
-@pytest.mark.parametrize("remaining", ["40", True, float("nan"), float("inf")])
+@pytest.mark.parametrize("remaining", ["abc", True, float("nan"), float("inf")])
 def test_parse_devin_invalid_percent_is_error(remaining):
     data = _status({"dailyQuotaRemainingPercent": remaining})
     with pytest.raises(ValueError):

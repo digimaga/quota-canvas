@@ -583,7 +583,9 @@ def _elapsed_line(mp, now, total=True):
     if win.resets_at is not None:
         elapsed = min(max(now - win.starts_at, timedelta(0)), win.length)
     else:
-        elapsed = win.length * max(0.0, mp.elapsed_fraction)  # リセット不明: 従来どおり
+        # リセット不明: 従来どおり。非有限 (NaN / inf) なら経過 0 として描く
+        fraction = mp.elapsed_fraction if _finite(mp.elapsed_fraction) else 0.0
+        elapsed = win.length * max(0.0, fraction)
     e = _fmt_span(elapsed)
     if not total:
         return t("render.elapsed.short", e=e)

@@ -21,7 +21,6 @@ QUOTA_CANVAS_DEVIN_FREE_LIMIT_FILE で差し替えられる。
 from __future__ import annotations
 
 import json
-import math
 import os
 import sqlite3
 import tomllib
@@ -230,12 +229,14 @@ def with_free_limit(usage: ProviderUsage, now: datetime) -> ProviderUsage:
 # --------------------------------------------------------------- parser
 
 def _remaining_percent(value: Any) -> float:
-    """残り % を 0〜100 に丸める。bool・非数値・非有限は ValueError。"""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("invalid percent")
-    percent = float(value)
-    if not math.isfinite(percent):
-        raise ValueError("invalid percent")
+    """残り % を 0〜100 に丸める。bool・非数値・非有限は ValueError。
+
+    同じ API の int64 系フィールド (リセット時刻・残高) は JSON で数字の文字列に
+    なるので、残り % も "42" のような数字の文字列なら数値として受け付ける。"""
+    try:
+        percent = finite_number(value)
+    except (TypeError, ValueError):
+        raise ValueError("invalid percent") from None
     return min(100.0, max(0.0, percent))
 
 
