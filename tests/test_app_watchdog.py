@@ -24,6 +24,7 @@ def _watchdog_env(tmp_path, monkeypatch):
     """状態ファイル・マークを tmp_path に向け、macOS として振る舞わせる。"""
     monkeypatch.setattr(app_watchdog, "APP_STATE_PATH", tmp_path / "app-state.json")
     monkeypatch.setattr(app_watchdog, "RELAUNCH_MARK_PATH", tmp_path / "app-relaunch-at")
+    monkeypatch.setattr(app_watchdog, "_last_attempt_at", None)
     monkeypatch.setattr(sys, "platform", "darwin")
     return tmp_path
 
@@ -131,6 +132,40 @@ def test_relaunch_rate_limited(tmp_path, monkeypatch, calls):
     assert _open_calls(calls) == [["open", "-g", str(bundle)]]
     mark = tmp_path / "app-relaunch-at"
     assert mark.exists()
+
+
+def test_relaunch_rate_limited_when_marker_cannot_be_written(tmp_path, monkeypatch, calls):
+    """マークを書けなくても、プロセス内の最終試行時刻で 300 秒の間隔を守る。"""
+    bundle = tmp_path / "QuotaCanvas.app"
+    bundle.mkdir()
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(app_watchdog, "RELAUNCH_MARK_PATH",
+                        blocker / "app-relaunch-at")
+    _write_state(tmp_path, bundle_path=str(bundle))
+    monkeypatch.setattr(os, "kill", _dead_kill)
+    app_watchdog.check()
+    app_watchdog.check()  # マークは無いが、直前の試行から 300 秒未満なので試みない
+    assert _open_calls(calls) == [["open", "-g", str(bundle)]]
+    assert not (blocker / "app-relaunch-at").exists()
+
+
+def test_marker_failure_retries_after_interval(tmp_path, monkeypatch, calls):
+    """マークが書けなくても、間隔が過ぎれば起動し直しをやめない。"""
+    bundle = tmp_path / "QuotaCanvas.app"
+    bundle.mkdir()
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(app_watchdog, "RELAUNCH_MARK_PATH",
+                        blocker / "app-relaunch-at")
+    _write_state(tmp_path, bundle_path=str(bundle))
+    monkeypatch.setattr(os, "kill", _dead_kill)
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(app_watchdog.time, "monotonic", lambda: clock["now"])
+    app_watchdog.check()
+    clock["now"] += app_watchdog.RELAUNCH_MIN_GAP
+    app_watchdog.check()
+    assert len(_open_calls(calls)) == 2
 
 
 def test_bad_bundle_path_does_not_relaunch(tmp_path, monkeypatch, calls):

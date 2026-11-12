@@ -38,6 +38,65 @@ def test_discovery_order_and_limited_env(monkeypatch, tmp_path):
     assert "GROK_HOME" not in process.limited_env()
 
 
+def test_kill_group_ignores_finished_child_and_logs_other_failures(monkeypatch, caplog):
+    waited = []
+
+    class Proc:
+        pid = 4242
+
+        def wait(self, timeout=None):
+            waited.append(timeout)
+            return 0
+
+    monkeypatch.setattr(process.os, "getpgid", lambda pid: pid)
+
+    def gone(pgid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(process.os, "killpg", gone)
+    with caplog.at_level("WARNING", logger="quotacanvas"):
+        assert process.kill_group(Proc()) is True  # wait で終了を確認できた
+    assert waited == [process.KILL_WAIT_TIMEOUT]
+    assert caplog.text == ""  # 終了済み (ESRCH) は警告しない
+
+    def denied(pgid, sig):
+        raise PermissionError("dummy permission denied")
+
+    monkeypatch.setattr(process.os, "killpg", denied)
+    with caplog.at_level("WARNING", logger="quotacanvas"):
+        assert process.kill_group(Proc()) is True  # 終了自体は確認できた
+    assert "dummy permission denied" in caplog.text  # 失敗理由を残す
+    assert waited == [process.KILL_WAIT_TIMEOUT, process.KILL_WAIT_TIMEOUT]
+
+
+def test_kill_group_wait_is_bounded(monkeypatch, caplog):
+    class HangingProc:
+        pid = 4343
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("dummy", timeout)
+
+    monkeypatch.setattr(process.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(process.os, "killpg", lambda pgid, sig: None)
+    with caplog.at_level("WARNING", logger="quotacanvas"):
+        assert process.kill_group(HangingProc(), wait_timeout=0.1) is False
+    assert "待っても終了しません" in caplog.text
+
+
+def test_kill_group_reports_unconfirmed_wait_error(monkeypatch, caplog):
+    class BrokenProc:
+        pid = 4444
+
+        def wait(self, timeout=None):
+            raise OSError("dummy wait failed")
+
+    monkeypatch.setattr(process.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(process.os, "killpg", lambda pgid, sig: None)
+    with caplog.at_level("WARNING", logger="quotacanvas"):
+        assert process.kill_group(BrokenProc()) is False
+    assert "dummy wait failed" in caplog.text
+
+
 def test_security_boundary_preserves_provider_errors(monkeypatch):
     calls = []
     def run(args, **kwargs):

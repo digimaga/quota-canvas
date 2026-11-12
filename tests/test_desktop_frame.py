@@ -80,6 +80,25 @@ def test_request_expiry_and_removal(tmp_path, monkeypatch, age, active):
     assert calls == ([1.25] if active else [])
 
 
+@pytest.mark.parametrize("age, active", [(120, True), (121, False), (3600, False)])
+def test_request_from_the_future_is_rejected(tmp_path, monkeypatch, age, active):
+    """時計ずれの許容誤差 (2 分) を超える未来の mtime は無効にする。"""
+    now = 2_000_000_000
+    request = tmp_path / "desktop-request.json"
+    destination = tmp_path / "desktop.png"
+    request.write_text('{"pixel_width": 2400}')
+    os.utime(request, (now + age, now + age))
+    monkeypatch.setattr(desktop_frame.time, "time", lambda: now)
+    destination.write_bytes(b"old")
+    calls = []
+    def draw(scale):
+        calls.append(scale)
+        return Image.new("RGB", (1, 1))
+    desktop_frame.update(draw, tmp_path)
+    assert destination.exists() is active
+    assert calls == ([1.25] if active else [])
+
+
 def test_bitmap_font_without_variant_is_returned_unchanged():
     font = ImageFont.ImageFont()
     assert not hasattr(font, "font_variant")

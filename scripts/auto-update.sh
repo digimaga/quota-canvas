@@ -68,20 +68,44 @@ reinstall_package() {
     return 1
 }
 
+# Restart the agents that are loaded on this Mac. Returns 1 when a kickstart
+# fails or launchctl print fails for a reason other than "not loaded" (the
+# restart may not have happened), so the caller can retry on the next run; an
+# agent that is not loaded (launchctl print cannot find it) is skipped.
 restart_agents() {
+    local failed=0 print_out="" print_rc=0
     for label in "${AGENTS[@]}"; do
-        if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
-            launchctl kickstart -k "gui/$(id -u)/$label"
-            log "restarted $label"
+        if print_out="$(launchctl print "gui/$(id -u)/$label" 2>&1)"; then
+            if launchctl kickstart -k "gui/$(id -u)/$label"; then
+                log "restarted $label"
+            else
+                log "warn: restart failed (kickstart $label)"
+                failed=1
+            fi
+        else
+            print_rc=$?
+            if [[ "$print_rc" == 113 ]] || [[ "$print_out" == *"Could not find service"* ]]; then
+                log "skip restart: $label is not loaded"
+            else
+                log "warn: launchctl print $label failed (rc=$print_rc): ${print_out%%$'\n'*}"
+                failed=1  # 再起動できたか分からないので成功にしない
+            fi
         fi
     done
+    return "$failed"
 }
 
 if [[ "$applied" == "$remote_head" ]]; then
     # Already applied. Retry only a reinstall that pyproject.toml needed but failed.
+    # Keep the pending marker until the restart succeeds too: a failed kickstart
+    # would otherwise be forgotten (SHA matches and no pending marker next run).
     if [[ -f "$PENDING_FILE" ]] && reinstall_package; then
-        rm -f "$PENDING_FILE"
-        restart_agents
+        if restart_agents; then
+            rm -f "$PENDING_FILE"
+        else
+            log "warn: keeping pending marker; retrying reinstall and restart next run"
+            exit 1
+        fi
     fi
     exit 0
 fi

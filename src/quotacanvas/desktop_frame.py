@@ -11,12 +11,19 @@ from .status import FRAME_PATH, write_frame
 
 log = logging.getLogger(__name__)
 
+#: 要求ファイルの有効期間 (秒)。
+REQUEST_MAX_AGE = 24 * 60 * 60
+
+#: 時計ずれとして許す未来方向の mtime 誤差 (秒)。
+REQUEST_FUTURE_TOLERANCE = 2 * 60
+
 
 def requested_width(path: Path):
     """Return a bounded width, or None when no valid request is available."""
     try:
         with path.open(encoding="utf-8") as handle:
-            if time.time() - os.fstat(handle.fileno()).st_mtime > 24 * 60 * 60:
+            age = time.time() - os.fstat(handle.fileno()).st_mtime
+            if age > REQUEST_MAX_AGE or age < -REQUEST_FUTURE_TOLERANCE:
                 return None
             request = json.load(handle)
     except FileNotFoundError:

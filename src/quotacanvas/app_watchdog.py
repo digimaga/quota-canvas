@@ -6,7 +6,8 @@
 このファイルを読み、user_quit=false なのに pid のプロセスが居ない
 (または pid が別プロセスに再利用されている) ときだけ `open -g` で起動し直す。
 前回試みた時刻は app-relaunch-at の mtime に残し、常駐ループが再起動しても
-連打しないようにする。macOS 以外では何もしない。失敗してもエンジンは止めない。
+連打しないようにする。マークを書けない環境でも間隔を守れるよう、プロセス内にも
+最終試行時刻を持つ。macOS 以外では何もしない。失敗してもエンジンは止めない。
 """
 
 from __future__ import annotations
@@ -35,6 +36,9 @@ RELAUNCH_MIN_GAP = 300.0
 
 #: pid 再利用対策: 実行ファイル名がこれでなければアプリのプロセスとみなさない。
 APP_COMM_NAME = "QuotaCanvasApp"
+
+#: プロセス内の最終試行時刻 (time.monotonic)。マークに書けなくても連打を防ぐ。
+_last_attempt_at: Optional[float] = None
 
 
 def _app_process_alive(pid: int) -> bool:
@@ -80,6 +84,7 @@ def check() -> None:
 
 
 def _check() -> None:
+    global _last_attempt_at
     try:
         state = json.loads(APP_STATE_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -98,11 +103,16 @@ def _check() -> None:
     last = _last_attempt()
     if last is not None and time.time() - last < RELAUNCH_MIN_GAP:
         return
+    # マークを書けない環境では mtime が頼れないので、プロセス内の記録でも間隔を守る。
+    now = time.monotonic()
+    if _last_attempt_at is not None and now - _last_attempt_at < RELAUNCH_MIN_GAP:
+        return
+    _last_attempt_at = now
     try:
         RELAUNCH_MARK_PATH.parent.mkdir(parents=True, exist_ok=True)
         RELAUNCH_MARK_PATH.touch()  # 失敗した試行も記録し、連打を防ぐ
     except OSError:
-        pass
+        pass  # 書けなくても _last_attempt_at があるので起動し直しは続けられる
     try:
         proc = subprocess.run(["open", "-g", bundle_path],
                               capture_output=True, text=True, timeout=30)
