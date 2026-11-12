@@ -17,6 +17,8 @@
   窓の長さで重み付けするので、短い 5 時間枠が週間より常に勝つことはない)。
   同じサービスの短い窓 (1 日未満) の残りが 20% 未満なら score は半分。
 - リセット権 (Codex) が 24 時間以内に失効するなら score を 1.5 倍にして理由に添える
+- Provider.recommendable が False のサービス (Muse などコーディングに使えない
+  もの) は候補に入れない (ranking にも載せない)
 
 文言は locales/<ja|en>/recommend.toml。時刻の書式は render のものを流用する。
 """
@@ -31,6 +33,7 @@ from .i18n import t
 from .config import sleep_for, wants_bedtime  # pacing.sleep → provider ごとの適用判定
 from .models import Pace, PaceStatus, ProviderUsage, Window
 from .pacing import compute_pace
+from .providers import REGISTRY
 from .render import _fmt_num, _fmt_span
 
 __all__ = ["Recommendation", "recommend"]
@@ -132,6 +135,9 @@ def recommend(usages: Sequence[ProviderUsage], history, now: datetime,
     for usage in usages:
         if usage.error:
             continue
+        provider = REGISTRY.get(usage.provider)
+        if provider is not None and not provider.recommendable:
+            continue  # コーディングに使えないサービスは「〜を使う」に出さない
         windows = [w for w in usage.windows if w.part_of is None]
         if not windows:
             continue

@@ -55,6 +55,9 @@ class Provider:
     detect: Callable[[], Detection]             # 認証情報の有無 (通信しない)
     fetch: Callable[[datetime], ProviderUsage]  # 利用枠の取得
     display_name: str = ""                      # 例 "GLM (Z.ai)"。空なら name
+    # 「今使う先」(recommend) の候補にするか。コーディングの作業に使えない
+    # サービス (Muse など) は False にして、ヘッダの「〜を使う」に出さない。
+    recommendable: bool = True
 
     @property
     def shown_name(self) -> str:

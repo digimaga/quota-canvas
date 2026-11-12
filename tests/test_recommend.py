@@ -342,3 +342,27 @@ def test_short_window_past_reset_keeps_service_usable(tmp_path):
     assert rec is not None
     assert rec.provider == "claude"
     assert rec.ranking[0]["usable"] is True
+
+
+def test_non_coding_service_is_never_recommended(tmp_path):
+    # Muse はコーディングに使えないので、一番余っていても「〜を使う」に出さない
+    muse = _usage("muse", "Muse", [_win("muse", "weekly", 0.0, timedelta(hours=2), timedelta(days=7), "週間")])
+    claude = _usage("claude", "Claude Max",
+                    [_win("claude", "weekly", 30.0, timedelta(days=4), timedelta(days=7), "週間")])
+    rec = _rec([muse, claude], tmp_path)
+    assert rec is not None
+    assert rec.provider == "claude"
+    assert [e["provider"] for e in rec.ranking] == ["claude"]
+
+
+def test_only_non_coding_service_recommends_nothing(tmp_path):
+    muse = _usage("muse", "Muse", [_win("muse", "weekly", 0.0, timedelta(hours=2), timedelta(days=7), "週間")])
+    assert _rec([muse], tmp_path) is None
+
+
+def test_provider_missing_from_registry_stays_a_candidate(tmp_path):
+    # REGISTRY に無い provider id (local.* など) は従来どおり候補に残る
+    other = _usage("local.foo", "Local", [_win("local.foo", "weekly", 10.0, timedelta(days=4), timedelta(days=7), "週間")])
+    rec = _rec([other], tmp_path)
+    assert rec is not None
+    assert rec.provider == "local.foo"

@@ -122,7 +122,8 @@ The app finds the CLI at the path stored in its settings (default
 
 - `recommendation` — optional top-level; present when at least one service is usable
   ("which service to use now", F1). `text` is the one-line advice shown in the header;
-  `ranking` lists every non-error service, best first (`usable: false` entries are kept
+  `ranking` lists every non-error service except those whose provider sets
+  `recommendable = False` (Muse, which is not for coding), best first (`usable: false` entries are kept
   for context but are never recommended; their `reason` then says why — e.g. 「リセット待ち」
   when the representative window is past its reset time, 「取得失敗中」 while the engine is showing the
   provider's last good data). A service is not usable when any of its independent windows

@@ -548,4 +548,6 @@ def fetch(now: datetime) -> ProviderUsage:
 PROVIDER = Provider(
     id="muse", name="Muse", needs_key=False, detect=detect, fetch=fetch,
     display_name="Muse (Meta)",
+    # チャット用でコーディングの作業には使えないので、「今使う先」には出さない
+    recommendable=False,
 )
