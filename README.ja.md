@@ -26,7 +26,7 @@ Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi / OpenCode G
 | Codex | 利用枠とリセット権 | ログイン済み Codex CLI の認証情報 |
 | GLM | トークン利用枠 | キーチェーンの API キーまたは `ZAI_API_KEY` |
 | Grok | 利用枠と製品別内訳 | ログイン済み Grok CLI の認証情報 |
-| Gemini | Antigravity の週間・5 時間枠（Argon、Claude / GPT を含む） | Antigravity CLI（`agy`）のログイン |
+| Gemini | Antigravity の週間・5 時間枠（モデル別の週間枠 Argon、プランにあれば Carbon・Hydrogen、Claude / GPT を含む） | Antigravity CLI（`agy`）のログイン |
 | OpenRouter | API キーの利用枠または利用額 / 上限残額、取得できる場合はアカウントのクレジット残高 | キーチェーンの API キーまたは `OPENROUTER_API_KEY` |
 | DeepSeek | アカウント残高 | キーチェーンの API キーまたは `DEEPSEEK_API_KEY` |
 | Kimi | グローバル版 USD アカウント残高 | キーチェーンの Moonshot API キーまたは `MOONSHOT_API_KEY` |
@@ -152,7 +152,7 @@ Screen().show(pil_image)   # 1920×462 の横長画像
 - Devin はキーチェーン `quota-canvas/devin`（`set-key devin` で保存）を優先し、次に Devin CLI のログイン `~/.local/share/devin/credentials.toml` の `windsurf_api_key`（`api_server_url` が codeium.com・windsurf.com・devin.ai とそのサブドメインの `https://` のときだけ、そのホストを使う）、次に Devin デスクトップアプリの `state.vscdb` の `windsurfAuthStatus` エントリの `apiKey` を読む。取得できる窓は `devin:1d`（日次）と `devin:weekly`（7 日）。`hideDailyQuota` / `hideWeeklyQuota` が true なら対応する窓を出さず、`overageBalanceMicros` があれば追加利用残高（USD）として表示する。401/403 はキーが無効であることを示す。キーが Devin のアカウントのものか確認する。
 - Muse はメニューバーアプリが必須。エンジンから muse.ai の `fetchSubscriptionAction` への POST は 403 で拒否されるため、アプリが専用 WebKit セッション（設定 → サービス → Muse の「muse.ai にログイン」）で同じ fetch を 5 分ごとに実行し、応答を `quota-canvas muse-ingest` に渡して `muse-usage.json` に書く（本文・Cookie は残さない）。fetch はそのファイルを読むだけ。ファイル無し・`logged_out`・20 分超で取得失敗。Action ID は `quota-canvas muse-action-id`（キャッシュ。POST が 401・403・429 以外の 4xx（404・409 など）なら `--refresh` で 1 回取り直す）。窓は `muse:weekly`（7 日）。追加トークンは残高行（`追加のトークン 残り NN%`、`currency` は `TOKENS`）。
 - OpenDesign は公式 CLI のログインを読む。環境変数 `VELA_CONTROL_KEY` が最優先（apiUrl は `VELA_API_URL` か既定の `https://amr-api.open-design.ai`）、次に `{AMR_HOME または ~/.amr}/config.json` の `controlKey`（プロファイルは `AMR_PROFILE`、無ければ `"prod"`、それも無ければ唯一のエントリ）。CLI は `npm install -g @powerformer/vela-cli` で入れて `vela login` する。apiUrl は https のみ受け付ける。取得できる窓は `opendesign:5h`（5 時間）と `opendesign:weekly`（7 日）。`wallet.balanceUsd` があれば残高（USD）として表示する。401/403 はログイン切れなので `vela login` でログインし直す。
-- Gemini は Antigravity CLI の `agy -p "/usage" --output-format json` から取得する。モデルを呼ばず枠を消費せず、トークンも agy が更新する。`providers.gemini.token_refresh` は旧設定との互換用で現在は使われない。窓は `gemini:weekly`、Gemini 4 Argon の `gemini:argon`、`gemini:5h`、Antigravity 経由の Claude / GPT の `gemini:claude` と `gemini:claude_5h`。プラン名はキーチェーン service `gemini` / account `antigravity` のトークンで取得できれば表示し、取れなければ「Gemini」とする。
+- Gemini は Antigravity CLI の `agy -p "/usage" --output-format json` から取得する。モデルを呼ばず枠を消費せず、トークンも agy が更新する。`providers.gemini.token_refresh` は旧設定との互換用で現在は使われない。窓は `gemini:weekly`、`gemini:5h`、モデル別の週間枠 `gemini:argon` / `gemini:carbon` / `gemini:hydrogen`（プランに含まれ `agy` が返したモデルだけ。Carbon は Ultra 専用。`gemini-<モデル名>-wtu-weekly` の形のバケットは `gemini:<モデル名>` になる）、Antigravity 経由の Claude / GPT の `gemini:claude` と `gemini:claude_5h`。パネルに出るのは主枠＋サブ窓 3 行までなので、窓が多い（Ultra など）ときはレイアウト設定で表示する窓を選ぶ。プラン名はキーチェーン service `gemini` / account `antigravity` のトークンで取得できれば表示し、取れなければ「Gemini」とする。
 
 #### 履歴・ペース・推薦
 

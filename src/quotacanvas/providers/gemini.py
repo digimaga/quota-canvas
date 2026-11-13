@@ -5,7 +5,8 @@
 グループ名ではなく bucket の id で識別する (名前は将来変わりうる。未知の id
 は無視):
 - gemini-weekly / gemini-5h: Gemini 本体の週間 / 5 時間枠
-- gemini-argon-wtu-weekly: Gemini 4 Argon の週間枠
+- gemini-<モデル名>-wtu-weekly: Gemini 4 の各モデル (Argon / Carbon / Hydrogen ...)
+  の週間枠。Carbon・Hydrogen は契約 (Ultra など) によって返らないことがある
 - 3p-weekly / 3p-5h: Antigravity 経由で使える Claude / GPT の週間 / 5 時間枠
 トークンの更新は agy 自身が行う (ここではリフレッシュしない)。
 
@@ -25,6 +26,7 @@ import atexit
 import base64
 import json
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -66,13 +68,27 @@ AGY_PATH = process.AGY_PATH
 # (bucket id, 窓 key, ラベルの文言キー, 固定ラベル, 窓の長さ秒)。
 # 文言キー (t() で解決) か固定ラベルのどちらかを使う。この並びがカードの
 # 表示順で、メイン窓は weekly (最長・週間を優先する描画側の規則で自動選択)。
-_BUCKETS: Tuple[Tuple[str, str, Optional[str], Optional[str], int], ...] = (
+_BUCKETS_BEFORE_MODELS: Tuple[Tuple[str, str, Optional[str], Optional[str], int], ...] = (
     ("gemini-weekly", "weekly", "providers.window.weekly", None, 7 * 86400),
-    ("gemini-argon-wtu-weekly", "argon", None, "Argon", 7 * 86400),
     ("gemini-5h", "5h", "providers.window.five_hours", None, 5 * 3600),
+)
+_BUCKETS_AFTER_MODELS: Tuple[Tuple[str, str, Optional[str], Optional[str], int], ...] = (
     ("3p-weekly", "claude", "providers.gemini.claude_window", None, 7 * 86400),
     ("3p-5h", "claude_5h", "providers.gemini.claude_5h_window", None, 5 * 3600),
 )
+
+# モデル別の週間枠 (Gemini 4 Argon / Carbon / Hydrogen ...)。bucket id は
+# "gemini-<モデル名>-wtu-weekly" の形 (Argon の実応答で確認済み)。モデルが
+# 増えても id が同じ形なら、コードを変えずに窓として拾えるよう、名前は決め打ちに
+# しない。並びは下の既知のモデル順、未知のモデルはその後ろ (応答に出た順)。
+# 窓 key = モデル名 (小文字)、ラベル = 先頭だけ大文字 ("Carbon" など)。
+# カードの表示順は 週間・5 時間より後・Claude / GPT より前 (サブ窓は 3 行までなので、
+# 5 時間枠を押し出さないようにする)。
+_MODEL_BUCKET_RE = re.compile(r"^gemini-([a-z][a-z0-9]*)-wtu-weekly$")
+_MODEL_ORDER: Tuple[str, ...] = ("argon", "carbon", "hydrogen")
+# 窓 key が他の窓と衝突しないための予約 (モデル名がこれと同じなら無視する)。
+_RESERVED_KEYS = frozenset(
+    key for _bid, key, _m, _l, _s in _BUCKETS_BEFORE_MODELS + _BUCKETS_AFTER_MODELS)
 
 
 # ------------------------------------------------------------- compat 設定
@@ -272,8 +288,20 @@ def parse_usage(payload: Dict[str, Any]) -> List[Window]:
             if isinstance(bid, str) and bid not in buckets:
                 buckets[bid] = bucket
 
+    # モデル別の週間枠 (id が gemini-<名前>-wtu-weekly の形のもの) を集める。
+    models: List[Tuple[str, str]] = []  # (モデル名, bucket id)
+    for bid in buckets:
+        match = _MODEL_BUCKET_RE.match(bid)
+        if match and match.group(1) not in _RESERVED_KEYS:
+            models.append((match.group(1), bid))
+    models.sort(key=lambda m: (_MODEL_ORDER.index(m[0])
+                               if m[0] in _MODEL_ORDER else len(_MODEL_ORDER)))
+    model_buckets = tuple((bid, name, None, name.capitalize(), 7 * 86400)
+                          for name, bid in models)
+
     windows: List[Window] = []
-    for bid, key, msg_key, literal, seconds in _BUCKETS:
+    for bid, key, msg_key, literal, seconds in (
+            _BUCKETS_BEFORE_MODELS + model_buckets + _BUCKETS_AFTER_MODELS):
         bucket = buckets.get(bid)
         if bucket is None:
             continue  # 未知の id ではなく、この環境では出てこないバケット
@@ -333,7 +361,7 @@ def _plan_name(now: datetime) -> Optional[str]:
 
 
 def fetch(now: datetime) -> ProviderUsage:
-    """agy の /usage から 5 窓を取る。プラン名の失敗は名前のフォールバックだけ。"""
+    """agy の /usage から枠 (週間・5 時間・モデル別・Claude / GPT) を取る。プラン名の失敗は名前のフォールバックだけ。"""
     payload = _agy_usage()
     windows = parse_usage(payload)
     plan = _plan_name(now)

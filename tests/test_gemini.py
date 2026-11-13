@@ -348,9 +348,9 @@ def test_agy_usage_oserror(monkeypatch, fake_agy):
 def test_parse_usage_five_windows():
     windows = gemini.parse_usage({"groups": USAGE_GROUPS})
     assert [w.id for w in windows] == [
-        "gemini:weekly", "gemini:argon", "gemini:5h", "gemini:claude",
+        "gemini:weekly", "gemini:5h", "gemini:argon", "gemini:claude",
         "gemini:claude_5h"]
-    weekly, argon, five, claude, claude5 = windows
+    weekly, five, argon, claude, claude5 = windows
     # メイン窓: 他プロバイダと同じ「週間」
     assert (weekly.key, weekly.label) == ("weekly", "週間")
     assert weekly.used_percent == pytest.approx((1.0 - 0.99) * 100.0)
@@ -379,6 +379,70 @@ def test_parse_usage_five_windows():
     assert all(w.part_of is None for w in windows)
 
 
+def _model_bucket(model, remaining, reset="2026-11-01T08:44:04Z"):
+    return {"id": "gemini-%s-wtu-weekly" % model,
+            "name": "Gemini 4 %s Weekly Limit" % model.capitalize(),
+            "window": "weekly", "remaining_fraction": remaining,
+            "reset_time": reset}
+
+
+def test_parse_usage_model_windows_carbon_hydrogen():
+    """Ultra で増えた Carbon / Hydrogen も、Argon と同じ形の id で窓になる。
+    並びは 週間・5時間・Argon・Carbon・Hydrogen・Claude…。"""
+    groups = list(USAGE_GROUPS) + [
+        {"name": "Gemini 4 Hydrogen", "buckets": [_model_bucket("hydrogen", 0.6)]},
+        {"name": "Gemini 4 Carbon", "buckets": [_model_bucket("carbon", 0.25)]},
+    ]
+    windows = gemini.parse_usage({"groups": groups})
+    assert [w.id for w in windows] == [
+        "gemini:weekly", "gemini:5h", "gemini:argon", "gemini:carbon",
+        "gemini:hydrogen", "gemini:claude", "gemini:claude_5h"]
+    carbon = windows[3]
+    assert (carbon.key, carbon.label) == ("carbon", "Carbon")
+    assert carbon.used_percent == pytest.approx(75.0)
+    assert carbon.length == timedelta(days=7)
+    assert carbon.resets_at == RESET_ARGON
+    assert (windows[4].key, windows[4].label) == ("hydrogen", "Hydrogen")
+    assert windows[4].used_percent == pytest.approx(40.0)
+    assert all(w.part_of is None for w in windows)
+
+
+def test_parse_usage_pro_without_carbon():
+    """Pro は Carbon の枠が返らない。出ない窓は作らず Hydrogen だけ増える。"""
+    groups = list(USAGE_GROUPS) + [
+        {"name": "Gemini 4 Hydrogen", "buckets": [_model_bucket("hydrogen", 0.9)]}]
+    windows = gemini.parse_usage({"groups": groups})
+    assert [w.id for w in windows] == [
+        "gemini:weekly", "gemini:5h", "gemini:argon", "gemini:hydrogen",
+        "gemini:claude", "gemini:claude_5h"]
+
+
+def test_parse_usage_future_model_and_reserved_names():
+    """未知の新モデルも id が同じ形なら拾う (既知の後ろ)。窓 key が既存の窓と
+    衝突する名前 (weekly など) は無視する。"""
+    groups = [{"name": "G", "buckets": [
+        _model_bucket("zinc", 0.5), _model_bucket("carbon", 0.5),
+        _model_bucket("weekly", 0.5), _model_bucket("claude", 0.5),
+        {"id": "gemini-x-wtu-5h", "remaining_fraction": 0.5},   # 形が違う
+    ]}]
+    windows = gemini.parse_usage({"groups": groups})
+    assert [w.id for w in windows] == ["gemini:carbon", "gemini:zinc"]
+    assert [w.label for w in windows] == ["Carbon", "Zinc"]
+
+
+def test_parse_usage_model_windows_keep_response_order_and_skip_bad():
+    """未知モデルが複数なら応答に出た順。値が数値でないモデル枠・大文字や
+    ハイフンを含む名前は窓にしない。"""
+    groups = [{"name": "G", "buckets": [
+        _model_bucket("zinc", 0.5), _model_bucket("neon", 0.4),
+        {"id": "gemini-hydrogen-wtu-weekly", "remaining_fraction": "0.5"},
+        {"id": "gemini-Flash-Lite-wtu-weekly", "remaining_fraction": 0.5},
+        {"id": "gemini-flash-lite-wtu-weekly", "remaining_fraction": 0.5},
+    ]}]
+    windows = gemini.parse_usage({"groups": groups})
+    assert [w.id for w in windows] == ["gemini:zinc", "gemini:neon"]
+
+
 def test_parse_usage_identifies_by_bucket_id():
     """グループ名・バケット名・並びが変わっても id で集められる。"""
     shuffled = list(reversed(USAGE_GROUPS))
@@ -386,7 +450,7 @@ def test_parse_usage_identifies_by_bucket_id():
                for i, g in enumerate(shuffled)]
     windows = gemini.parse_usage({"groups": renamed})
     assert [w.id for w in windows] == [
-        "gemini:weekly", "gemini:argon", "gemini:5h", "gemini:claude",
+        "gemini:weekly", "gemini:5h", "gemini:argon", "gemini:claude",
         "gemini:claude_5h"]
 
 
@@ -430,7 +494,7 @@ def test_parse_usage_labels_english():
     try:
         windows = gemini.parse_usage({"groups": USAGE_GROUPS})
         assert [w.label for w in windows] == [
-            "Weekly", "Argon", "5h", "Claude", "Claude 5h"]
+            "Weekly", "5h", "Argon", "Claude", "Claude 5h"]
     finally:
         i18n.set_language("ja")
 
@@ -448,7 +512,7 @@ def test_fetch_success(real_keychain, fake_agy, monkeypatch):
     assert usage.error is None
     assert usage.fetched_at == NOW
     assert [w.id for w in usage.windows] == [
-        "gemini:weekly", "gemini:argon", "gemini:5h", "gemini:claude",
+        "gemini:weekly", "gemini:5h", "gemini:argon", "gemini:claude",
         "gemini:claude_5h"]
     # agy は 1 回だけ (モデルは呼ばない)
     assert len(fake_agy.calls) == 1
@@ -583,8 +647,8 @@ def test_detect_all_reports_gemini(real_keychain, fake_agy, monkeypatch):
     assert entry["plan"] == "Google AI Pro"
     assert entry["windows"] == [
         {"key": "weekly", "label": "週間"},
-        {"key": "argon", "label": "Argon"},
         {"key": "5h", "label": "5時間"},
+        {"key": "argon", "label": "Argon"},
         {"key": "claude", "label": "Claude"},
         {"key": "claude_5h", "label": "Claude 5時間"},
     ]
