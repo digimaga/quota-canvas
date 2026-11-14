@@ -394,10 +394,14 @@ def _write_app_files(cfg: Config, cards: List[Card], usages: List[ProviderUsage]
     if cfg.routing.enabled:
         try:
             burn = gate.load_burn(gate.BURN_PATH, now)
-            off = gate.load_off(gate.OFF_PATH)
         except Exception as exc:  # routing の失敗で常駐 run は落とさない
             log.warning("routing: %s", exc)
             burn = None
+        try:
+            off = gate.load_off(gate.OFF_PATH)
+        except Exception as exc:
+            log.warning("routing off: %s", exc)
+            off = None
         try:
             with STATUS_PATH.open(encoding="utf-8") as handle:
                 old_status = json.load(handle)
@@ -426,6 +430,18 @@ def _write_app_files(cfg: Config, cards: List[Card], usages: List[ProviderUsage]
                 log.warning("desktop.png を更新できません: %s", exc)
 
 
+def _monitor_providers(cfg: Config) -> frozenset:
+    """振り分けで「監視のみ」にした provider 名 (routing 無効・読めないときは空)。
+    「今使う先」から外し、カードに「監視のみ」を出すのに使う。"""
+    if not cfg.routing.enabled:
+        return frozenset()
+    try:
+        return frozenset(gate.off_providers(cfg.routing, gate.load_off(gate.OFF_PATH)))
+    except Exception as exc:  # routing の失敗で表示・常駐は落とさない
+        log.warning("routing: %s", exc)
+        return frozenset()
+
+
 def _render_frame(cards: List[Card], now: datetime, cfg: Config, layout,
                   recommendation: Optional[str] = None, offset=(0, 0), scale=1.0):
     """1 フレームを描く。recommendation はヘッダに描く推奨 1 行 (F1)。
@@ -439,7 +455,8 @@ def _render_frame(cards: List[Card], now: datetime, cfg: Config, layout,
                   recommendation=recommendation,
                   percent_colors=cfg.display.percent_colors,
                   separator=cfg.display.separator or default_separator(),
-                  week_start=cfg.display.week_start, scale=scale)
+                  week_start=cfg.display.week_start, scale=scale,
+                  monitor_only=_monitor_providers(cfg))
 
 
 def _render_layout(cfg: Config, cards: Optional[List[Card]] = None):
@@ -847,7 +864,8 @@ def _cmd_pick(args, cfg: Config) -> int:
         poller = Poller(history, enabled=cfg.providers.enabled(), record=False)
         usages = poller.fetch(now)
         found = recommend(usages, history, now, early_tolerance=cfg.pacing.early_tolerance,
-                          end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep)
+                          end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep,
+                          exclude=_monitor_providers(cfg))
         rec = found.payload() if found is not None else None
     if args.json:
         _print_json(rec if rec is not None else {"recommendation": None})
@@ -1564,7 +1582,8 @@ def main(argv=None) -> int:
                                               for name in PROVIDERS},
                             sleep=cfg.pacing.sleep)
         rec = recommend(usages, history, now, early_tolerance=cfg.pacing.early_tolerance,
-                        end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep)
+                        end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep,
+                        exclude=_monitor_providers(cfg))
         img = _render_frame(cards, now, cfg, _render_layout(cfg, cards),
                             recommendation=rec.text if rec else None)
         _output(img, screen, args.out)
@@ -1715,7 +1734,8 @@ def main(argv=None) -> int:
         windows_all = all_window_paces(visible_usages, history, now, early_tolerance=cfg.pacing.early_tolerance,
                                        end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep)
         rec = recommend(visible_usages, history, now, early_tolerance=cfg.pacing.early_tolerance,
-                        end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep)
+                        end_tolerance=cfg.pacing.end_tolerance, sleep=cfg.pacing.sleep,
+                        exclude=_monitor_providers(cfg))
         layout = _render_layout(cfg, cards)
         # 描画・送画・status.json は redraw 秒ごと。ただしローカル枠が変わった
         # 周回は redraw を待たずに描き直す。wake で起きた周回 (設定変更・反映

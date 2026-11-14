@@ -19,6 +19,8 @@
 - リセット権 (Codex) が 24 時間以内に失効するなら score を 1.5 倍にして理由に添える
 - Provider.recommendable が False のサービス (Muse などコーディングに使えない
   もの) は候補に入れない (ranking にも載せない)
+- exclude に入っているサービス (振り分けで「監視のみ」にしたもの) も候補に
+  入れない。使わないと決めたサービスを「〜を使う」に出さないため
 
 文言は locales/<ja|en>/recommend.toml。時刻の書式は render のものを流用する。
 """
@@ -27,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import AbstractSet, Any, Dict, List, Optional, Sequence
 
 from .i18n import t
 from .config import sleep_for, wants_bedtime  # pacing.sleep → provider ごとの適用判定
@@ -122,7 +124,7 @@ def _reason(window: Window, now: datetime,
 
 def recommend(usages: Sequence[ProviderUsage], history, now: datetime,
               early_tolerance: float = 10.0, end_tolerance: float = 2.0,
-              sleep=None) -> Optional[Recommendation]:
+              sleep=None, exclude: Optional[AbstractSet[str]] = None) -> Optional[Recommendation]:
     """一番「使わないと消える」量の多い使えるサービスを 1 つ返す (無ければ None)。
 
     usages の各サービスについて独立窓 (part_of が None) だけを見る。pace は
@@ -130,11 +132,14 @@ def recommend(usages: Sequence[ProviderUsage], history, now: datetime,
     があれば、skip に入っていないサービスのペース判定を「起きている時間」で
     行う (compute_pace に (start, end) のローカル時刻を渡す)。advice =
     "bedtime" なら Pace.bedtime_at も載せる (recommend 自体は使わない)。
+    `exclude` は候補から外す provider 名 (監視のみのサービス)。
     """
     candidates: List[Dict[str, Any]] = []
     for usage in usages:
         if usage.error:
             continue
+        if exclude and usage.provider in exclude:
+            continue  # 監視のみ: 残量は見せるが「使う先」には出さない
         provider = REGISTRY.get(usage.provider)
         if provider is not None and not provider.recommendable:
             continue  # コーディングに使えないサービスは「〜を使う」に出さない

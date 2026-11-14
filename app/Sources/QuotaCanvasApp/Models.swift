@@ -103,6 +103,8 @@ struct StatusCard: Decodable {
     var remaining: Double?
     var status: String?
     var statusLabel: String?
+    /// 振り分けで「監視のみ」にしたサービスのカードなら true。無ければ nil（= false）。
+    var monitorOnly: Bool?
     var advice: String?
     var resetsAtRaw: String?
     /// 実際に残量データを取得した時刻。再描画では変わらない。
@@ -119,6 +121,7 @@ struct StatusCard: Decodable {
     enum CodingKeys: String, CodingKey {
         case id, provider, name, label, used, remaining, status, advice
         case statusLabel = "status_label"
+        case monitorOnly = "monitor_only"
         case resetsAtRaw = "resets_at"
         case fetchedAtRaw = "fetched_at"
         case staleError = "stale_error"
@@ -139,6 +142,7 @@ struct StatusCard: Decodable {
         remaining = try? c.decodeIfPresent(Double.self, forKey: .remaining)
         status = try? c.decodeIfPresent(String.self, forKey: .status)
         statusLabel = try? c.decodeIfPresent(String.self, forKey: .statusLabel)
+        monitorOnly = try? c.decodeIfPresent(Bool.self, forKey: .monitorOnly)
         advice = try? c.decodeIfPresent(String.self, forKey: .advice)
         resetsAtRaw = try? c.decodeIfPresent(String.self, forKey: .resetsAtRaw)
         fetchedAtRaw = try? c.decodeIfPresent(String.self, forKey: .fetchedAtRaw)
@@ -482,6 +486,15 @@ extension Notification.Name {
 /// tight（リセット時の予測使い残しが許容幅の半分以下）は余った枠をほぼ使い切れる状態で警告ではないため、on_track と同じ紫。
 /// F5: fresh（リセット直後）は spare と同じ緑系。
 enum StatusColor {
+    /// 「監視のみ」（振り分けで使わないサービス）の色。赤（超過）・緑（余裕）・紫（順調）・灰（判定待ち）
+    /// のどれとも違う、くすんだ鋼青（quota-canvas の render.MONITOR と同じ #6B88A8）。
+    static let monitor = Color(red: 107 / 255, green: 136 / 255, blue: 168 / 255)
+
+    /// カードの表示色。監視のみなら状態に関係なく monitor、それ以外は status の色。
+    static func color(for card: StatusCard) -> Color {
+        card.monitorOnly == true ? monitor : color(for: card.status)
+    }
+
     static func color(for status: String?) -> Color {
         switch status {
         case "over", "exhausted": return .red

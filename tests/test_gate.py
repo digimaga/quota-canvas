@@ -1600,3 +1600,29 @@ def test_window_item_carries_ideal_used():
                 sustainable_per_day=12.0, adjust_percent=50.0)
     item = _window_item(ProviderUsage("devin", "Devin", [w], None, NOW), pace)
     assert item["ideal_used"] == 59.1
+
+
+def test_off_providers_only_when_every_user_is_off():
+    # grok を使うワーカーが全員監視のみなら grok は監視のみ。
+    routing = cfg(workers={"grok": ["grok:*"], "hydrogen": ["gemini:*"]})
+    assert gate.off_providers(routing, {"grok"}) == {"grok"}
+    assert gate.off_providers(routing, set()) == set()
+    assert gate.off_providers(routing, None) == set()
+
+
+def test_off_providers_keeps_provider_with_a_live_worker():
+    # 同じ provider を使うワーカーが 1 つでも生きていれば監視のみにしない。
+    routing = cfg(workers={"grok": ["grok:*"], "grokfast": ["grok:*"]})
+    assert gate.off_providers(routing, {"grok"}) == set()
+    assert gate.off_providers(routing, {"grok", "grokfast"}) == {"grok"}
+
+
+def test_off_providers_ignores_non_routing_providers():
+    # ワーカー名が無い (既定ワーカー = provider 名) 場合も、設定に無い名前は
+    # 既定ワーカーとして扱う。local 枠などの非 routing は入れない。
+    routing = cfg(workers={})
+    assert gate.off_providers(routing, {"grok"}) == {"grok"}
+    assert gate.off_providers(routing, {"openrouter", "deepseek", "kimi"}) == set()
+    # local 枠 (local:<名前>) は status.json のカードに出ないので対象外
+    local = cfg(workers={"box": ["local:myserver"]})
+    assert gate.off_providers(local, {"box"}) == set()

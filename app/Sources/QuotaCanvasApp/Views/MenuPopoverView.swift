@@ -434,15 +434,15 @@ struct CardRow: View {
                         .font(.callout)
                         .monospacedDigit()
                         .bold()
-                        .foregroundStyle(StatusColor.color(for: card.status))
+                        .foregroundStyle(StatusColor.color(for: card))
                 } else {
                     Text("—%").font(.callout).foregroundStyle(.secondary)
                 }
                 Text(card.statusLabel ?? Self.statusFallback(for: card.status))
                     .font(.caption)
                     .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(StatusColor.color(for: card.status).opacity(0.18))
-                    .foregroundStyle(StatusColor.color(for: card.status))
+                    .background(StatusColor.color(for: card).opacity(0.18))
+                    .foregroundStyle(StatusColor.color(for: card))
                     .clipShape(Capsule())
             }
             if let advice = card.advice, !advice.isEmpty {
@@ -551,7 +551,7 @@ struct CompactCardRow: View {
                 .font(.callout)
                 .monospacedDigit()
                 .bold()
-                .foregroundStyle(StatusColor.color(for: card.status))
+                .foregroundStyle(StatusColor.color(for: card))
         } else {
             Text("—%").font(.callout).foregroundStyle(.secondary)
         }
@@ -562,8 +562,8 @@ struct CompactCardRow: View {
             .font(.caption2)
             .lineLimit(1)
             .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(StatusColor.color(for: card.status).opacity(0.18))
-            .foregroundStyle(StatusColor.color(for: card.status))
+            .background(StatusColor.color(for: card).opacity(0.18))
+            .foregroundStyle(StatusColor.color(for: card))
             .clipShape(Capsule())
     }
 

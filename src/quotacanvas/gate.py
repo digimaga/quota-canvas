@@ -716,6 +716,29 @@ def _one_provider(providers: Set[str]) -> str:
     return next(iter(providers)) if len(providers) == 1 else ""
 
 
+def off_providers(routing_cfg: "Routing", off: Optional[Set[str]]) -> Set[str]:
+    """監視のみ (mode = off) に設定されているデータ元 provider 名の集合。
+
+    provider は「それを使うワーカーが 1 つ以上あり、全員が監視のみ」のときだけ
+    入れる (gemini:argon だけ監視のみでも gemini 全体は外さない)。
+    [routing.workers] 未指定のときは、ワーカー名 = provider 名とみなす。
+    表示 (カードの「監視のみ」バッジ) と「今使う先」の候補除外に使う。"""
+    if not off:
+        return set()
+    specs: Dict[str, List[str]] = dict(getattr(routing_cfg, "workers", None) or {})
+    for name in off:
+        if safe_worker_name(name):
+            specs.setdefault(name, [])
+    users: Dict[str, Set[str]] = {}
+    for name, patterns in specs.items():
+        patterns = [p for p in (patterns or []) if isinstance(p, str)]
+        for provider in _worker_providers(name, patterns):
+            users.setdefault(provider, set()).add(name)
+    return {provider for provider, names in users.items()
+            if names <= off and provider not in NON_ROUTING_PROVIDERS
+            and not provider.startswith("local:")}
+
+
 def default_workers(status: Optional[dict]) -> Dict[str, List[str]]:
     """[routing.workers] 未指定の既定: 取得できている provider ごとに、その
     provider 名で「その provider の独立窓 (part_of なし) すべて」。

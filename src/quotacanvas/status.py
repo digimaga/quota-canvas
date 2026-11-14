@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 from .atomic import atomic_write as _atomic_write
 from .platform_support.paths import data_dir
 from .config import Config
-from .gate import evaluate, format_line, format_model_lines
+from .gate import evaluate, format_line, format_model_lines, off_providers
 from .i18n import t
 from .models import Pace, PaceStatus, ProviderUsage
 from .providers import local as local_provider
@@ -51,8 +51,11 @@ def _finite_percent(value: Any) -> Optional[float]:
     return rounded if _finite(rounded) else None
 
 
-def _card(pu: ProviderUsage, pace: Optional[Pace], now: datetime) -> Optional[Dict[str, Any]]:
-    """カード 1 枚ぶんの dict。取得失敗 (pace=None) は None を返し errors に入れる。"""
+def _card(pu: ProviderUsage, pace: Optional[Pace], now: datetime,
+          monitor_only: bool = False) -> Optional[Dict[str, Any]]:
+    """カード 1 枚ぶんの dict。取得失敗 (pace=None) は None を返し errors に入れる。
+    monitor_only (振り分けで監視のみ) なら status_label を「監視のみ」にし、
+    "monitor_only": true を足す (status は実際の状態のまま)。"""
     if pace is None:
         return None
     win = pace.window
@@ -75,6 +78,9 @@ def _card(pu: ProviderUsage, pace: Optional[Pace], now: datetime) -> Optional[Di
         "advice": advice_text(pace, False, now),
         "resets_at": _iso(win.resets_at),
     }
+    if monitor_only:
+        item["status_label"] = t("render.badge.monitor_only")
+        item["monitor_only"] = True  # アプリはこのとき状態色でなく専用色で描く
     if win.reset_estimated:
         item["reset_estimated"] = True  # リセット済みとみなした窓。resets_at は推定値
     if pu.fetched_at is not None:
@@ -258,13 +264,14 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
     ({ワーカー名: 期限}) で、[routing].enabled のとき status.json の
     "routing" の評価に使う。off は監視のみのワーカー名の集合。
     """
+    monitor = off_providers(cfg.routing, off) if cfg.routing.enabled else set()
     card_items = []
     for pu, pace in cards:
         if pace is not None and pace.window.part_of is not None:
             # 内訳窓 (part_of 付き) は親カードの一部なので、メニューバー
             # アプリが別カードとして表示しないよう cards から除く
             continue
-        item = _card(pu, pace, now)
+        item = _card(pu, pace, now, monitor_only=pu.provider in monitor)
         if item is not None:
             card_items.append(item)
     # ローカル LLM サーバー (providers.local) の並列枠も窓と同じ形で載せる

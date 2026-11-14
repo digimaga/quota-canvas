@@ -117,6 +117,13 @@ The app finds the CLI at the path stored in its settings (default
 - `previous_used` on a card — optional; the final used % of the window's previous period
   (recorded when the window resets). Omitted when the previous period is unknown.
 
+- `monitor_only` on a card — optional (omitted = false); `true` when the provider is
+  set to 監視のみ (routing mode `off`, every worker that uses it is off). The card keeps
+  its real `status` but `status_label` is "監視のみ" instead of the pace wording, and the
+  app/panel draw it in a neutral steel blue (`#6B88A8`) rather than the status color.
+  Such providers are also left out of `recommendation` (not even in `ranking`), because
+  the user decided not to use them.
+
 - `status: "fresh"` — right after a reset with barely any usage yet (the old engine
   reported `unknown` here). Meaning: the window is open; the color matches `spare`.
 

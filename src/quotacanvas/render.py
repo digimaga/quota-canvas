@@ -80,6 +80,10 @@ YELLOW = (250, 178, 25)    # burst (直近の加速) の警告 / 取得失敗中
 PURPLE = (116, 102, 224)   # ON_TRACK / TIGHT
 GREEN = (163, 230, 53)     # SPARE  #A3E635 (lime; distinct from codex green)
 GRAY = (138, 143, 152)     # UNKNOWN
+# 監視のみ (振り分けで使わないと決めたサービス)。赤 (超過) でも緑 (余裕) でも
+# 紫 (順調) でも灰 (判定待ち) でもない、くすんだ鋼青。「使う候補ではない」ことを
+# 状態語の代わりに示すので、残量が余裕でもペース超過でも同じ色にする。
+MONITOR = (107, 136, 168)  # #6B88A8
 
 # Per-service theme colors used for gauge fills and the name dot.
 # State colors stay reserved for badge / advice / left band / prediction hatch
@@ -246,6 +250,7 @@ class _S(object):
         self.d = ImageDraw.Draw(img)
         self.percent_colors = True  # % の数字を状態色にするか (render が設定)
         self.sep = None  # 文の区切り。None なら文言の " · " のまま (render が設定)
+        self.monitor_only = frozenset()  # 監視のみの provider (render が設定)
         self.ox = int(offset[0])
         self.oy = int(offset[1])
         self.scale = scale
@@ -1565,6 +1570,10 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
     badge_status = max((p.status for p in pool),
                        key=lambda st: _STATUS_RANK[st])
     badge_color = _STATUS_COLOR[badge_status]
+    monitor = win.provider in s.monitor_only
+    if monitor:
+        badge_color = MONITOR
+        color = MONITOR  # ゲージの予測ハッチも状態色にしない
 
     s.rrect(box, radius=CARD_RADIUS, fill=CARD_BG)
     s.rrect((x0, y0, x0 + 6, y1), radius=3, fill=badge_color,
@@ -1575,7 +1584,7 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
     cw = tx1 - tx0
 
     # -- 1. header: service name + status badge -----------------------------
-    badge = _badge(badge_status)
+    badge = t("render.badge.monitor_only") if monitor else _badge(badge_status)
     bf = F("w6", 17)
     bh = 26
     bx1 = tx1
@@ -1601,8 +1610,8 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
     pf = _fit_font(s, pct, "w8", 64 if narrow else 84, cw * 0.5, min_size=44)
     pw = s.textlength(pct, font=pf)
     num_base = y0 + (138 if narrow else 150)
-    s.text((tx0, num_base), pct, font=pf, fill=_num_color(s, mp.status),
-           anchor="ls")
+    s.text((tx0, num_base), pct, font=pf,
+           fill=WHITE if monitor else _num_color(s, mp.status), anchor="ls")
     wx = tx0 + pw + 12
     wf = F("w5", 17)
     s.text((wx, num_base + 2), word, font=wf, fill=TEXT_DIM, anchor="ls")
@@ -1788,7 +1797,7 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
     # -- 5. advice (bottom row) ----------------------------------------------
     adv = advice_text(mp, narrow, now)
     note = _sub_note(mp, subs, now)           # F2: 先に尽きるサブ窓に触れる
-    color = advice_color(mp)  # burst の警告が出るときは spare / on_track でも黄 (バッジ・帯は status 色)
+    color = MONITOR if monitor else advice_color(mp)  # burst の警告が出るときは spare / on_track でも黄 (バッジ・帯は status 色)
     if note:
         joined = "%s · %s" % (adv, note)
         if s.textlength(joined, F("w6", 22)) <= cw * 1.2:
@@ -1796,7 +1805,7 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
         else:
             # 並べると小さすぎて読めない: 先に尽きるサブ窓のほうが差し迫っているので注記だけ
             adv = note
-            if color not in (RED, YELLOW):
+            if not monitor and color not in (RED, YELLOW):
                 color = YELLOW
     af, adv = _fit_text(s, adv, "w6", 22, cw, min_size=12)
     s.text((tx0, advice_cy), adv, font=af, fill=color, anchor="lm")
@@ -1869,6 +1878,10 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
             bp = sp
     color = _STATUS_COLOR[bp.status]
     gauge_color = _STATUS_COLOR[mp.status]
+    monitor = win.provider in s.monitor_only
+    if monitor:
+        color = MONITOR
+        gauge_color = MONITOR  # ゲージの予測ハッチも状態色にしない
 
     s.rrect(box, radius=CARD_RADIUS, fill=CARD_BG)
     s.rrect((x0, y0, x0 + 6, y1), radius=3, fill=color,
@@ -1879,7 +1892,7 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     cw = tx1 - tx0
 
     # -- 1. header: theme dot + "サービス名 · 窓ラベル", badge on the right --
-    badge = _badge(bp.status)
+    badge = t("render.badge.monitor_only") if monitor else _badge(bp.status)
     bf = F("w6", 13)
     bh = 22
     bx1 = tx1
@@ -1918,8 +1931,8 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     pct_y = y0 + (88 if dual else 94)
     pf = _fit_font(s, pct, "w8", 48 if dual else 52, cw * 0.6,
                    min_size=30 if dual else 32)
-    s.text((tx0, pct_y), pct, font=pf, fill=_num_color(s, mp.status),
-           anchor="ls")
+    s.text((tx0, pct_y), pct, font=pf,
+           fill=WHITE if monitor else _num_color(s, mp.status), anchor="ls")
     wx = tx0 + s.textlength(pct, font=pf) + 10
     word_f = F("w5", 15)
     s.text((wx, pct_y + 2), word, font=word_f, fill=TEXT_DIM, anchor="ls")
@@ -1954,7 +1967,7 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     if dual:
         # リセット表示は % の右に出した。下はアドバイス行だけ (リセット権の
         # 行は縦が足りず省略)。
-        s.text((tx0, y1 - 8), adv_shown, font=af, fill=advice_color(bp),
+        s.text((tx0, y1 - 8), adv_shown, font=af, fill=MONITOR if monitor else advice_color(bp),
                anchor="ls")
         return
 
@@ -1989,7 +2002,7 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
         s.text((tx0, ty - bb[1]), txt, font=f, fill=TEXT_DIM, anchor="ls")
         ty += (bb[3] - bb[1]) + 2
     # burst の警告が出るときは spare / fresh でも黄 (バッジ・帯は status 色)
-    s.text((tx0, y1 - 8), adv_shown, font=af, fill=advice_color(mp),
+    s.text((tx0, y1 - 8), adv_shown, font=af, fill=MONITOR if monitor else advice_color(mp),
            anchor="ls")
 def _draw_second_bar(s, xs, cy, second, theme, gauge):
     # type: (_S, Tuple[float, float], float, tuple, tuple, str) -> None
@@ -2205,8 +2218,8 @@ def _draw_large_column(s, box, p, colors, gauge, now):
 
 def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
            layout=None, recommendation=None, percent_colors=True,
-           separator=None, scale=1.0, week_start="sunday"):
-    # type: (Sequence[Tuple[ProviderUsage, Optional[Pace]]], datetime, Tuple[int, int], str, Optional[dict], Optional[Sequence[PanelSpec]], Optional[str], bool, Optional[str], float, str) -> Image.Image
+           separator=None, scale=1.0, week_start="sunday", monitor_only=None):
+    # type: (Sequence[Tuple[ProviderUsage, Optional[Pace]]], datetime, Tuple[int, int], str, Optional[dict], Optional[Sequence[PanelSpec]], Optional[str], bool, Optional[str], float, str, Optional[Sequence[str]]) -> Image.Image
     """Render the 1920x462 canvas. `cards` are (provider, pace) pairs in
     display order; pace=None marks a provider whose fetch failed.
     gauge: "remaining" (fill = what is left, default) or "used"
@@ -2221,6 +2234,9 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
     設定の "" は呼び出し側が default_separator() にする)。
     week_start: カレンダーパネル (main = "calendar") の週の始まり
     ("sunday" 既定 | "monday")。
+    monitor_only: 振り分けで監視のみにした provider 名。そのカードは状態語
+    (余裕あり・ペース超過など) の代わりに「監視のみ」を専用色 (MONITOR) で出し、
+    % の数字も状態色にしない (緑・赤で「使える / 使えない」と誤解させない)。
     group_columns() で
     最大 MAX_COLUMNS 列に組み立て、全列を等分幅で描く。large 列は大パネル 1 枚、
     small 列は上下 2 段の小パネル。main="" や解決できない id の small 段は
@@ -2234,6 +2250,7 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
     s = _S(img, offset, scale)
     s.percent_colors = percent_colors
     s.sep = separator
+    s.monitor_only = frozenset(monitor_only or ())
     _draw_header(s, now, recommendation)
     cols = _layout_columns(cards,
                            auto_layout(cards) if layout is None else layout)

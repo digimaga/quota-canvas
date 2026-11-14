@@ -104,6 +104,19 @@ struct RegressionTests {
         check(ledgerA?["enabled"] == nil && ledgerModels?["model_order"] as? [String] == ["a", "b"],
               "toggling a model leaves other entries and model_order untouched")
 
+        // 監視のみのカード: monitor_only が true なら状態色ではなく専用色。無い・型違いは通常色。
+        let monitorCards = try JSONDecoder().decode([StatusCard].self, from: Data(#"""
+        [{"id":"a:w","status":"spare","status_label":"監視のみ","monitor_only":true},
+         {"id":"b:w","status":"spare"},
+         {"id":"c:w","status":"over","monitor_only":"yes"}]
+        """#.utf8))
+        check(monitorCards[0].monitorOnly == true && StatusColor.color(for: monitorCards[0]) == StatusColor.monitor,
+              "monitor-only card uses the monitor color")
+        check(monitorCards[1].monitorOnly == nil && StatusColor.color(for: monitorCards[1]) == StatusColor.color(for: "spare"),
+              "card without monitor_only keeps its status color")
+        check(monitorCards[2].monitorOnly == nil && StatusColor.color(for: monitorCards[2]) == StatusColor.color(for: "over"),
+              "malformed monitor_only is ignored")
+
         let configPanels = [
             ConfigDocument.PanelConfig(main: "alpha:week", subs: ["alpha:day"], size: "large"),
             ConfigDocument.PanelConfig(main: "", subs: nil, size: "small"),

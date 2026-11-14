@@ -145,3 +145,21 @@ def test_small_panel_too_short_box_draws_no_reset_row(text_calls):
                 if text.startswith("リセット")]
     rows = _panel_rows(text_calls, box)
     assert not [x for _t, _b, x in rows if x.startswith("リセット")]
+
+
+def test_monitor_only_card_uses_monitor_badge_and_color():
+    # 監視のみの provider は状態語 (余裕あり) の代わりに「監視のみ」を専用色で出す。
+    from datetime import datetime, timedelta, timezone
+    from quotacanvas.models import ProviderUsage, Window
+    from quotacanvas.pacing import compute_pace
+    from quotacanvas.render import MONITOR, render
+    now = datetime(2026, 10, 24, 12, 0, 0, tzinfo=timezone.utc)
+    win = Window("grok", "weekly", "週間", 5.0, now + timedelta(days=3), timedelta(days=7))
+    pu = ProviderUsage("grok", "Grok", [win], None, now)
+    cards = [(pu, compute_pace(win, [], now))]
+    plain = render(cards, now)
+    marked = render(cards, now, monitor_only=["grok"])
+    assert plain.size == marked.size
+    assert plain.tobytes() != marked.tobytes()
+    pixels = marked.convert("RGB").getdata()
+    assert any(px == MONITOR for px in pixels)

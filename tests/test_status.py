@@ -485,3 +485,31 @@ def test_concurrent_jsonl_rewrites_use_unique_temporary_files(tmp_path, monkeypa
     lines = path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1 and isinstance(json.loads(lines[0]), dict)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["state.jsonl"]
+
+
+def test_build_status_marks_monitor_only_card(tmp_path):
+    # 監視のみ (routing の off) のサービスは、残量が余裕でも「余裕あり」ではなく
+    # 「監視のみ」と出し、monitor_only: true を付ける。他のサービスは変えない。
+    from quotacanvas import gate
+    cfg = _cfg(tmp_path, '[routing]\nenabled = true\n[routing.workers]\ngrok = ["grok:*"]\n')
+    win_g = _win("grok", "weekly", 5.0)
+    win_c = _win("claude", "weekly", 5.0)
+    pu_g = ProviderUsage("grok", "Grok", [win_g], None, NOW)
+    pu_c = ProviderUsage("claude", "Claude Max", [win_c], None, NOW)
+    pairs = [(pu_g, _pace(win_g)), (pu_c, _pace(win_c))]
+    cards = build_status(cfg, pairs, [pu_g, pu_c], NOW, off={"grok"})["cards"]
+    grok = next(c for c in cards if c["provider"] == "grok")
+    claude = next(c for c in cards if c["provider"] == "claude")
+    assert grok["monitor_only"] is True
+    assert grok["status_label"] == "監視のみ"
+    assert "monitor_only" not in claude
+    assert claude["status_label"] != "監視のみ"
+
+
+def test_build_status_ignores_off_when_routing_disabled(tmp_path):
+    # routing が無効なら off が渡されても「監視のみ」にしない (パネルと揃える)。
+    cfg = _cfg(tmp_path, '')
+    win_g = _win("grok", "weekly", 5.0)
+    pu_g = ProviderUsage("grok", "Grok", [win_g], None, NOW)
+    cards = build_status(cfg, [(pu_g, _pace(win_g))], [pu_g], NOW, off={"grok"})["cards"]
+    assert "monitor_only" not in cards[0]

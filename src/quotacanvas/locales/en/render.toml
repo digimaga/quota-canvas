@@ -39,6 +39,7 @@ on_track = "On track"
 spare = "Spare"
 fresh = "Just reset"
 unknown = "Pending"
+monitor_only = "Monitor only"  # 振り分けで監視のみ。状態語の代わりに出す
 
 [badge_short]
 # sub-row status (short). "Just reset" is shown as "Spare" on sub rows

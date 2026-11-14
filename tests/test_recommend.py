@@ -366,3 +366,20 @@ def test_provider_missing_from_registry_stays_a_candidate(tmp_path):
     rec = _rec([other], tmp_path)
     assert rec is not None
     assert rec.provider == "local.foo"
+
+
+def test_exclude_skips_monitor_only_provider(tmp_path):
+    # 監視のみのサービスは、一番 score が高くても「使う先」に出さない。
+    glm = _usage("glm", "GLM", [_win("glm", "5h", 2.0, timedelta(hours=5), timedelta(hours=5), "5時間")])
+    claude = _usage("claude", "Claude Max",
+                    [_win("claude", "weekly", 30.0, timedelta(days=4), timedelta(days=7), "週間")])
+    history = History(tmp_path / "history.jsonl")
+    rec = recommend([claude, glm], history, NOW, exclude={"glm"})
+    assert rec is not None
+    assert rec.provider == "claude"
+    assert [e["provider"] for e in rec.ranking] == ["claude"]
+
+
+def test_exclude_everything_recommends_nothing(tmp_path):
+    glm = _usage("glm", "GLM", [_win("glm", "5h", 2.0, timedelta(hours=5), timedelta(hours=5), "5時間")])
+    assert recommend([glm], History(tmp_path / "history.jsonl"), NOW, exclude={"glm"}) is None
