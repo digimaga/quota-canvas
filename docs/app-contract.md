@@ -190,7 +190,7 @@ The app finds the CLI at the path stored in its settings (default
   `null` too; the CLI also refuses to set burn on them).
   OpenRouter, DeepSeek and Kimi are excluded from routing verdicts even when their windows are specified explicitly. With no `[routing.workers]` in the config, each other fetched provider becomes a single worker
   judged by its worst independent window — Gemini's worker then also includes the per-model
-  weekly windows (`gemini:argon`, `gemini:carbon`, `gemini:hydrogen`) and Antigravity-Claude (`gemini:claude`, `gemini:claude_5h`) windows;
+  weekly windows (`gemini:argon`, plus any other `gemini-<model>-wtu-weekly` bucket) and Antigravity-Claude (`gemini:claude`, `gemini:claude_5h`) windows;
   split it with an explicit `[routing.workers]` (e.g.
   `gemini = ["gemini:weekly", "gemini:5h"]` / `argon = ["gemini:argon"]`).
   Never blocks anything by itself — an `unknown` verdict must not stop the app or the

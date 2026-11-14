@@ -5,8 +5,9 @@
 グループ名ではなく bucket の id で識別する (名前は将来変わりうる。未知の id
 は無視):
 - gemini-weekly / gemini-5h: Gemini 本体の週間 / 5 時間枠
-- gemini-<モデル名>-wtu-weekly: Gemini 4 の各モデル (Argon / Carbon / Hydrogen ...)
-  の週間枠。Carbon・Hydrogen は契約 (Ultra など) によって返らないことがある
+- gemini-<モデル名>-wtu-weekly: モデル別の週間枠 (Argon で確認済み)。Pro では
+  Hydrogen は Gemini 3.8 Flash と同じ「Gemini Models」グループ (gemini-weekly /
+  gemini-5h) に含まれ別枠は無い。Carbon が Ultra で別枠になるかは未確認
 - 3p-weekly / 3p-5h: Antigravity 経由で使える Claude / GPT の週間 / 5 時間枠
 トークンの更新は agy 自身が行う (ここではリフレッシュしない)。
 
@@ -77,7 +78,7 @@ _BUCKETS_AFTER_MODELS: Tuple[Tuple[str, str, Optional[str], Optional[str], int],
     ("3p-5h", "claude_5h", "providers.gemini.claude_5h_window", None, 5 * 3600),
 )
 
-# モデル別の週間枠 (Gemini 4 Argon / Carbon / Hydrogen ...)。bucket id は
+# モデル別の週間枠 (Argon。Ultra で増えるモデルがあれば同じ形で拾う)。bucket id は
 # "gemini-<モデル名>-wtu-weekly" の形 (Argon の実応答で確認済み)。モデルが
 # 増えても id が同じ形なら、コードを変えずに窓として拾えるよう、名前は決め打ちに
 # しない。並びは下の既知のモデル順、未知のモデルはその後ろ (応答に出た順)。
