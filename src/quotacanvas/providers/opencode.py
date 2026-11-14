@@ -2,6 +2,13 @@
 
 キーの探索順: キーチェーン quota-canvas/opencode → 環境変数 OPENCODE_API_KEY
 → opencode CLI の ~/.local/share/opencode/auth.json の "opencode-go" エントリの "key"。
+
+無料枠の利用制限の戻る時刻 (epoch 秒) を opencode-run が
+~/.claude/run/opencode-free-exhausted に書いていれば、その時刻までのあいだ
+"opencode:free" の窓 (使用 100%・リセット = 戻る時刻) を足す。制限が無いときも
+使用 0%・リセットなしの窓を出し、routing のワーカーが unknown/missing に
+ならないようにする (制限中は stop)。場所は環境変数
+QUOTA_CANVAS_OPENCODE_FREE_EXHAUSTED_FILE で差し替えられる。
 """
 
 from __future__ import annotations
@@ -9,7 +16,8 @@ from __future__ import annotations
 import json
 import math
 import os
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,7 +26,7 @@ from ..i18n import t
 from ..models import ProviderUsage, Window
 from ._base import (
     USER_AGENT, CredentialError, Detection, Provider,
-    _parse_iso, _window_identity, http_get_json,
+    _from_epoch, _parse_iso, _window_identity, http_get_json,
 )
 
 OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
@@ -27,6 +35,13 @@ OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
 # "opencode-go" エントリが無いときは「キー無し」として次の探索へ進む。
 OPENCODE_AUTH_PATH = Path.home() / ".local" / "share" / "opencode" / "auth.json"
 OPENCODE_AUTH_ENTRY = "opencode-go"
+
+# 無料枠の利用制限の戻る時刻 (epoch 秒の 1 行) を opencode-run が書くファイル。
+FREE_LIMIT_FILE = Path.home() / ".claude" / "run" / "opencode-free-exhausted"
+FREE_LIMIT_ENV = "QUOTA_CANVAS_OPENCODE_FREE_EXHAUSTED_FILE"
+FREE_WINDOW_KEY = "free"
+# 制限が無いときの窓の長さ。リセット時刻が無いので判定には使われない。
+FREE_WINDOW_LENGTH = timedelta(hours=5)
 
 # ----------------------------------------------------------- credentials
 
@@ -78,6 +93,57 @@ def detect() -> Detection:
     except CredentialError as exc:
         return Detection(False, None, str(exc) or t("providers.api_key_not_set"))
     return Detection(True, t("providers.detect.api_key", name="OpenCode Go", source=source))
+
+
+# ------------------------------------------------------ free-model limit
+
+def _free_limit_file() -> Path:
+    """無料枠の利用制限の戻る時刻のファイル。環境変数で差し替えられる。"""
+    override = os.environ.get(FREE_LIMIT_ENV)
+    if override and override.strip():
+        return Path(override.strip()).expanduser()
+    return FREE_LIMIT_FILE
+
+
+def free_limit_window(now: datetime) -> Window:
+    """opencode:free の窓を返す。
+
+    ファイルの戻る時刻が未来なら使用 100%・リセット = その時刻 (制限中)。
+    ファイルが無い・読めない・数字でない・戻る時刻を過ぎているときは
+    使用 0%・リセットなし (制限中ではない)。routing のワーカーがこの窓だけに
+    結ばれていても、制限が無ければ通常の go/boost 判定になる。"""
+    reset_at: Optional[datetime] = None
+    try:
+        raw = _free_limit_file().read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        raw = ""
+    if raw.isdigit():
+        # isdigit は "²" のような非 ASCII 数字や 4300 桁超の値も真にするので、
+        # int() の失敗は壊れたファイルとして扱う。
+        try:
+            reset_at = _from_epoch(int(raw))
+        except ValueError:
+            reset_at = None
+    if reset_at is not None and reset_at > now:
+        length = max(reset_at - now, timedelta(minutes=1))
+        return Window("opencode", FREE_WINDOW_KEY, t("providers.window.free_limit"),
+                      100.0, reset_at, length)
+    return Window("opencode", FREE_WINDOW_KEY, t("providers.window.free_limit"),
+                  0.0, None, FREE_WINDOW_LENGTH)
+
+
+def with_free_limit(usage: ProviderUsage, now: datetime) -> ProviderUsage:
+    """OpenCode の usage の opencode:free を今のファイルから作り直したものにする。
+
+    OpenCode 以外・窓が 1 つも無い usage (取得失敗で前回値も無い = エラーカード) は
+    そのまま返す。"""
+    if usage.provider != "opencode" or not usage.windows:
+        return usage
+    windows = [w for w in usage.windows if w.key != FREE_WINDOW_KEY]
+    windows.append(free_limit_window(now))
+    if windows == list(usage.windows):
+        return usage
+    return replace(usage, windows=windows)
 
 
 # --------------------------------------------------------------- parser
@@ -139,6 +205,7 @@ def fetch(now: datetime) -> ProviderUsage:
         "User-Agent": USER_AGENT,
     })
     name, windows = parse_opencode(data, now)
+    windows.append(free_limit_window(now))
     return ProviderUsage("opencode", name, windows, None, now)
 
 

@@ -157,7 +157,13 @@ The app finds the CLI at the path stored in its settings (default
   routing CLI can judge all windows. Fields mirror the cards (`id`, `provider`, `key`,
   `part_of`, `used`, `remaining`, `status`, `resets_at`, `length` in seconds, plus the optional `projected_leftover`, `leftover_tolerance` (absent for fresh/unknown), `exhausts_at`,
   `fetched_at`, `stale_error`). Written always, also while `routing.enabled = false` and
-  while paused.
+  while paused. Routing-only windows (`devin:free` / `opencode:free`) are included while
+  the provider has data: they are at 100% with a reset time while the free tier is
+  rate-limited, and at 0% with `resets_at: null` otherwise. They never appear in
+  recommendations or history, and appear as cards only when named explicitly
+  (`display.windows` or `--only`). A `<provider>:*` wildcard does not match them, and they
+  are not part of the default workers when `[routing.workers]` is omitted; name the window
+  ID explicitly in `[routing.workers]` to use it.
   Local LLM servers (`[providers.local.<name>]`) add entries with `kind: "local"` and
   `provider`/`id` `"local:<name>"` (one per server): they carry `running` / `waiting` /
   `capacity` (parallel slots) instead of `used` / `remaining` / `status` / `resets_at`
@@ -444,7 +450,11 @@ OpenCode Go (`opencode`) reads Keychain `quota-canvas/opencode` (saved with
 `~/.local/share/opencode/auth.json`. Its windows are `opencode:5h` (5-hour rolling),
 `opencode:weekly` (7 days), and `opencode:30d` (30 days); a 401/403 means the key is
 invalid or the account has no OpenCode Go subscription (check the key and the account's
-OpenCode Go subscription).
+OpenCode Go subscription). The routing-only window `opencode:free` reads
+`~/.claude/run/opencode-free-exhausted` (override
+`QUOTA_CANVAS_OPENCODE_FREE_EXHAUSTED_FILE`): 100% with that reset time while the epoch
+is in the future, otherwise 0% with no reset, so a worker bound only to it is still
+judged normally.
 
 Devin (`devin`, the same quota as Windsurf) reads Keychain `quota-canvas/devin` (saved
 with `set-key devin`), then `windsurf_api_key` in the Devin CLI login at
@@ -453,7 +463,10 @@ with `set-key devin`), then `windsurf_api_key` in the Devin CLI login at
 `state.vscdb`. Its windows are `devin:1d` (daily) and `devin:weekly` (7 days);
 `hideDailyQuota` / `hideWeeklyQuota` hides the corresponding window, and an optional
 `overageBalanceMicros` is shown as the extra usage balance (USD). A 401/403 means the key
-is invalid (check that the key belongs to a Devin account).
+is invalid (check that the key belongs to a Devin account). The routing-only window
+`devin:free` reads `~/.claude/run/devin-ratelimit` (override
+`QUOTA_CANVAS_DEVIN_FREE_LIMIT_FILE`): 100% with that reset time while the epoch is in
+the future (stop), otherwise 0% with no reset (normal judgment).
 
 Muse (`muse`, Meta's chatbot at https://muse.ai) needs the menu bar app: the
 engine's urllib POST to the `fetchSubscriptionAction` Next.js Server Action is

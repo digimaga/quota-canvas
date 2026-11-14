@@ -491,7 +491,7 @@ def test_fetch_posts_status_request(monkeypatch):
     assert usage.provider == "devin"
     assert usage.name == "Devin Pro"
     assert usage.error is None
-    assert [w.id for w in usage.windows] == ["devin:1d", "devin:weekly"]
+    assert [w.id for w in usage.windows] == ["devin:1d", "devin:weekly", "devin:free"]
     assert len(usage.balances) == 1
     assert usage.fetched_at == NOW
 
@@ -557,36 +557,52 @@ def _free_file(monkeypatch, tmp_path, text):
 def test_free_limit_window_while_limited(monkeypatch, tmp_path):
     _free_file(monkeypatch, tmp_path, "%d\n" % int(FREE_RESET.timestamp()))
     w = devin.free_limit_window(FREE_NOW)
-    assert w is not None
     assert w.id == "devin:free"
     assert w.used_percent == 100.0
     assert w.resets_at == FREE_RESET
     assert w.length == FREE_RESET - FREE_NOW
 
 
-@pytest.mark.parametrize("text", ["", "abc", "-5", "1794549690x"])
-def test_free_limit_window_ignores_broken_file(monkeypatch, tmp_path, text):
+@pytest.mark.parametrize("text", ["", "abc", "-5", "1794549690x", "²", "9" * 5000])
+def test_free_limit_window_broken_file_is_zero(monkeypatch, tmp_path, text):
     _free_file(monkeypatch, tmp_path, text)
-    assert devin.free_limit_window(FREE_NOW) is None
+    w = devin.free_limit_window(FREE_NOW)
+    assert w.id == "devin:free"
+    assert w.used_percent == 0.0
+    assert w.resets_at is None
+    assert w.length == devin.FREE_WINDOW_LENGTH
 
 
-def test_free_limit_window_missing_file_or_past(monkeypatch, tmp_path):
-    monkeypatch.setenv(devin.FREE_LIMIT_ENV, str(tmp_path / "none"))
-    assert devin.free_limit_window(FREE_NOW) is None
+def test_free_limit_window_reset_exactly_now_is_zero(monkeypatch, tmp_path):
+    # 戻る時刻ちょうどは「過ぎている」側 (制限なし) として扱う。
     _free_file(monkeypatch, tmp_path, "%d" % int(FREE_RESET.timestamp()))
-    assert devin.free_limit_window(FREE_RESET + timedelta(seconds=1)) is None
+    w = devin.free_limit_window(FREE_RESET)
+    assert w.used_percent == 0.0 and w.resets_at is None
+    w = devin.free_limit_window(FREE_RESET - timedelta(seconds=1))
+    assert w.used_percent == 100.0 and w.resets_at == FREE_RESET
 
 
-def test_fetch_adds_free_window_only_while_limited(monkeypatch, tmp_path):
+def test_free_limit_window_missing_file_or_past_is_zero(monkeypatch, tmp_path):
+    monkeypatch.setenv(devin.FREE_LIMIT_ENV, str(tmp_path / "none"))
+    w = devin.free_limit_window(FREE_NOW)
+    assert w.used_percent == 0.0 and w.resets_at is None
+    _free_file(monkeypatch, tmp_path, "%d" % int(FREE_RESET.timestamp()))
+    w = devin.free_limit_window(FREE_RESET + timedelta(seconds=1))
+    assert w.used_percent == 0.0 and w.resets_at is None
+
+
+def test_fetch_always_adds_free_window(monkeypatch, tmp_path):
     monkeypatch.setattr(devin.keychain, "read", lambda account: "keychain-dummy")
     monkeypatch.setattr(devin, "http_post_json",
                         lambda url, headers, body, timeout=providers.TIMEOUT: STATUS)
     usage = devin.fetch(FREE_NOW)
-    assert "devin:free" not in [w.id for w in usage.windows]
+    free = [w for w in usage.windows if w.id == "devin:free"]
+    assert len(free) == 1 and free[0].used_percent == 0.0 and free[0].resets_at is None
     _free_file(monkeypatch, tmp_path, "%d" % int(FREE_RESET.timestamp()))
     usage = devin.fetch(FREE_NOW)
     ids = [w.id for w in usage.windows]
     assert "devin:free" in ids and "devin:1d" in ids and "devin:weekly" in ids
+    assert [w for w in usage.windows if w.id == "devin:free"][0].used_percent == 100.0
 
 
 def test_free_window_is_routing_only(monkeypatch, tmp_path):
@@ -629,7 +645,17 @@ def test_swe2_is_stop_while_free_limited(monkeypatch, tmp_path):
     assert swe2.verdict == "stop"
     # 有料の Lightning (swe2l) は無料枠の制限に巻き込まない
     assert result.worker("swe2l").verdict != "stop"
-    # 制限が無ければ従来どおり窓が無い = 判定できない (?)
+    # 制限が無ければ 0% の窓が出る。それだけに結ばれたワーカーも unknown ではなく
+    # go / boost などの通常判定になる
+    no_limit = devin.free_limit_window(FREE_RESET + timedelta(seconds=1))
+    usage_free = ProviderUsage("devin", "Devin Pro", windows[:-1] + [no_limit], None, FREE_NOW,
+                               balances=balances)
+    items_free = [_window_item(x, p) for x, p in
+                  all_window_paces([usage_free], History(tmp_path / "history"), FREE_NOW) if p]
+    data_no_limit = {"updated_at": FREE_NOW.isoformat(), "windows": items_free}
+    swe2_free = evaluate(data_no_limit, routing, {}, FREE_NOW).worker("swe2")
+    assert swe2_free.verdict in ("go", "boost")
+    # 窓そのものが無い (古い status.json) は従来どおり unknown
     data_free = {"updated_at": FREE_NOW.isoformat(), "windows": [
         i for i in items if i.get("id") != "devin:free"]}
     assert evaluate(data_free, routing, {}, FREE_NOW).worker("swe2").verdict == "unknown"
@@ -663,8 +689,10 @@ def test_free_window_survives_api_failure_and_skips_recommend(monkeypatch, tmp_p
     result = evaluate(data, routing, {}, FREE_NOW)
     assert result.worker("swe2").verdict == "stop"
     assert result.worker("swe2l").verdict == "unknown"  # 有料枠は取得失敗のまま
-    # 制限が明けたら作り直しで窓が消える
-    assert "devin:free" not in [w.id for w in devin.with_free_limit(u, FREE_RESET).windows]
+    # 制限が明けたら作り直しで 0%・リセットなしの窓になる (消えない)
+    cleared = devin.with_free_limit(u, FREE_RESET).windows
+    free = [w for w in cleared if w.id == "devin:free"]
+    assert len(free) == 1 and free[0].used_percent == 0.0 and free[0].resets_at is None
     # 推奨の材料にしない: 窓の一覧から devin:free を除いた場合と同じ結果
     ok_usage = devin.with_free_limit(prev, FREE_NOW)
     with_free = recommend([ok_usage], history, FREE_NOW)

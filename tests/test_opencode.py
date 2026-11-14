@@ -267,7 +267,7 @@ def test_fetch_requests_usage_with_bearer_token(monkeypatch):
     assert usage.name == "OpenCode Go"
     assert usage.error is None
     assert [w.id for w in usage.windows] == [
-        "opencode:5h", "opencode:weekly", "opencode:30d"]
+        "opencode:5h", "opencode:weekly", "opencode:30d", "opencode:free"]
     assert usage.fetched_at == NOW
 
 
@@ -281,6 +281,188 @@ def test_fetch_propagates_http_errors(monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as excinfo:
         opencode.fetch(NOW)
     assert excinfo.value.code == 401
+
+
+# ------------------------------------------------------ free-model limit
+# opencode-run が書く「無料枠の利用制限の戻る時刻」(epoch 秒) のファイル。
+
+FREE_RESET = NOW + timedelta(hours=19)
+FREE_LIMIT_TEXT = "%d" % int(FREE_RESET.timestamp())
+
+
+def _free_file(monkeypatch, tmp_path, text):
+    path = tmp_path / "opencode-free-exhausted"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setenv(opencode.FREE_LIMIT_ENV, str(path))
+    return path
+
+
+def test_free_limit_window_while_limited(monkeypatch, tmp_path):
+    _free_file(monkeypatch, tmp_path, FREE_LIMIT_TEXT + "\n")
+    w = opencode.free_limit_window(NOW)
+    assert w.id == "opencode:free"
+    assert w.used_percent == 100.0
+    assert w.resets_at == FREE_RESET
+    assert w.length == FREE_RESET - NOW
+
+
+@pytest.mark.parametrize("text", ["", "abc", "-5", "1794549690x", "²", "9" * 5000])
+def test_free_limit_window_broken_file_is_zero(monkeypatch, tmp_path, text):
+    _free_file(monkeypatch, tmp_path, text)
+    w = opencode.free_limit_window(NOW)
+    assert w.id == "opencode:free"
+    assert w.used_percent == 0.0
+    assert w.resets_at is None
+    assert w.length == opencode.FREE_WINDOW_LENGTH
+
+
+def test_free_limit_window_reset_exactly_now_is_zero(monkeypatch, tmp_path):
+    # 戻る時刻ちょうどは「過ぎている」側 (制限なし) として扱う。
+    _free_file(monkeypatch, tmp_path, FREE_LIMIT_TEXT)
+    w = opencode.free_limit_window(FREE_RESET)
+    assert w.used_percent == 0.0 and w.resets_at is None
+    w = opencode.free_limit_window(FREE_RESET - timedelta(seconds=1))
+    assert w.used_percent == 100.0 and w.resets_at == FREE_RESET
+
+
+def test_free_limit_window_missing_file_or_past_is_zero(monkeypatch, tmp_path):
+    monkeypatch.setenv(opencode.FREE_LIMIT_ENV, str(tmp_path / "none"))
+    w = opencode.free_limit_window(NOW)
+    assert w.used_percent == 0.0 and w.resets_at is None
+    _free_file(monkeypatch, tmp_path, FREE_LIMIT_TEXT)
+    w = opencode.free_limit_window(FREE_RESET + timedelta(seconds=1))
+    assert w.used_percent == 0.0 and w.resets_at is None
+
+
+def test_fetch_always_adds_free_window(monkeypatch, tmp_path):
+    monkeypatch.setattr(opencode.keychain, "read", lambda account: "keychain-dummy")
+    monkeypatch.setattr(opencode, "http_get_json",
+                        lambda url, headers, timeout=providers.TIMEOUT: USAGE)
+    usage = opencode.fetch(NOW)
+    free = [w for w in usage.windows if w.id == "opencode:free"]
+    assert len(free) == 1 and free[0].used_percent == 0.0 and free[0].resets_at is None
+    _free_file(monkeypatch, tmp_path, FREE_LIMIT_TEXT)
+    usage = opencode.fetch(NOW)
+    free = [w for w in usage.windows if w.id == "opencode:free"]
+    assert len(free) == 1 and free[0].used_percent == 100.0
+    assert free[0].resets_at == FREE_RESET
+
+
+def test_free_window_is_routing_only(monkeypatch, tmp_path):
+    from quotacanvas.cli import all_window_paces, build_cards
+    from quotacanvas.history import History
+    from quotacanvas.models import ProviderUsage
+
+    _free_file(monkeypatch, tmp_path, FREE_LIMIT_TEXT)
+    _, windows = opencode.parse_opencode(USAGE, NOW)
+    windows.append(opencode.free_limit_window(NOW))
+    usage = ProviderUsage("opencode", "OpenCode Go", windows, None, NOW)
+    history = History(tmp_path / "history")
+    shown = [pace.window.id for _, pace in build_cards([usage], history, NOW) if pace]
+    assert "opencode:free" not in shown and "opencode:5h" in shown
+    named = [pace.window.id for _, pace in
+             build_cards([usage], history, NOW, order=["opencode:free"]) if pace]
+    assert named == ["opencode:free"]
+    every = [pace.window.id for _, pace in all_window_paces([usage], history, NOW) if pace]
+    assert "opencode:free" in every
+
+
+def test_ocfree_is_stop_while_free_limited(monkeypatch, tmp_path):
+    from quotacanvas.cli import all_window_paces
+    from quotacanvas.config import Routing
+    from quotacanvas.gate import evaluate
+    from quotacanvas.history import History
+    from quotacanvas.models import ProviderUsage
+    from quotacanvas.status import _window_item
+
+    _free_file(monkeypatch, tmp_path, FREE_LIMIT_TEXT)
+    _, windows = opencode.parse_opencode(USAGE, NOW)
+    windows.append(opencode.free_limit_window(NOW))
+    usage = ProviderUsage("opencode", "OpenCode Go", windows, None, NOW)
+    history = History(tmp_path / "history")
+    items = [_window_item(u, p) for u, p in all_window_paces([usage], history, NOW) if p]
+    data = {"updated_at": NOW.isoformat(), "windows": items}
+    routing = Routing(workers={"ocfree": ["opencode:free"], "ocpaid": ["opencode:*"]})
+    result = evaluate(data, routing, {}, NOW)
+    assert result.worker("ocfree").verdict == "stop"
+    # 有料の窓 ("opencode:*") は無料枠の制限に巻き込まない
+    paid = result.worker("ocpaid")
+    assert paid.verdict != "stop"
+    assert "opencode:free" not in paid.windows
+
+    # 制限が無ければ 0% の窓が出て、unknown ではなく通常判定になる
+    no_limit = opencode.free_limit_window(FREE_RESET + timedelta(seconds=1))
+    usage_free = ProviderUsage("opencode", "OpenCode Go", windows[:-1] + [no_limit], None, NOW)
+    items_free = [_window_item(u, p) for u, p in
+                  all_window_paces([usage_free], history, NOW) if p]
+    data_free = {"updated_at": NOW.isoformat(), "windows": items_free}
+    oc = evaluate(data_free, routing, {}, NOW).worker("ocfree")
+    assert oc.verdict in ("go", "boost")
+
+
+def test_free_window_survives_api_failure_and_skips_recommend(monkeypatch, tmp_path):
+    """API の取得失敗で前回値 (stale) を出していても、制限中なら ocfree は stop。
+    「今使う先」の推奨は opencode:free で OpenCode を使えない扱いにしない。"""
+    from dataclasses import replace
+
+    from quotacanvas.cli import all_window_paces
+    from quotacanvas.config import Routing
+    from quotacanvas.gate import evaluate
+    from quotacanvas.history import History
+    from quotacanvas.models import ProviderUsage
+    from quotacanvas.recommend import recommend
+    from quotacanvas.status import _window_item
+
+    _, windows = opencode.parse_opencode(USAGE, NOW)
+    prev = ProviderUsage("opencode", "OpenCode Go", windows, None, NOW)
+    # 前回値には制限の窓が無く、今のファイルでは制限中
+    _free_file(monkeypatch, tmp_path, FREE_LIMIT_TEXT)
+    stale = replace(prev, stale_error="HTTP 500")
+    u = opencode.with_free_limit(stale, NOW)
+    assert [w for w in u.windows if w.id == "opencode:free"][0].used_percent == 100.0
+    history = History(tmp_path / "history")
+    items = [_window_item(x, p) for x, p in all_window_paces([u], history, NOW) if p]
+    data = {"updated_at": NOW.isoformat(), "windows": items,
+            "errors": [{"provider": "opencode", "error": "HTTP 500"}]}
+    routing = Routing(workers={"ocfree": ["opencode:free"], "ocpaid": ["opencode:*"]})
+    result = evaluate(data, routing, {}, NOW)
+    assert result.worker("ocfree").verdict == "stop"
+    assert result.worker("ocpaid").verdict == "unknown"  # 有料枠は取得失敗のまま
+
+    # 制限が明けたら 0%・リセットなしの窓になり、判定は go / boost に戻る
+    monkeypatch.setenv(opencode.FREE_LIMIT_ENV, str(tmp_path / "none"))
+    cleared = opencode.with_free_limit(u, FREE_RESET)
+    free = [w for w in cleared.windows if w.id == "opencode:free"]
+    assert len(free) == 1 and free[0].used_percent == 0.0 and free[0].resets_at is None
+    items_cleared = [_window_item(x, p) for x, p in
+                     all_window_paces([cleared], history, FREE_RESET) if p]
+    data_cleared = {"updated_at": FREE_RESET.isoformat(), "windows": items_cleared,
+                    "errors": [{"provider": "opencode", "error": "HTTP 500"}]}
+    oc = evaluate(data_cleared, routing, {}, FREE_RESET).worker("ocfree")
+    assert oc.verdict in ("go", "boost")
+
+    # 推奨の材料にしない: 窓の一覧から opencode:free を除いた場合と同じ結果
+    ok_usage = opencode.with_free_limit(prev, NOW)
+    with_free = recommend([ok_usage], history, NOW)
+    without = recommend([prev], history, NOW)
+    assert with_free == without
+
+
+def test_with_free_limit_leaves_error_card_alone(monkeypatch, tmp_path):
+    from quotacanvas.models import ProviderUsage
+
+    _free_file(monkeypatch, tmp_path, FREE_LIMIT_TEXT)
+    err = ProviderUsage("opencode", "OpenCode Go", [], "HTTP 500", NOW)
+    assert opencode.with_free_limit(err, NOW) is err
+    other = ProviderUsage("glm", "GLM", [], None, NOW)
+    assert opencode.with_free_limit(other, NOW) is other
+
+
+def test_config_accepts_opencode_free_window():
+    from quotacanvas.config import config_from_dict
+
+    cfg = config_from_dict({"routing": {"workers": {"ocfree": ["opencode:free"]}}})
+    assert cfg.routing.workers == {"ocfree": ["opencode:free"]}
 
 
 # ---------------------------------------------------------------- provider

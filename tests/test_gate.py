@@ -432,6 +432,36 @@ def test_default_workers_are_present_providers_with_independent_windows():
     assert result.workers[1].reason == "error"  # 窓が無くても errors に出ている provider は出す
 
 
+def test_default_workers_exclude_routing_only_windows():
+    # devin:free / opencode:free は "<provider>:*" が拾わないのと同じ理由で、
+    # 既定ワーカーの id 列挙にも入れない (名指ししたときだけ使う)。
+    data = status(
+        win("devin:1d", "devin", "spare", 60.0),
+        win("devin:free", "devin", "over", 0.0),
+        win("opencode:5h", "opencode", "spare", 70.0),
+        win("opencode:free", "opencode", "over", 0.0),
+    )
+    workers = gate.default_workers(data)
+    assert workers["devin"] == ["devin:1d"]
+    assert workers["opencode"] == ["opencode:5h"]
+    # 制限中 (free が 100%) でも provider 全体が stop にならない
+    result = evaluate(data, cfg(), {}, NOW)
+    assert result.worker("devin").windows == ["devin:1d"]
+    assert result.worker("opencode").windows == ["opencode:5h"]
+    assert result.worker("devin").verdict != "stop"
+    assert result.worker("opencode").verdict != "stop"
+
+
+def test_default_workers_tolerate_unhashable_window_id():
+    # 壊れた status.json で id が list になっていても、既定ワーカーに入れず
+    # evaluate まで落ちない
+    data = status(win("devin:1d", "devin", "spare", 60.0))
+    data["windows"].append({"provider": "devin", "id": ["x"]})
+    assert gate.default_workers(data)["devin"] == ["devin:1d"]
+    result = evaluate(data, cfg(), {}, NOW)
+    assert result.worker("devin").windows == ["devin:1d"]
+
+
 def test_default_worker_order_follows_known_providers():
     data = status(win("glm:5h", "glm", "spare", 50.0),
                   win("claude:weekly", "claude", "spare", 50.0))

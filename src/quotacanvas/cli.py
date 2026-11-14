@@ -313,13 +313,14 @@ class Poller:
                 if self.record:
                     self.store.set(u)
                     # 内訳窓 (part_of 付き) は親窓の表示の一部なので履歴は取らない。
-                    # 判定専用の窓 (devin:free) もペースの材料ではないので取らない
+                    # 判定専用の窓 (devin:free / opencode:free) もペースの材料ではないので取らない
                     self.history.record([w for w in u.windows if w.part_of is None
                                          and w.id not in ROUTING_ONLY_WINDOWS], now)
             result.append(u)
-        # Devin の無料枠の利用制限の窓 (devin:free) は API ではなくローカルのファイル
-        # 由来なので、取得失敗で前回値 (last-good) を出すときも毎回今のファイルから
-        # 作り直す (延びた戻る時刻・明けた制限をすぐ反映する)
+        # Devin / OpenCode の無料枠の利用制限の窓 (devin:free / opencode:free) は
+        # API ではなくローカルのファイル由来なので、取得失敗で前回値 (last-good) を
+        # 出すときも毎回今のファイルから作り直す (延びた戻る時刻・明けた制限をすぐ反映する)
+        result = [providers.opencode.with_free_limit(u, now) for u in result]
         result = [providers.devin.with_free_limit(u, now) for u in result]
         # リセット時刻を過ぎた窓はリセット済みとして返す (保存済みの last-good・
         # 履歴は API の値のまま)。API が古い期間を返し続けても上限超過にしない。

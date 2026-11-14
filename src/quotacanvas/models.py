@@ -10,7 +10,7 @@ from typing import List, Optional
 
 # 振り分け判定 (status.json の "windows") にだけ載せ、パネルのカードには出さない窓の ID。
 # display.windows で名指ししたときだけ表示する。
-ROUTING_ONLY_WINDOWS = frozenset({"devin:free"})
+ROUTING_ONLY_WINDOWS = frozenset({"devin:free", "opencode:free"})
 
 
 @dataclass

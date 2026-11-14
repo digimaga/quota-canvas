@@ -14,6 +14,13 @@ def _no_real_devin_free_limit(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_opencode_free_limit(tmp_path, monkeypatch):
+    """OpenCode の無料枠の利用制限ファイルも実機のものを読ませない。"""
+    monkeypatch.setenv("QUOTA_CANVAS_OPENCODE_FREE_EXHAUSTED_FILE",
+                       str(tmp_path / "opencode-free-exhausted-none"))
+
+
+@pytest.fixture(autouse=True)
 def _no_real_gemini_login(monkeypatch):
     """キーチェーン gemini/antigravity (Antigravity CLI の実ログイン) を読ませない。
     使いたいテストは自分でもう一度 monkeypatch すればよい (test_gemini.py)。"""

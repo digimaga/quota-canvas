@@ -742,7 +742,10 @@ def off_providers(routing_cfg: "Routing", off: Optional[Set[str]]) -> Set[str]:
 def default_workers(status: Optional[dict]) -> Dict[str, List[str]]:
     """[routing.workers] 未指定の既定: 取得できている provider ごとに、その
     provider 名で「その provider の独立窓 (part_of なし) すべて」。
-    名前は status.json 由来の生の文字列なので、安全な形のものだけ採用する。"""
+    判定専用の窓 (ROUTING_ONLY_WINDOWS。devin:free など) は、"<provider>:*"
+    が拾わないのと同じ理由で既定にも入れない ([routing.workers] で id を
+    名指ししたときだけ使う)。名前は status.json 由来の生の文字列なので、
+    安全な形のものだけ採用する。"""
     windows = status_windows(status)
     present: List[str] = []
     for w in windows:
@@ -756,7 +759,9 @@ def default_workers(status: Optional[dict]) -> Dict[str, List[str]]:
         + [p for p in present if p not in KNOWN_PROVIDERS]
     return {
         p: [w["id"] for w in windows
-            if w.get("provider") == p and not w.get("part_of") and "id" in w]
+            if w.get("provider") == p and not w.get("part_of")
+            and isinstance(w.get("id"), str)
+            and w["id"] not in ROUTING_ONLY_WINDOWS]
         for p in ordered
     }
 
@@ -896,9 +901,9 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
                 provider=_one_provider(providers),
                 local=local_fields(entry) if entry else None))
             continue
-        # 判定専用の窓 (devin:free。ローカルのファイルから毎回作り直す) だけに結ばれた
-        # ワーカーは、同じ provider の API の取得失敗・前回値 (stale) で unknown にしない
-        # (API が落ちていても利用制限中なら stop を出す)
+        # 判定専用の窓 (devin:free / opencode:free。ローカルのファイルから毎回作り直す)
+        # だけに結ばれたワーカーは、同じ provider の API の取得失敗・前回値 (stale) で
+        # unknown にしない (API が落ちていても利用制限中なら stop を出す)
         file_only = bool(matched) and all(w.get("id") in ROUTING_ONLY_WINDOWS for w in matched)
         if not file_only and any(_is_stale_window(w, stale_min, now) for w in data_windows):
             workers.append(WorkerResult(name=name, verdict="unknown", reason="stale",
