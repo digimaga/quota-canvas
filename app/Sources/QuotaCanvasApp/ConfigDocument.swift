@@ -276,8 +276,8 @@ struct ConfigDocument {
     /// 読み込み: エンジンは名前 → エントリのオブジェクト + 表示順の `model_order`
     /// で返す（JSONSerialization はオブジェクトのキー順を保てないため）。順番は
     /// model_order のとおり、無ければ名前順。enabled が無い古い JSON は true 扱い。
-    /// 書き込みは setRoutingModelEnabled だけを行い、workers / roles / invoke /
-    /// edit / note には触れない（model_order もそのまま残す）。
+    /// 書き込みは setRoutingModelEnabled（enabled）と setRoutingModelRoles（roles）
+    /// だけを行い、workers / invoke / edit / note には触れない（model_order もそのまま残す）。
     var routingModels: [RoutingModelEntry] {
         let r = routing
         guard let models = r["models"] as? [String: Any] else { return [] }
@@ -297,6 +297,36 @@ struct ConfigDocument {
             let ib = order.firstIndex(of: b.name) ?? Int.max
             return ia == ib ? a.name < b.name : ia < ib
         }
+    }
+
+    /// 役割の正規の並び（台帳の roles はこの順で書く）。
+    static let routingModelRoleOrder = ["impl", "review", "consult"]
+
+    /// roles のうち role を on / off した結果（正規の並び）。結果が空になる
+    /// （最後の 1 つを外す）ときは nil。使わないなら enabled を切る。
+    /// 知らない役割は消さずに残す。
+    static func routingModelRoles(_ roles: [String], setting role: String, to on: Bool) -> [String]? {
+        var set = Set(roles)
+        if on { set.insert(role) } else { set.remove(role) }
+        if set.isEmpty { return nil }
+        let known = routingModelRoleOrder.filter { set.contains($0) }
+        var others = roles.filter { set.contains($0) && !routingModelRoleOrder.contains($0) }
+        if on && !routingModelRoleOrder.contains(role) && !others.contains(role) { others.append(role) }
+        return known + others
+    }
+
+    /// routing.models.<name>.roles だけを更新する（実装 / レビュー / 相談の選択）。
+    /// 空の roles は書かない（エンジンが拒否する）。台帳の他のキーと model_order は
+    /// 保持する。台帳に無い名前は何もしない。
+    mutating func setRoutingModelRoles(_ name: String, _ roles: [String]) {
+        guard !roles.isEmpty else { return }
+        var r = routing
+        guard var models = r["models"] as? [String: Any],
+              var entry = models[name] as? [String: Any] else { return }
+        entry["roles"] = roles
+        models[name] = entry
+        r["models"] = models
+        routing = r
     }
 
     /// routing.models.<name>.enabled だけを更新する。台帳の他のキー

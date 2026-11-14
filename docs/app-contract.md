@@ -318,7 +318,9 @@ output is the envelope so callers can judge freshness:
   `[routing.workers]` order — which is the `routing line` display order — travels there too.
   With `[routing.models.*]`, `routing.models.<name>` always carries `enabled` (bool) beside
   `workers` / `roles` / `invoke` / `edit` / `note`, and `routing.model_order` carries the
-  display order; `config --set-json` / `--apply-json` read `enabled` back the same way.
+  display order; `config --set-json` / `--apply-json` read `enabled` back the same way. The app's
+  model rows edit `roles` (implement / review checkboxes; `consult` is kept; the last role cannot be
+  removed — turn the model off with `enabled` instead) and `enabled`, and keep every other key.
 - `quota-canvas config --set-json` — reads a full config object (same shape) on stdin,
   validates it, writes `~/.config/quota-canvas/config.toml`. The running engine watches the
   file's mtime once a second and picks it up within 1–2 seconds (redraw only, no refetch).

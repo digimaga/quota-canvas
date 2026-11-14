@@ -203,7 +203,7 @@ workers = ["codex"]
 roles = ["review"]
 ```
 
-`enabled = false` にしたモデルは台帳にも review 候補にも出さず、routing が有効なときは `routing check` も判定せずに exit 3 にします（既定 true）。
+`roles` に `"impl"` と `"review"` の両方を書けば、そのモデルを実装にもレビューにも使えます（メニューバーアプリの「振り分け」タブの「モデル」で、モデルごとに実装・レビューのチェックを切り替えられます）。`enabled = false` にしたモデルは台帳にも review 候補にも出さず、routing が有効なときは `routing check` も判定せずに exit 3 にします（既定 true）。
 
 `routing line` は 1 行目を今までどおりに出し、続けて台帳を出す。
 

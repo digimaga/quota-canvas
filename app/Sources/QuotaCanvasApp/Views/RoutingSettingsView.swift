@@ -330,7 +330,7 @@ struct RoutingSettingsView: View {
         )
     }
 
-    // MARK: - モデル台帳（routing.models の enabled）
+    // MARK: - モデル台帳（routing.models の enabled・roles）
 
     private var modelsSection: some View {
         Section("モデル（使う / 使わない）") {
@@ -338,7 +338,7 @@ struct RoutingSettingsView: View {
                 Text("台帳が未設定です。config.toml の [routing.models.*] でモデルを登録すると、ここで使う / 使わないを選べます。")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("オフにしたモデルは、セッション開始時のモデル一覧とレビュー候補から外れます。")
+                Text("モデルごとに、実装・レビューのどちらに使うか選べます（両方も可）。外した役割と、オフにしたモデルは、セッション開始時のモデル一覧とレビュー候補から外れます。")
                     .font(.caption).foregroundStyle(.secondary)
                 ForEach(modelRows, id: \.name) { entry in
                     modelRow(entry)
@@ -348,37 +348,57 @@ struct RoutingSettingsView: View {
     }
 
     private func modelRow(_ entry: ConfigDocument.RoutingModelEntry) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        let current = modelRows.first(where: { $0.name == entry.name }) ?? entry
+        return VStack(alignment: .leading, spacing: 4) {
             Toggle(entry.name, isOn: Binding(
-                get: { modelRows.first(where: { $0.name == entry.name })?.enabled ?? entry.enabled },
+                get: { current.enabled },
                 set: { value in
                     setModelEnabled(entry.name, value)
                 }))
-            Text(modelSubtitle(entry))
+            HStack(spacing: 16) {
+                roleToggle(current, role: "impl", title: "実装")
+                roleToggle(current, role: "review", title: "レビュー")
+                if current.roles.contains("consult") {
+                    Text("相談").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .disabled(!current.enabled)
+            Text(modelSubtitle(current))
                 .font(.caption2).foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .opacity(entry.enabled ? 1 : 0.55)
+        .opacity(current.enabled ? 1 : 0.55)
     }
 
-    /// 役割（impl=実装 / review=レビュー / consult=相談）と note の先頭。
+    /// 1 つの役割のチェック。最後の 1 つの役割は外せない（使わないなら上のスイッチ）。
+    private func roleToggle(_ entry: ConfigDocument.RoutingModelEntry, role: String, title: LocalizedStringKey) -> some View {
+        let on = entry.roles.contains(role)
+        let removable = ConfigDocument.routingModelRoles(entry.roles, setting: role, to: false) != nil
+        return Toggle(title, isOn: Binding(
+            get: { modelRows.first(where: { $0.name == entry.name })?.roles.contains(role) ?? on },
+            set: { value in setModelRole(entry.name, role, value) }))
+            .toggleStyle(.checkbox)
+            .disabled(on && !removable)
+            .help(on && !removable ? String(localized: "最後の 1 つの役割は外せません。使わないときは、上のスイッチをオフにしてください。") : "")
+    }
+
+    /// note の先頭（役割は上のチェックで見えるので出さない）。
     private func modelSubtitle(_ entry: ConfigDocument.RoutingModelEntry) -> String {
-        let roles = entry.roles.map { role in
-            switch role {
-            case "impl": return String(localized: "impl=実装")
-            case "review": return String(localized: "review=レビュー")
-            case "consult": return String(localized: "consult=相談")
-            default: return role
-            }
-        }.joined(separator: " ")
-        let head = entry.note.count > 40 ? String(entry.note.prefix(40)) + "…" : entry.note
-        return head.isEmpty ? roles : (roles.isEmpty ? head : roles + " · " + head)
+        entry.note.count > 40 ? String(entry.note.prefix(40)) + "…" : entry.note
     }
 
     private func setModelEnabled(_ name: String, _ value: Bool) {
         guard let index = modelRows.firstIndex(where: { $0.name == name }) else { return }
         modelRows[index].enabled = value
         saveRouting(.model(name)) { $0.setRoutingModelEnabled(name, value) }
+    }
+
+    private func setModelRole(_ name: String, _ role: String, _ value: Bool) {
+        guard let index = modelRows.firstIndex(where: { $0.name == name }),
+              let roles = ConfigDocument.routingModelRoles(modelRows[index].roles, setting: role, to: value)
+        else { return }
+        modelRows[index].roles = roles
+        saveRouting(.model(name)) { $0.setRoutingModelRoles(name, roles) }
     }
 
     // MARK: - ワーカーの設定（routing.workers、保存ボタンで明示的に保存）

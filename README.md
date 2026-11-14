@@ -204,7 +204,7 @@ workers = ["codex"]
 roles = ["review"]
 ```
 
-Set `enabled = false` on a model to leave it out of the ledger and the review candidates; while routing is enabled, `routing check` then exits 3 without judging it (default `true`).
+List both `"impl"` and `"review"` in `roles` to use a model for both implementation and review (the menu bar app's Routing settings tab, "Models" section, has an Implement / Review checkbox per model). Set `enabled = false` on a model to leave it out of the ledger and the review candidates; while routing is enabled, `routing check` then exits 3 without judging it (default `true`).
 
 `routing line` keeps its existing first line, followed by the model ledger, for example:
 

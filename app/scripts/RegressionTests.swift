@@ -104,6 +104,37 @@ struct RegressionTests {
         check(ledgerA?["enabled"] == nil && ledgerModels?["model_order"] as? [String] == ["a", "b"],
               "toggling a model leaves other entries and model_order untouched")
 
+        // 役割（実装 / レビュー）の選択: 正規の並びで書き、最後の 1 つは外せない。
+        // roles の更新は台帳の他のキーと enabled を壊さない。
+        check(ConfigDocument.routingModelRoles(["review", "consult"], setting: "impl", to: true) == ["impl", "review", "consult"],
+              "turning impl on keeps the canonical role order")
+        check(ConfigDocument.routingModelRoles(["impl", "review"], setting: "review", to: false) == ["impl"],
+              "turning a role off keeps the others")
+        check(ConfigDocument.routingModelRoles(["impl"], setting: "impl", to: false) == nil,
+              "the last role cannot be turned off")
+        check(ConfigDocument.routingModelRoles(["impl", "x"], setting: "impl", to: false) == ["x"],
+              "unknown roles are kept and count as a remaining role")
+        check(ConfigDocument.routingModelRoles(["impl"], setting: "x", to: true) == ["impl", "x"]
+              && ConfigDocument.routingModelRoles(["impl", "x"], setting: "x", to: false) == ["impl"],
+              "unknown roles can be added and removed")
+        check(ConfigDocument.routingModelRoles(["impl"], setting: "impl", to: true) == ["impl"],
+              "turning on an already-on role is a no-op")
+        ledger.setRoutingModelRoles("a", ["impl", "review", "consult"])
+        ledger.setRoutingModelRoles("a", [])
+        ledger.setRoutingModelRoles("missing", ["impl"])
+        let rolesModels = ledger.object["routing"] as? [String: Any]
+        let rolesA = (rolesModels?["models"] as? [String: Any])?["a"] as? [String: Any]
+        let rolesB = (rolesModels?["models"] as? [String: Any])?["b"] as? [String: Any]
+        check(rolesA?["roles"] as? [String] == ["impl", "review", "consult"]
+              && rolesA?["workers"] as? [String] == ["glm"]
+              && rolesA?["edit"] as? Bool == false
+              && rolesA?["enabled"] == nil,
+              "setting roles keeps the other ledger keys and ignores an empty list")
+        check(rolesB?["enabled"] as? Bool == false && rolesB?["roles"] as? [String] == ["impl"]
+              && rolesModels?["model_order"] as? [String] == ["a", "b"],
+              "setting roles leaves other entries and model_order untouched")
+
+
         // 監視のみのカード: monitor_only が true なら状態色ではなく専用色。無い・型違いは通常色。
         let monitorCards = try JSONDecoder().decode([StatusCard].self, from: Data(#"""
         [{"id":"a:w","status":"spare","status_label":"監視のみ","monitor_only":true},

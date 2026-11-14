@@ -377,3 +377,20 @@ roles = ["review"]
 ''')
     monkeypatch.setattr(cli, "_stale_line_with_disabled", lambda *args: "")
     assert _run(tmp_path, ["routing", command], status=tmp_path / "missing.json", config=cfg) == (0, "", "")
+
+
+def test_model_with_impl_and_review_roles_is_a_review_candidate(tmp_path):
+    """roles に impl と review を両方書いたモデルは、実装にもレビューにも使える（メニューバーアプリの役割チェックの既定）。"""
+    path = tmp_path / "status.json"
+    _write_status(path, [_win("codex:weekly", "codex", "spare", 70)])
+    cfg = _models_config(tmp_path, '''
+[routing.models.both]
+workers = ["codex"]
+roles = ["impl", "review"]
+[routing.models.impl_only]
+workers = ["codex"]
+roles = ["impl"]
+''')
+    _, out, _ = _run(tmp_path, ["routing", "line"], status=path, config=cfg)
+    assert "- both:" in out and "- impl_only:" in out
+    assert "review: 使える 1（both）" in out
