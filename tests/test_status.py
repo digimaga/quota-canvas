@@ -506,6 +506,21 @@ def test_build_status_marks_monitor_only_card(tmp_path):
     assert claude["status_label"] != "監視のみ"
 
 
+def test_build_status_marks_muse_monitor_only_automatically(tmp_path):
+    # Muse は設定 (off) に関係なく、routing 無効でも常に「監視のみ」。
+    cfg = _cfg(tmp_path, '')
+    win_m = _win("muse", "daily", 80.0)
+    win_c = _win("claude", "weekly", 5.0)
+    pu_m = ProviderUsage("muse", "Muse", [win_m], None, NOW)
+    pu_c = ProviderUsage("claude", "Claude Max", [win_c], None, NOW)
+    pairs = [(pu_m, _pace(win_m)), (pu_c, _pace(win_c))]
+    cards = build_status(cfg, pairs, [pu_m, pu_c], NOW)["cards"]
+    muse = next(c for c in cards if c["provider"] == "muse")
+    claude = next(c for c in cards if c["provider"] == "claude")
+    assert muse["monitor_only"] is True and muse["status_label"] == "監視のみ"
+    assert "monitor_only" not in claude
+
+
 def test_build_status_ignores_off_when_routing_disabled(tmp_path):
     # routing が無効なら off が渡されても「監視のみ」にしない (パネルと揃える)。
     cfg = _cfg(tmp_path, '')

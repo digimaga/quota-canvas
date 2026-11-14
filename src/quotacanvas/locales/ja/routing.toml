@@ -56,6 +56,10 @@ bad_until = "--until は HH:MM か ISO 形式"
 local_no_effect = "{name} は local 枠だけのワーカーなので使い切りモード (burn) は効きません (残量の概念が無いため)"
 local_note = "（burn 無効・local 枠のみ）"
 
+[mode]
+auto_monitor = "{name} はコーディングに使えないため、自動で監視のみです（モードは変更できません）"
+auto_note = "（自動で監視のみ）"
+
 [hook]
 # routing hook が additionalContext に載せる振り分けのルール (セッション開始時に
 # AI に読ませるもの。line のすぐ後ろに入るので「上の quota 行」始まり)。

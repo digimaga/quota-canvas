@@ -118,7 +118,8 @@ The app finds the CLI at the path stored in its settings (default
   (recorded when the window resets). Omitted when the previous period is unknown.
 
 - `monitor_only` on a card — optional (omitted = false); `true` when the provider is
-  set to 監視のみ (routing mode `off`, every worker that uses it is off). The card keeps
+  set to 監視のみ (routing mode `off`, every worker that uses it is off; Muse is always
+  monitor-only, regardless of the routing settings). The card keeps
   its real `status` but `status_label` is "監視のみ" instead of the pace wording, and the
   app/panel draw it in a neutral steel blue (`#6B88A8`) rather than the status color.
   Such providers are also left out of `recommendation` (not even in `ranking`), because
@@ -425,7 +426,12 @@ output is the envelope so callers can judge freshness:
   Without `--json`, each worker is printed on a separate line in name order as
   `name: standard`, `name: off`, or `name: burn (~ISO)` after the operation. Balance-only
   providers (OpenRouter, DeepSeek and Kimi) are excluded from the list and cannot be set
-  to `burn` or `off` through this command.
+  to `burn` or `off` through this command. Workers whose data comes only from providers
+  that cannot be used for coding (`gate.AUTO_MONITOR_PROVIDERS`, currently Muse) are
+  monitor-only automatically: they are listed as `"mode": "off"` with `"auto": true`
+  (the key is omitted for other entries), their `evaluate` verdict is `stop` / `disabled`,
+  and changing them through this command exits 2 with an error (the app shows a fixed
+  note instead of the mode picker).
 - `quota-canvas routing hook [--event NAME]` — one line of JSON for the SessionStart hook
   of the bundled plugin (`plugins/quota-canvas-routing/`):
   `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "…"}}`

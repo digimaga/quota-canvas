@@ -55,6 +55,10 @@ bad_until = "--until takes HH:MM or an ISO 8601 time"
 local_no_effect = "burn mode has no effect on {name}: it is bound to local slots only (no quota left to burn through)"
 local_note = "(burn n/a: local slots only)"
 
+[mode]
+auto_monitor = "{name} cannot be used for coding, so it is monitor-only automatically (its mode cannot be changed)"
+auto_note = "(monitor-only automatically)"
+
 [hook]
 # Rules `routing hook` appends to the quota line in additionalContext (read by
 # the AI at session start, hence "the quota line above").

@@ -744,6 +744,17 @@ struct RegressionTests {
         let routingModel = RoutingModeModel(client: routingClient,
             scheduleReload: { scheduledReloads += 1 },
             reportError: { routingErrors.append($0) })
+        // 自動で監視のみ（Muse）: auto が true のエントリだけ isAutoMonitor
+        let autoEntries = try JSONDecoder().decode([RoutingModeEntry].self, from: Data(#"""
+        [{"name":"muse","mode":"off","until":null,"auto":true},
+         {"name":"grok","mode":"off","until":null},
+         {"name":"codex","mode":"standard","until":null,"auto":false}]
+        """#.utf8))
+        routingModel.modeEntries = autoEntries
+        check(routingModel.isAutoMonitor("muse") && !routingModel.isAutoMonitor("grok")
+              && !routingModel.isAutoMonitor("codex") && !routingModel.isAutoMonitor("none"),
+              "only auto:true entries are auto monitor-only")
+        routingModel.modeEntries = []
         routingClient.setResult = [RoutingModeEntry(name: "w1", mode: "burn", until: nil)]
         let setTask = routingModel.setMode(named: "w1", mode: "burn")
         check(setTask != nil && routingModel.modeBusy, "setMode marks busy while running")

@@ -220,7 +220,10 @@ struct RoutingSettingsView: View {
                 Spacer()
             }
             Text(reasonText(worker)).font(.caption).foregroundStyle(.secondary)
-            if model.modeLoaded {
+            if model.modeLoaded, model.isAutoMonitor(worker.name) {
+                Text("コーディングに使えないため、自動で監視のみ")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else if model.modeLoaded {
                 Picker("モード", selection: modeBinding(worker)) {
                     Text("標準").tag("standard")
                     Text("使い切り").tag("burn")
@@ -249,19 +252,24 @@ struct RoutingSettingsView: View {
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if entry.mode != "standard" {
+                            if entry.mode != "standard" && !entry.isAuto {
                                 Button("解除") { model.setMode(named: name, mode: "standard") }
                                     .controlSize(.small).disabled(model.modeBusy)
                             }
                         }
-                        Picker("モード", selection: Binding(
-                            get: { model.mode(for: name) },
-                            set: { model.setMode(named: name, mode: $0) })) {
-                            Text("標準").tag("standard")
-                            Text("使い切り").tag("burn")
-                            Text("監視のみ").tag("off")
+                        if entry.isAuto {
+                            Text("コーディングに使えないため、自動で監視のみ")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        } else {
+                            Picker("モード", selection: Binding(
+                                get: { model.mode(for: name) },
+                                set: { model.setMode(named: name, mode: $0) })) {
+                                Text("標準").tag("standard")
+                                Text("使い切り").tag("burn")
+                                Text("監視のみ").tag("off")
+                            }
+                            .pickerStyle(.segmented).disabled(model.modeBusy)
                         }
-                        .pickerStyle(.segmented).disabled(model.modeBusy)
                     }
                 }
             }

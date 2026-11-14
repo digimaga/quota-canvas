@@ -301,6 +301,14 @@
 "モード" = "Mode";
 "モードを取得中…" = "Fetching modes…";
 "監視のみ（振り分けで使わない）" = "Monitor only (excluded from routing)";
+"コーディングに使えないため、自動で監視のみ" = "Monitor only automatically (not usable for coding)";
+"モデル（使う / 使わない）" = "Models (use / don't use)";
+"台帳が未設定です。config.toml の [routing.models.*] でモデルを登録すると、ここで使う / 使わないを選べます。" = "No model ledger is set. Register models under [routing.models.*] in config.toml to choose here which to use.";
+"モデルごとに、実装・レビューのどちらに使うか選べます（両方も可）。外した役割と、オフにしたモデルは、セッション開始時のモデル一覧とレビュー候補から外れます。" = "Choose per model whether it is used for implementation, review or both. Roles you turn off, and models you turn off, are left out of the session-start model list and the review candidates.";
+"実装" = "Implement";
+"レビュー" = "Review";
+"相談" = "Consult";
+"最後の 1 つの役割は外せません。使わないときは、上のスイッチをオフにしてください。" = "The last role cannot be turned off. To stop using the model, turn off the switch above.";
 
 /* MARK: MuseLoginView */
 "muse.ai にログイン" = "Log in to muse.ai";
@@ -310,10 +318,3 @@
 "このログインは Safari などのブラウザとは別の、アプリ専用の領域に保存されます。" = "This login is kept in an app-private store, separate from Safari and other browsers.";
 "まだログインしていないようです" = "It looks like you are not logged in yet.";
 "ログイン状態はアプリ専用の WebKit 領域に、取得した利用枠はデータフォルダの muse-usage.json に保存されます。アプリが 5 分ごとに更新し、「削除」で両方を消します。" = "The login stays in the app-private WebKit store; parsed usage is saved as muse-usage.json in the data folder and refreshed by the app every 5 minutes. \"Delete\" removes both.";
-"モデル（使う / 使わない）" = "Models (use / don't use)";
-"台帳が未設定です。config.toml の [routing.models.*] でモデルを登録すると、ここで使う / 使わないを選べます。" = "No model ledger is set. Register models under [routing.models.*] in config.toml to choose here which to use.";
-"モデルごとに、実装・レビューのどちらに使うか選べます（両方も可）。外した役割と、オフにしたモデルは、セッション開始時のモデル一覧とレビュー候補から外れます。" = "Choose per model whether it is used for implementation, review or both. Roles you turn off, and models you turn off, are left out of the session-start model list and the review candidates.";
-"実装" = "Implement";
-"レビュー" = "Review";
-"相談" = "Consult";
-"最後の 1 つの役割は外せません。使わないときは、上のスイッチをオフにしてください。" = "The last role cannot be turned off. To stop using the model, turn off the switch above.";

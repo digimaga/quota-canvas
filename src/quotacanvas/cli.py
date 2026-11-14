@@ -433,11 +433,11 @@ def _write_app_files(cfg: Config, cards: List[Card], usages: List[ProviderUsage]
 
 def _monitor_providers(cfg: Config) -> frozenset:
     """振り分けで「監視のみ」にした provider 名 (routing 無効・読めないときは空)。
-    「今使う先」から外し、カードに「監視のみ」を出すのに使う。"""
-    if not cfg.routing.enabled:
-        return frozenset()
+    「今使う先」から外し、カードに「監視のみ」を出すのに使う。
+    自動で監視のみの provider (Muse) は routing 無効でも常に入る。"""
     try:
-        return frozenset(gate.off_providers(cfg.routing, gate.load_off(gate.OFF_PATH)))
+        off = gate.load_off(gate.OFF_PATH) if cfg.routing.enabled else None
+        return frozenset(gate.off_providers(cfg.routing, off))
     except Exception as exc:  # routing の失敗で表示・常駐は落とさない
         log.warning("routing: %s", exc)
         return frozenset()
@@ -902,7 +902,7 @@ def _load_gate_status(args, cfg: Config) -> Tuple[str, Optional[dict], str, Path
 
 
 def _disabled_for_stale(data, cfg, now):
-    off = gate.load_off(gate.OFF_PATH)
+    off = gate.effective_off(cfg.routing, gate.load_off(gate.OFF_PATH), data)
     if not off:
         return []
     result = gate.evaluate(data, cfg.routing, {}, now, off=off)
@@ -1002,7 +1002,8 @@ def _routing_check_impl(args, cfg: Config) -> int:
     if name not in known and model is None:
         return 2
     state, data, detail, _path = _load_gate_status(args, cfg)
-    off = gate.load_off(gate.OFF_PATH)
+    off = gate.effective_off(cfg.routing, gate.load_off(gate.OFF_PATH),
+                             data if isinstance(data, dict) else None)
     now = gate.now_local()
     worker = None
     code: Optional[int] = None
@@ -1165,11 +1166,21 @@ def _cmd_routing_mode_locked(args, cfg: Config) -> int:
     off = gate.load_off(gate.OFF_PATH)
     known = set(cfg.routing.workers) if cfg.routing.workers else set(gate.KNOWN_PROVIDERS)
     workers_cfg = cfg.routing.workers or {}
+    # コーディングに使えない provider (Muse) のワーカーは自動で監視のみ。変更は受け付けない
+    auto = gate.auto_monitor_workers(
+        {name: workers_cfg.get(name) or [] for name in known | set(burn) | off})
     excluded = {name for name, patterns in workers_cfg.items()
                 if not gate.routing_worker(name, patterns)}
     if args.name or args.mode or args.until:
         # local 枠だけのワーカーに burn は効かない (残量の概念が無い) ので断る
         local_only = gate.local_only_worker(workers_cfg.get(args.name) or [])
+        if args.name in auto:
+            message = t("routing.mode.auto_monitor", name=args.name)
+            if args.json:
+                _print_json({"error": message})
+            else:
+                print(message, file=sys.stderr)
+            return 2
         valid = (args.name and gate.safe_worker_name(args.name)
                  and (args.name not in excluded or args.mode == "standard")
                  and (args.name not in gate.NON_ROUTING_PROVIDERS
@@ -1209,8 +1220,12 @@ def _cmd_routing_mode_locked(args, cfg: Config) -> int:
              # ワーカーとして設定にあるものだけは残す (deepseek = ["local:myserver"])。
              if name not in gate.NON_ROUTING_PROVIDERS
              or gate.routing_worker(name, workers_cfg.get(name) or [])}
-    modes = [{"name": name, "mode": "off" if name in off else "burn" if name in burn else "standard",
-              "until": burn[name].isoformat() if name in burn and name not in off else None}
+    modes = [{"name": name,
+              "mode": "off" if name in off or name in auto
+              else "burn" if name in burn else "standard",
+              "until": (burn[name].isoformat()
+                        if name in burn and name not in off and name not in auto else None),
+              **({"auto": True} if name in auto else {})}
              for name in sorted(names) if gate.safe_worker_name(name)]
     if args.json:
         _print_json({"modes": modes})
@@ -1219,6 +1234,8 @@ def _cmd_routing_mode_locked(args, cfg: Config) -> int:
             # local 枠だけのワーカーは burn が効かないので一覧でも分かるように
             note = (" " + t("routing.burn.local_note")
                     if gate.local_only_worker(workers_cfg.get(item["name"]) or []) else "")
+            if item.get("auto"):
+                note = " " + t("routing.mode.auto_note")
             print("%s: %s%s%s" % (item["name"], item["mode"],
                                   " (~%s)" % item["until"] if item["until"] else "", note))
     return 0

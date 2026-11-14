@@ -693,7 +693,14 @@ def test_routing_mode_list_settings_and_legacy_burn_exclusivity(tmp_path, burn_p
 
     rc, payload = run("mode")
     assert rc == 0 and {item["name"] for item in payload["modes"]} == set(gate.KNOWN_PROVIDERS)
-    assert all(item["mode"] == "standard" and item["until"] is None for item in payload["modes"])
+    # Muse は自動で監視のみ (auto: true)。ほかは標準
+    assert all(item["mode"] == ("off" if item["name"] == "muse" else "standard")
+               and item["until"] is None and bool(item.get("auto")) == (item["name"] == "muse")
+               for item in payload["modes"])
+    # Muse のモードは変更できない (exit 2)
+    for mode in ("standard", "burn", "off"):
+        assert run("mode", "muse", mode)[0] == 2
+    assert not gate.load_off(gate.OFF_PATH)
     rc, payload = run("mode", "grok", "off")
     assert rc == 0 and next(x for x in payload["modes"] if x["name"] == "grok")["mode"] == "off"
     rc, payload = run("mode", "grok", "burn", "--until", "23:59")
@@ -718,9 +725,31 @@ def test_mode_text_lists_standard_and_burn_with_until(tmp_path, burn_path):
     rc, out, err = _run(tmp_path, ["routing", "mode"])
     assert rc == 0 and err == ""
     expected = ["%s: burn (~%s)" % (name, until.astimezone().isoformat()) if name == "grok"
+                else "muse: off （自動で監視のみ）" if name == "muse"
                 else "%s: standard" % name
                 for name in sorted(gate.KNOWN_PROVIDERS)]
     assert out.splitlines() == expected
+
+
+def test_muse_is_monitor_only_automatically_even_with_stale_status(tmp_path):
+    # Muse は設定なしで常に監視のみ: 古い status でも check は stop (exit 3)
+    stale = tmp_path / "stale.json"
+    _write_status(stale, [_win("muse:daily", "muse", "spare", 80)], age_seconds=7200)
+    rc, out, err = _run(tmp_path, ["routing", "check", "muse", "--json"], status=stale)
+    assert rc == 3 and json.loads(out)["reason"] == "disabled" and not err
+
+
+def test_mode_list_marks_stored_muse_auto_even_without_configured_worker(tmp_path):
+    # [routing.workers] に Muse が無くても、保存済みの off 名が Muse なら auto 扱い・変更不可
+    gate.store_off(gate.OFF_PATH, "muse")
+    config = tmp_path / "config.toml"
+    config.write_text('[routing]\nenabled = true\n[routing.workers]\nclaude = ["claude:*"]\n',
+                      encoding="utf-8")
+    rc, out, err = _run(tmp_path, ["routing", "mode", "--json"], config=config)
+    entry = next(x for x in json.loads(out)["modes"] if x["name"] == "muse")
+    assert rc == 0 and entry["mode"] == "off" and entry["auto"] is True
+    rc, out, err = _run(tmp_path, ["routing", "mode", "muse", "standard", "--json"], config=config)
+    assert rc == 2
 
 
 def test_monitor_only_check_and_line_with_missing_or_stale_status(tmp_path):

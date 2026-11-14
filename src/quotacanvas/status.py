@@ -264,7 +264,8 @@ def build_status(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[Pace
     ({ワーカー名: 期限}) で、[routing].enabled のとき status.json の
     "routing" の評価に使う。off は監視のみのワーカー名の集合。
     """
-    monitor = off_providers(cfg.routing, off) if cfg.routing.enabled else set()
+    # routing 無効でも、自動で監視のみの provider (Muse) は off=None で拾える
+    monitor = off_providers(cfg.routing, off if cfg.routing.enabled else None)
     card_items = []
     for pu, pace in cards:
         if pace is not None and pace.window.part_of is not None:

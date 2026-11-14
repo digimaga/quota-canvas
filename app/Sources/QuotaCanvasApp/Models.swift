@@ -400,7 +400,9 @@ struct RoutingModeEntry: Decodable {
     var name: String?
     var mode: String
     var until: String?   // 期限（ISO 8601）
+    var auto: Bool?      // true = コーディングに使えず自動で監視のみ（変更不可。Muse）
 
+    var isAuto: Bool { auto == true }
     var untilDate: Date? { until.flatMap(ISO8601Support.parse) }
 }
 

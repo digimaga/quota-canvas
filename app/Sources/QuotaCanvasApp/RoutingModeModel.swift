@@ -39,6 +39,11 @@ final class RoutingModeModel: ObservableObject {
         modeEntries.first { $0.name == name }?.mode ?? "standard"
     }
 
+    /// 自動で監視のみ（コーディングに使えない Muse など）のワーカーか。モードは変更できない。
+    func isAutoMonitor(_ name: String?) -> Bool {
+        modeEntries.first { $0.name == name }?.isAuto ?? false
+    }
+
     /// モードを CLI で切り替える。空の名前は無視して nil を返す。
     /// 返した Task は切り替え処理（失敗時の一覧取り直しまで）が終わると完了する。
     @discardableResult

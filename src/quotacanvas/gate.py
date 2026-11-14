@@ -37,6 +37,9 @@ if TYPE_CHECKING:  # 循環 import を避ける (実行時は duck typing)
 # routing check の既定ワーカー名。残高表示専用のサービスは含めない。
 KNOWN_PROVIDERS = ("claude", "codex", "glm", "grok", "gemini", "opencode", "devin", "muse", "opendesign")
 NON_ROUTING_PROVIDERS = frozenset(("openrouter", "deepseek", "kimi"))
+# コーディングに使えず、振り分けでは自動的に「監視のみ」扱いにする provider。
+# providers.Provider.recommendable = False のサービスと同じ集合 (test で一致を見る)。
+AUTO_MONITOR_PROVIDERS = frozenset(("muse",))
 
 # ワーカー名の制約。既定ワーカーの名前は status.json 由来の windows[].provider の
 # 生の文字列なので、この条件を満たす名前だけを判定・表示に使う (format_line の
@@ -716,15 +719,56 @@ def _one_provider(providers: Set[str]) -> str:
     return next(iter(providers)) if len(providers) == 1 else ""
 
 
+def _glob_providers(token: str) -> Set[str]:
+    """"muse*" / "mus*" のような ':' の無い前方一致指定を、窓の照合と同じく
+    前方一致する既知 provider 名に解決する (該当なしならそのまま)。"""
+    if not token.endswith("*") or ":" in token:
+        return {token}
+    from .config import PROVIDERS
+    prefix = token[:-1]
+    matched = {p for p in PROVIDERS if p.startswith(prefix)}
+    return matched or {token}
+
+
+def auto_monitor_workers(specs: Dict[str, List[str]]) -> Set[str]:
+    """データ元が AUTO_MONITOR_PROVIDERS だけのワーカー名 (自動で監視のみ)。
+    利用者の routing mode 設定 (routing-off.json) とは別に、常に監視のみ扱い。
+    データ元は evaluate と同じく残高専用 provider の窓指定を除いて数える。"""
+    out: Set[str] = set()
+    for name, patterns in specs.items():
+        original = [p for p in (patterns or []) if isinstance(p, str)]
+        kept = [p for p in original if p.split(":", 1)[0] not in NON_ROUTING_PROVIDERS]
+        if original and not kept:
+            continue
+        providers = {q for pr in _worker_providers(name, kept)
+                     for q in _glob_providers(pr)} - NON_ROUTING_PROVIDERS
+        if providers and providers <= AUTO_MONITOR_PROVIDERS:
+            out.add(name)
+    return out
+
+
+def effective_off(routing_cfg: "Routing", off: Optional[Set[str]],
+                  status: Optional[dict] = None) -> Set[str]:
+    """保存済みの監視のみ (off) に、自動で監視のみのワーカーを足した集合。
+    [routing.workers] 未指定なら既定ワーカー (status にある provider 名) で判定する
+    (status が無ければ自動対象も出ない)。"""
+    configured = getattr(routing_cfg, "workers", None)
+    specs: Dict[str, List[str]] = dict(configured or default_workers(status))
+    return set(off or ()) | auto_monitor_workers(specs)
+
+
 def off_providers(routing_cfg: "Routing", off: Optional[Set[str]]) -> Set[str]:
     """監視のみ (mode = off) に設定されているデータ元 provider 名の集合。
 
     provider は「それを使うワーカーが 1 つ以上あり、全員が監視のみ」のときだけ
     入れる (gemini:argon だけ監視のみでも gemini 全体は外さない)。
     [routing.workers] 未指定のときは、ワーカー名 = provider 名とみなす。
+    AUTO_MONITOR_PROVIDERS (Muse) は設定に関係なく常に入る
+    (コーディングに使えず、「今使う先」からも常に外れているため)。
     表示 (カードの「監視のみ」バッジ) と「今使う先」の候補除外に使う。"""
+    out: Set[str] = set(AUTO_MONITOR_PROVIDERS)
     if not off:
-        return set()
+        return out
     specs: Dict[str, List[str]] = dict(getattr(routing_cfg, "workers", None) or {})
     for name in off:
         if safe_worker_name(name):
@@ -734,9 +778,10 @@ def off_providers(routing_cfg: "Routing", off: Optional[Set[str]]) -> Set[str]:
         patterns = [p for p in (patterns or []) if isinstance(p, str)]
         for provider in _worker_providers(name, patterns):
             users.setdefault(provider, set()).add(name)
-    return {provider for provider, names in users.items()
+    out |= {provider for provider, names in users.items()
             if names <= off and provider not in NON_ROUTING_PROVIDERS
             and not provider.startswith("local:")}
+    return out
 
 
 def default_workers(status: Optional[dict]) -> Dict[str, List[str]]:
@@ -821,11 +866,12 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
     floor_hours = float(getattr(routing_cfg, "floor_hours", DEFAULT_FLOOR_HOURS))
     stale_min = int(getattr(routing_cfg, "stale_minutes", DEFAULT_STALE_MINUTES))
     specs: Dict[str, List[str]] = getattr(routing_cfg, "workers", None) or default_workers(status)
-    off = off or set()
+    off = set(off or set())
     specs = dict(specs)
     for name in sorted(off):
         if safe_worker_name(name) and name not in NON_ROUTING_PROVIDERS:
             specs.setdefault(name, [])
+    off |= auto_monitor_workers(specs)  # Muse などは設定に関係なく監視のみ
     previous_holds = previous.get("holds") if isinstance(previous, dict) else None
     if not isinstance(previous_holds, dict):
         previous_holds = {}

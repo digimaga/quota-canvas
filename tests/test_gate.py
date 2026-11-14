@@ -1635,24 +1635,72 @@ def test_window_item_carries_ideal_used():
 def test_off_providers_only_when_every_user_is_off():
     # grok を使うワーカーが全員監視のみなら grok は監視のみ。
     routing = cfg(workers={"grok": ["grok:*"], "hydrogen": ["gemini:*"]})
-    assert gate.off_providers(routing, {"grok"}) == {"grok"}
-    assert gate.off_providers(routing, set()) == set()
-    assert gate.off_providers(routing, None) == set()
+    assert gate.off_providers(routing, {"grok"}) == {"grok", "muse"}
+    assert gate.off_providers(routing, set()) == {"muse"}
+    assert gate.off_providers(routing, None) == {"muse"}
 
 
 def test_off_providers_keeps_provider_with_a_live_worker():
     # 同じ provider を使うワーカーが 1 つでも生きていれば監視のみにしない。
     routing = cfg(workers={"grok": ["grok:*"], "grokfast": ["grok:*"]})
-    assert gate.off_providers(routing, {"grok"}) == set()
-    assert gate.off_providers(routing, {"grok", "grokfast"}) == {"grok"}
+    assert gate.off_providers(routing, {"grok"}) == {"muse"}
+    assert gate.off_providers(routing, {"grok", "grokfast"}) == {"grok", "muse"}
 
 
 def test_off_providers_ignores_non_routing_providers():
     # ワーカー名が無い (既定ワーカー = provider 名) 場合も、設定に無い名前は
     # 既定ワーカーとして扱う。local 枠などの非 routing は入れない。
     routing = cfg(workers={})
-    assert gate.off_providers(routing, {"grok"}) == {"grok"}
-    assert gate.off_providers(routing, {"openrouter", "deepseek", "kimi"}) == set()
+    assert gate.off_providers(routing, {"grok"}) == {"grok", "muse"}
+    assert gate.off_providers(routing, {"openrouter", "deepseek", "kimi"}) == {"muse"}
     # local 枠 (local:<名前>) は status.json のカードに出ないので対象外
     local = cfg(workers={"box": ["local:myserver"]})
-    assert gate.off_providers(local, {"box"}) == set()
+    assert gate.off_providers(local, {"box"}) == {"muse"}
+
+
+def test_auto_monitor_providers_match_non_recommendable_registry():
+    # 自動で監視のみにする provider = コーディングに使えない (recommendable=False) もの
+    from quotacanvas.providers import REGISTRY
+
+    expected = {name for name, p in REGISTRY.items() if not p.recommendable}
+    assert gate.AUTO_MONITOR_PROVIDERS == expected
+
+
+def test_off_providers_always_includes_muse_even_with_custom_workers():
+    # [routing.workers] に muse が無くても、混在ワーカーがあっても、Muse は常に監視のみ
+    routing = cfg(workers={"claude": ["claude:*"]})
+    assert gate.off_providers(routing, None) == {"muse"}
+    mixed = cfg(workers={"mix": ["muse:*", "claude:*"]})
+    assert gate.off_providers(mixed, None) == {"muse"}
+    assert gate.off_providers(mixed, {"mix"}) == {"muse", "claude"}
+
+
+def test_auto_monitor_workers_only_muse_only_workers():
+    specs = {"muse": [], "mix": ["muse:*", "claude:*"], "claude": ["claude:*"],
+             "musefast": ["muse:daily"]}
+    assert gate.auto_monitor_workers(specs) == {"muse", "musefast"}
+    # 残高専用 provider の窓指定は evaluate と同じく無視して数える
+    assert gate.auto_monitor_workers({"mix": ["muse:*", "openrouter:daily"]}) == {"mix"}
+    assert gate.auto_monitor_workers({"only": ["openrouter:daily"]}) == set()
+    # 前方一致指定 ("muse*") も Muse の窓に一致するので自動監視のみ
+    assert gate.auto_monitor_workers({"pre": ["muse*"]}) == {"pre"}
+    assert gate.auto_monitor_workers({"pre": ["muse*", "claude:*"]}) == set()
+    assert gate.auto_monitor_workers({"pre": ["mus*"]}) == {"pre"}
+    assert gate.auto_monitor_workers({"pre": ["c*"]}) == set()  # claude/codex に一致
+    assert gate.auto_monitor_workers({"pre": ["*"]}) == set()
+
+
+def test_effective_off_adds_auto_workers_and_keeps_stored_ones():
+    data = status(win("muse:daily", "muse", "spare", 80.0), win("claude:weekly", "claude", "spare", 80.0))
+    assert gate.effective_off(cfg(workers=None), {"grok"}, data) == {"grok", "muse"}
+    # status が無ければ既定ワーカーが決まらないので、自動対象は出ない
+    assert gate.effective_off(cfg(workers=None), None, None) == set()
+    # [routing.workers] に Muse が無いなら足さない (ワーカーが存在しない)
+    assert gate.effective_off(cfg(workers={"claude": ["claude:*"]}), None, data) == set()
+
+
+def test_evaluate_muse_is_disabled_without_user_setting():
+    data = status(win("muse:daily", "muse", "spare", 80.0))
+    result = gate.evaluate(data, cfg(workers=None), {}, NOW, off=set())
+    muse = [w for w in result.workers if w.name == "muse"]
+    assert muse and muse[0].verdict == "stop" and muse[0].reason == "disabled"
