@@ -128,6 +128,23 @@ end_tolerance = 2
 # glm = ["glm:5h"]
 # grok = ["grok:*"]
 
+# モデル台帳。モデル名ごとに、使うワーカー・役割・編集の可否・呼び方を書くと、
+# `quota-canvas routing line` が 1 行目の後にモデルごとの行と review 候補を出します。
+#   workers = 消費するワーカー名の配列（複数なら全部見る）
+#   roles   = "impl"（実装）/ "review"（レビュー）/ "consult"（相談）の配列
+#   edit    = 編集できるか（既定 false）
+#   invoke  = 呼び方（任意、160 文字まで）
+#   note    = 特徴（任意、120 文字まで）
+#   enabled = false にすると、そのモデルを台帳・review 候補・routing check の
+#             判定から外します（設定は残ります。既定 true）。
+# [routing.models.example]
+# workers = ["codex"]
+# roles = ["impl"]
+# edit = true
+# invoke = "codex-run --model example"
+# note = "差分は commit 前にレビューする"
+# enabled = false
+
 # 取得するプロバイダ。false にしたものは取得しません。
 # color でそのサービスのテーマ色（バーとサービス名の横のドット）を変えられます。
 # 省略したときは既定のブランド色（claude=#D97757 など）が使われます。

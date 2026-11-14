@@ -946,9 +946,11 @@ def _cmd_routing_line(args, cfg: Config) -> int:
 def _cmd_routing_check(args, cfg: Config) -> int:
     """routing check <名前>: stop なら exit 3 (stderr 1 行)、reserve は注意 1 行、
     unknown は「判定できない」旨 1 行 (いずれも exit 0)、go / boost は無言。
-    名前は KNOWN_PROVIDERS か [routing.workers] のキーだけ有効で、それ以外は
+    名前は KNOWN_PROVIDERS・[routing.workers]・[routing.models] のキーだけ有効で、それ以外は
     status.json の中身に関係なく exit 2。status.json に窓が無い既知名は
-    unknown (missing) で exit 0。QUOTA_GATE_FORCE=1 なら常に exit 0。"""
+    unknown (missing) で exit 0。[routing.models] の enabled = false のモデル名は
+    判定を見ずに exit 3 (--json なら verdict=stop, reason=model_disabled)。
+    QUOTA_GATE_FORCE=1 なら常に exit 0。"""
     if not cfg.routing.enabled:
         return 0
     if os.environ.get("QUOTA_GATE_FORCE") == "1":
@@ -967,7 +969,18 @@ def _routing_check_impl(args, cfg: Config) -> int:
     name = args.name
     lang = current_language()
     known = set(cfg.routing.workers) | set(gate.KNOWN_PROVIDERS)
-    if name not in known and name not in cfg.routing.models:
+    model = cfg.routing.models.get(name)
+    if model is not None and not model.enabled and name not in known:
+        # 設定で使わない扱いのモデルは判定を見ずに stop と同じ exit 3。
+        # ワーカー名と衝突するときは従来どおりワーカー名を優先する。
+        set_language(lang)
+        if args.json:
+            _print_json(gate.WorkerResult(name=name, verdict="stop",
+                                          reason="model_disabled").to_dict())
+        else:
+            print(t("routing.check.model_disabled", name=name), file=sys.stderr)
+        return 3
+    if name not in known and model is None:
         return 2
     state, data, detail, _path = _load_gate_status(args, cfg)
     off = gate.load_off(gate.OFF_PATH)
@@ -980,7 +993,7 @@ def _routing_check_impl(args, cfg: Config) -> int:
                                    previous=data.get("routing"), off=off)
         else:
             result = gate.RoutingResult(workers=_disabled_for_stale(data, cfg, now))
-        worker = gate.model_verdict(name, cfg.routing.models[name], result)
+        worker = gate.model_verdict(name, model, result)
         code = 3 if worker.verdict == "stop" else 0
     elif name in off and state != "ok":
         result = gate.evaluate(data, cfg.routing, {}, now, off=off)

@@ -18,8 +18,10 @@ struct RoutingSettingsView: View {
     @State private var staleMinutes = 20
 
     /// [routing] の基本設定の項目。編集の世代と未着地の保存を項目ごとに追跡する。
-    enum RoutingField {
+    /// モデル台帳はモデル名ごとに追跡する（同時に別のモデルを切り替えても混ざらない）。
+    enum RoutingField: Hashable {
         case enabled, floor, stale
+        case model(String)
     }
 
     /// [routing] 基本設定の世代管理。保存中も操作は無効にしないので、失敗した
@@ -65,6 +67,9 @@ struct RoutingSettingsView: View {
 
     @State private var sync = RoutingSyncTracker()
 
+    // モデル台帳（routing.models）。トグルで即保存する。
+    @State private var modelRows: [ConfigDocument.RoutingModelEntry] = []
+
     // ワーカーの編集（保存ボタンで明示的に保存する）
     @State private var rows: [WorkerRow] = []
     @State private var savedWorkers: [ConfigDocument.RoutingWorker] = []
@@ -93,6 +98,7 @@ struct RoutingSettingsView: View {
                     toggleSection
                     verdictSection
                     workersSection
+                    modelsSection
                     pluginSection
                 }
                 .formStyle(.grouped)
@@ -324,6 +330,57 @@ struct RoutingSettingsView: View {
         )
     }
 
+    // MARK: - モデル台帳（routing.models の enabled）
+
+    private var modelsSection: some View {
+        Section("モデル（使う / 使わない）") {
+            if modelRows.isEmpty {
+                Text("台帳が未設定です。config.toml の [routing.models.*] でモデルを登録すると、ここで使う / 使わないを選べます。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("オフにしたモデルは、セッション開始時のモデル一覧とレビュー候補から外れます。")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach(modelRows, id: \.name) { entry in
+                    modelRow(entry)
+                }
+            }
+        }
+    }
+
+    private func modelRow(_ entry: ConfigDocument.RoutingModelEntry) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle(entry.name, isOn: Binding(
+                get: { modelRows.first(where: { $0.name == entry.name })?.enabled ?? entry.enabled },
+                set: { value in
+                    setModelEnabled(entry.name, value)
+                }))
+            Text(modelSubtitle(entry))
+                .font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .opacity(entry.enabled ? 1 : 0.55)
+    }
+
+    /// 役割（impl=実装 / review=レビュー / consult=相談）と note の先頭。
+    private func modelSubtitle(_ entry: ConfigDocument.RoutingModelEntry) -> String {
+        let roles = entry.roles.map { role in
+            switch role {
+            case "impl": return String(localized: "impl=実装")
+            case "review": return String(localized: "review=レビュー")
+            case "consult": return String(localized: "consult=相談")
+            default: return role
+            }
+        }.joined(separator: " ")
+        let head = entry.note.count > 40 ? String(entry.note.prefix(40)) + "…" : entry.note
+        return head.isEmpty ? roles : (roles.isEmpty ? head : roles + " · " + head)
+    }
+
+    private func setModelEnabled(_ name: String, _ value: Bool) {
+        guard let index = modelRows.firstIndex(where: { $0.name == name }) else { return }
+        modelRows[index].enabled = value
+        saveRouting(.model(name)) { $0.setRoutingModelEnabled(name, value) }
+    }
+
     // MARK: - ワーカーの設定（routing.workers、保存ボタンで明示的に保存）
 
     private var workersSection: some View {
@@ -515,6 +572,7 @@ struct RoutingSettingsView: View {
             rows = savedWorkers.map {
                 WorkerRow(name: $0.name, windowsText: $0.windows.joined(separator: ","))
             }
+            modelRows = fetched.routingModels
         } catch {
             loadFailed = true
             alertMessage = error.localizedDescription
@@ -590,6 +648,15 @@ struct RoutingSettingsView: View {
         }
         if sync.shouldApplyReload(.stale, reloadGeneration: reloadGeneration) {
             staleMinutes = fetched.routingStaleMinutes
+        }
+        // モデル台帳はモデル名ごとに世代を見る。読み直しより後の編集・未着地の
+        // 保存があるモデルは表示のまま（成功すれば表示どおりになる）。
+        let reloadedModels = fetched.routingModels
+        modelRows = reloadedModels.map { fresh in
+            guard let current = modelRows.first(where: { $0.name == fresh.name }),
+                  !sync.shouldApplyReload(.model(fresh.name), reloadGeneration: reloadGeneration)
+            else { return fresh }
+            return current
         }
     }
 

@@ -303,6 +303,9 @@ output is the envelope so callers can judge freshness:
   not edit. `routing` additionally carries `worker_order` (array of worker names): JSON
   objects have no key order (the app's JSONSerialization reshuffles them), so the
   `[routing.workers]` order — which is the `routing line` display order — travels there too.
+  With `[routing.models.*]`, `routing.models.<name>` always carries `enabled` (bool) beside
+  `workers` / `roles` / `invoke` / `edit` / `note`, and `routing.model_order` carries the
+  display order; `config --set-json` / `--apply-json` read `enabled` back the same way.
 - `quota-canvas config --set-json` — reads a full config object (same shape) on stdin,
   validates it, writes `~/.config/quota-canvas/config.toml`. The running engine watches the
   file's mtime once a second and picks it up within 1–2 seconds (redraw only, no refetch).
@@ -375,7 +378,9 @@ output is the envelope so callers can judge freshness:
   A name is valid when it is one of `KNOWN_PROVIDERS` (claude / codex / glm / grok /
   gemini / opencode / devin / muse / opendesign), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
   the worst of its workers; a worker name wins on collision) — anything else exits 2, regardless of what
-  status.json contains. A valid name whose windows are absent from status.json (or when
+  status.json contains. A `[routing.models]` key with `enabled = false` (and no colliding worker / provider name)
+  exits 3 without reading status.json — one stderr line, or with `--json` a `stop` / `model_disabled` verdict;
+  `QUOTA_GATE_FORCE=1` still bypasses it. A valid name whose windows are absent from status.json (or when
   status.json is missing / too old / unreadable) is `unknown` with exit 0; with `--json`
   the reason distinguishes `missing` (no windows) from `missing_status` / `stale` /
   `broken` (the status.json itself). Monitor-only workers instead return `stop` / `disabled` even if status is missing or stale. Silent exit 0 when `routing.enabled = false`, and
@@ -502,6 +507,7 @@ balance (USD). A 401/403 means the login expired (`vela login` again).
 | `routing.short_over_margin_minutes` | number > 0 or `null`（既定 `null`） | 短い窓の終盤の猶予（分）。`null` は窓の長さの 10% |
 | `routing.stale_minutes` | 1 以上（既定 20） | 振り分け: 「古いとみなす（分）」Stepper。fetched_at がこれより古い窓を含むワーカーは stale |
 | `routing.workers` | ワーカー名 → 窓 id 配列（`config --set-json` は `[{"name", "windows"}]` の配列も可、`worker_order` でも順指定可）、空 = サービスごとの既定 | 振り分け: ワーカーエディタ（名前 + 窓 id のカンマ区切り、上下ボタンで並べ替え、「既定に戻す（サービスごと）」で空にする）。名前は `^[A-Za-z0-9._-]{1,40}$` |
+| `routing.models` | モデル名 → `{workers, roles, invoke?, edit?, note?, enabled?}`（TOML と同じ形。`config --json` は `model_order` も返す） | 振り分け: モデル台帳（`routing line` の `models:` 行と review 候補）。`enabled = false`（既定 `true`）のモデルは台帳・review 候補から除外し、`routing check` は判定を見ずに exit 3。`config --set-json` の往復でも保持される |
 | `providers.local` | `{<名前>: {enabled, base_url, capacity, label?, engine, metrics_path?, running_metric?, waiting_metric?, api_key_env?, timeout?, color?}}`（TOML と同じ形。config JSON に載る） | 配置: 主枠の候補に `local:<名前>`（表示名は `label`、無ければ名前）が出る。サブ窓の候補には出ない（窓を持たないカード 1 枚のため）。編集 UI は持たない。ローカル LLM サーバー（OpenAI 互換、Prometheus `/metrics`）の並列枠。`local:<名前>` の窓 id で routing.workers に結べる。アプリの設定ドキュメントは未知のキーを保持するので `config --set-json` で消えない |
 
 Strings the engine returns or draws — `advice`, `status_label`, `label`, `error`

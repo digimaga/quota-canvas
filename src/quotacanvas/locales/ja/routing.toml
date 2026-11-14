@@ -30,6 +30,7 @@ review_many = "review: 使える {n}（{names}）"
 
 [check]
 disabled = "quota-canvas: {name}=stop（監視のみ・振り分けで使わない）。QUOTA_GATE_FORCE=1 で無視"
+model_disabled = "quota-canvas: {name} は設定で使わない扱いです（routing.models の enabled = false）。QUOTA_GATE_FORCE=1 で無視"
 stop = "quota-canvas: {name}=stop（{detail}）。QUOTA_GATE_FORCE=1 で無視"
 reserve = "quota-canvas: {name}=reserve（{detail}）。可能なら他のワーカーを優先"
 unknown = "quota-canvas: {name}=unknown（{reason}）。判定できないためそのまま続行"

@@ -78,6 +78,32 @@ struct RegressionTests {
         check(RoutingSettingsView.verdictIsStale(freshnessNow.addingTimeInterval(-301), now: freshnessNow), "stale threshold")
         check(RoutingSettingsView.verdictIsStale(nil, now: freshnessNow), "missing timestamp")
 
+        // routing.models（モデル台帳）: 一覧は model_order 順、enabled が無い古い
+        // JSON は true。enabled の更新は台帳の他のキーを壊さない。
+        var ledger = try ConfigDocument(data: Data(#"""
+        {"routing":{"models":{"b":{"workers":["codex"],"roles":["impl"],"invoke":"codex-run","edit":true,"note":"差分を先に確認"},
+        "a":{"workers":["glm"],"roles":["review","consult"],"edit":false,"note":""}},"model_order":["a","b"]}}
+        """#.utf8))
+        check(ledger.routingModels.map(\.name) == ["a", "b"], "model ledger follows model_order")
+        check(ledger.routingModels[0].roles == ["review", "consult"]
+              && ledger.routingModels[0].enabled && !ledger.routingModels[0].edit
+              && ledger.routingModels[1].note == "差分を先に確認",
+              "model ledger reads roles, note, edit and defaults enabled to true")
+        ledger.setRoutingModelEnabled("b", false)
+        ledger.setRoutingModelEnabled("missing", false)
+        let ledgerModels = ledger.object["routing"] as? [String: Any]
+        let ledgerB = (ledgerModels?["models"] as? [String: Any])?["b"] as? [String: Any]
+        let ledgerA = (ledgerModels?["models"] as? [String: Any])?["a"] as? [String: Any]
+        check(ledgerB?["enabled"] as? Bool == false
+              && ledgerB?["workers"] as? [String] == ["codex"]
+              && ledgerB?["roles"] as? [String] == ["impl"]
+              && ledgerB?["invoke"] as? String == "codex-run"
+              && ledgerB?["edit"] as? Bool == true
+              && ledgerB?["note"] as? String == "差分を先に確認",
+              "toggling a model keeps the other ledger keys")
+        check(ledgerA?["enabled"] == nil && ledgerModels?["model_order"] as? [String] == ["a", "b"],
+              "toggling a model leaves other entries and model_order untouched")
+
         let configPanels = [
             ConfigDocument.PanelConfig(main: "alpha:week", subs: ["alpha:day"], size: "large"),
             ConfigDocument.PanelConfig(main: "", subs: nil, size: "small"),

@@ -262,6 +262,56 @@ struct ConfigDocument {
         }
     }
 
+    /// routing.models の 1 件ぶん（モデル台帳）。表示に使う項目だけを持つ。
+    /// enabled は「セッション開始時のモデル一覧とレビュー候補に使うか」。
+    struct RoutingModelEntry: Equatable {
+        var name: String
+        var roles: [String]
+        var note: String
+        var enabled: Bool
+        var edit: Bool
+    }
+
+    /// モデル台帳の一覧（routing.models）。
+    /// 読み込み: エンジンは名前 → エントリのオブジェクト + 表示順の `model_order`
+    /// で返す（JSONSerialization はオブジェクトのキー順を保てないため）。順番は
+    /// model_order のとおり、無ければ名前順。enabled が無い古い JSON は true 扱い。
+    /// 書き込みは setRoutingModelEnabled だけを行い、workers / roles / invoke /
+    /// edit / note には触れない（model_order もそのまま残す）。
+    var routingModels: [RoutingModelEntry] {
+        let r = routing
+        guard let models = r["models"] as? [String: Any] else { return [] }
+        let order = r["model_order"] as? [String] ?? []
+        var entries: [RoutingModelEntry] = []
+        for (name, value) in models {
+            guard let item = value as? [String: Any] else { continue }
+            entries.append(RoutingModelEntry(
+                name: name,
+                roles: (item["roles"] as? [Any])?.compactMap { $0 as? String } ?? [],
+                note: item["note"] as? String ?? "",
+                enabled: item["enabled"] as? Bool ?? true,
+                edit: item["edit"] as? Bool ?? false))
+        }
+        return entries.sorted { a, b in
+            let ia = order.firstIndex(of: a.name) ?? Int.max
+            let ib = order.firstIndex(of: b.name) ?? Int.max
+            return ia == ib ? a.name < b.name : ia < ib
+        }
+    }
+
+    /// routing.models.<name>.enabled だけを更新する。台帳の他のキー
+    /// （workers / roles / invoke / edit / note）と model_order は保持する。
+    /// 台帳に無い名前は何もしない（エンジン側で消えた行を復活させない）。
+    mutating func setRoutingModelEnabled(_ name: String, _ enabled: Bool) {
+        var r = routing
+        guard var models = r["models"] as? [String: Any],
+              var entry = models[name] as? [String: Any] else { return }
+        entry["enabled"] = enabled
+        models[name] = entry
+        r["models"] = models
+        routing = r
+    }
+
     // MARK: - layout.panels
 
     struct PanelConfig {

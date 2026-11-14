@@ -29,6 +29,7 @@ review_many = "review: {n} available ({names})"
 
 [check]
 disabled = "quota-canvas: {name}=stop (monitor only; excluded from routing). Set QUOTA_GATE_FORCE=1 to ignore"
+model_disabled = "quota-canvas: {name} is marked as unused in the config (routing.models enabled = false). Set QUOTA_GATE_FORCE=1 to ignore"
 stop = "quota-canvas: {name}=stop ({detail}). Set QUOTA_GATE_FORCE=1 to ignore"
 reserve = "quota-canvas: {name}=reserve ({detail}). Prefer other workers if possible"
 unknown = "quota-canvas: {name}=unknown ({reason}). Cannot judge, continuing"

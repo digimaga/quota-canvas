@@ -210,6 +210,8 @@ class RoutingModel:
     invoke: str = ""
     edit: bool = False
     note: str = ""
+    # false なら台帳・review 候補・routing check の判定から外す (設定としては残る)
+    enabled: bool = True
 
 
 @dataclass
@@ -839,7 +841,7 @@ def _model_map(value: Any, path: Path, order: Any = None) -> Dict[str, RoutingMo
         if not isinstance(entry, dict):
             raise ConfigError(t("config.models_table", path=path, name=key))
         for sub in entry:
-            if sub not in ("workers", "roles", "invoke", "edit", "note"):
+            if sub not in ("workers", "roles", "invoke", "edit", "note", "enabled"):
                 raise ConfigError(t("config.models_unknown", path=path, name=key + "." + str(sub)))
         workers = entry.get("workers")
         if not isinstance(workers, list) or not workers or any(not safe_worker_name(w) for w in workers):
@@ -856,7 +858,9 @@ def _model_map(value: Any, path: Path, order: Any = None) -> Dict[str, RoutingMo
                 raise ConfigError(t("config.models_text", path=path, name=key + "." + sub, max=limit))
             strings[sub] = v
         edit = _bool(entry.get("edit", False), key + ".edit", path)
-        out[name] = RoutingModel(list(workers), list(roles), strings["invoke"], edit, strings["note"])
+        enabled = _bool(entry.get("enabled", True), key + ".enabled", path)
+        out[name] = RoutingModel(list(workers), list(roles), strings["invoke"], edit,
+                                 strings["note"], enabled)
     if order is not None:
         if not isinstance(order, list) or any(not safe_worker_name(n) for n in order):
             raise ConfigError(t("config.models_order", path=path))
@@ -1179,6 +1183,8 @@ def format_toml(cfg: Config) -> str:
                   "workers = %s" % json.dumps(model.workers, ensure_ascii=False),
                   "roles = %s" % json.dumps(model.roles, ensure_ascii=False),
                   "edit = %s" % ("true" if model.edit else "false")]
+        if not model.enabled:
+            lines.append("enabled = false")
         if model.invoke:
             lines.append("invoke = %s" % json.dumps(model.invoke, ensure_ascii=False))
         if model.note:
@@ -1337,7 +1343,8 @@ def config_to_dict(cfg: Config) -> Dict[str, Any]:
             "workers": {name: list(ids) for name, ids in cfg.routing.workers.items()},
             "worker_order": list(cfg.routing.workers),
             **({"models": {name: {"workers": list(model.workers), "roles": list(model.roles),
-                              "invoke": model.invoke, "edit": model.edit, "note": model.note}
+                              "invoke": model.invoke, "edit": model.edit, "note": model.note,
+                              "enabled": model.enabled}
                        for name, model in cfg.routing.models.items()},
                 "model_order": list(cfg.routing.models)} if cfg.routing.models else {}),
         },

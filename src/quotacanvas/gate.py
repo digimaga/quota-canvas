@@ -951,6 +951,9 @@ def model_verdict(name: str, model: Any, result: RoutingResult) -> WorkerResult:
 
 def format_model_lines(models: Dict[str, Any], result: RoutingResult,
                        lang: Optional[str] = None) -> List[str]:
+    # enabled = false のモデルは行にも review 候補にも出さない (設定としては残る)
+    models = {name: model for name, model in models.items()
+              if getattr(model, "enabled", True)}
     if not models:
         return []
     _set_lang(lang)
