@@ -1138,6 +1138,19 @@ struct RegressionTests {
         check(doubleTracker.shouldApplyReload(.enabled, reloadGeneration: 100),
               "the pending flag clears only when the newest save lands")
 
+        // 先に取った世代（画面を書き換えた同期の流れで beginSave）を渡した保存は、
+        // Task の開始前から未着地で、世代を取り直さず、返ったら解除される。
+        let earlyBeginTracker = RoutingSettingsView.RoutingSyncTracker()
+        let earlyBeginGeneration = earlyBeginTracker.beginSave(field: .model("a"))
+        check(!earlyBeginTracker.shouldApplyReload(.model("a"), reloadGeneration: 100),
+              "a save begun before its task starts already blocks a stale reload")
+        let earlyBeginFailure = await RoutingSettingsView.runRoutingSave(
+            tracker: earlyBeginTracker, field: .model("a"), saveGeneration: earlyBeginGeneration,
+            save: {}, reload: { _ in })
+        check(earlyBeginFailure == nil && earlyBeginTracker.generation == earlyBeginGeneration + 1
+              && earlyBeginTracker.pendingSave[.model("a")] == nil,
+              "a pre-begun save does not take a second generation and clears pending when it lands")
+
         // 指摘（再確認ラウンド）: 読み直しの開始前から保存中だった項目も守る。
         // 保存 B（floor）開始 → 保存 A（stale）失敗 → 読み直しが B の保存前の値を読む
         // → B 成功 → 読み直し完了。B の着地も世代を進めるので、着地前に始まった

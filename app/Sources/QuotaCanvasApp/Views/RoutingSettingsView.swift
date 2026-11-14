@@ -356,26 +356,25 @@ struct RoutingSettingsView: View {
     }
 
     private func modelRow(_ entry: ConfigDocument.RoutingModelEntry) -> some View {
-        let current = modelRows.first(where: { $0.name == entry.name }) ?? entry
-        return VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 4) {
             Toggle(entry.name, isOn: Binding(
-                get: { current.enabled },
+                get: { entry.enabled },
                 set: { value in
                     setModelEnabled(entry.name, value)
                 }))
             HStack(spacing: 16) {
-                roleToggle(current, role: "impl", title: "実装")
-                roleToggle(current, role: "review", title: "レビュー")
-                if current.roles.contains("consult") {
+                roleToggle(entry, role: "impl", title: "実装")
+                roleToggle(entry, role: "review", title: "レビュー")
+                if entry.roles.contains("consult") {
                     Text("相談").font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            .disabled(!current.enabled)
-            Text(modelSubtitle(current))
+            .disabled(!entry.enabled)
+            Text(modelSubtitle(entry))
                 .font(.caption2).foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .opacity(current.enabled ? 1 : 0.55)
+        .opacity(entry.enabled ? 1 : 0.55)
     }
 
     /// 1 つの役割のチェック。最後の 1 つの役割は外せない（使わないなら上のスイッチ）。
@@ -383,11 +382,11 @@ struct RoutingSettingsView: View {
         let on = entry.roles.contains(role)
         let removable = ConfigDocument.routingModelRoles(entry.roles, setting: role, to: false) != nil
         return Toggle(title, isOn: Binding(
-            get: { modelRows.first(where: { $0.name == entry.name })?.roles.contains(role) ?? on },
+            get: { on },
             set: { value in setModelRole(entry.name, role, value) }))
             .toggleStyle(.checkbox)
             .disabled(on && !removable)
-            .help(on && !removable ? String(localized: "最後の 1 つの役割は外せません。使わないときは、上のスイッチをオフにしてください。") : "")
+            .helpIf(on && !removable, String(localized: "最後の 1 つの役割は外せません。使わないときは、上のスイッチをオフにしてください。"))
     }
 
     /// note の先頭（役割は上のチェックで見えるので出さない）。
@@ -624,9 +623,13 @@ struct RoutingSettingsView: View {
     // 変更した項目だけを、アプリ共通の直列化された保存経路に渡す。
     private func saveRouting(_ field: RoutingField, _ mutate: @escaping (inout ConfigDocument) -> Void) {
         guard doc != nil else { return }
+        // 保存の世代は、画面を先に書き換えたのと同じ同期の流れで取る。Task の中で
+        // 取ると、その隙間に失敗した保存の読み直しが割り込み、画面の変更を
+        // 古い値で上書きしうる。
+        let saveGeneration = sync.beginSave(field: field)
         Task {
             let failure = await Self.runRoutingSave(
-                tracker: sync, field: field,
+                tracker: sync, field: field, saveGeneration: saveGeneration,
                 save: { _ = try await client.updateConfig(mutate) },
                 reload: { await resyncRoutingState(reloadGeneration: $0) })
             if let failure {
@@ -642,12 +645,13 @@ struct RoutingSettingsView: View {
     /// 読み直しを始める。読み直しには取得を始める前の世代を渡す: 取得中に
     /// 完了した編集・保存も「読み直しより後」扱いにして、古いスナップショットで
     /// 上書きしない。戻り値は保存の失敗（成功なら nil）。
+    /// saveGeneration は、呼び出し側が先に `beginSave` で取った世代（省略時はここで取る）。
     static func runRoutingSave(
-        tracker: RoutingSyncTracker, field: RoutingField,
+        tracker: RoutingSyncTracker, field: RoutingField, saveGeneration begun: Int? = nil,
         save: () async throws -> Void,
         reload: (_ reloadGeneration: Int) async -> Void
     ) async -> Error? {
-        let saveGeneration = tracker.beginSave(field: field)
+        let saveGeneration = begun ?? tracker.beginSave(field: field)
         do {
             try await save()
             tracker.saveLanded(field: field, generation: saveGeneration)
@@ -725,4 +729,12 @@ struct RoutingSettingsView: View {
     }()
 
     private static func hhmm(_ date: Date) -> String { hhmmFormatter.string(from: date) }
+}
+
+private extension View {
+    /// 条件を満たすときだけ help（ツールチップ）を付ける。
+    @ViewBuilder
+    func helpIf(_ condition: Bool, _ text: String) -> some View {
+        if condition { help(text) } else { self }
+    }
 }
