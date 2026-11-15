@@ -15,7 +15,7 @@ Embedded in the desktop like wallpaper — your icons stay on top, and windows c
 - Receive notifications about quota status.
 - See usage pace, projected exhaustion, and history.
 - Place a calendar panel in the manual layout (dots on reset days of windows ≥ 1 day; week starts Sunday or Monday).
-- Show a second thin bar (5h / daily window) in small two-row panels, chosen per panel (on by default for OpenCode Go, OpenDesign Go, Gemini and Devin).
+- Show a second thin bar in small two-row panels; the layout settings choose per panel whether it appears and which window it shows (auto picks a shorter window, or the shortest window of a day or more — such as weekly — when the main window is under a day). On by default for OpenCode Go, OpenDesign Go, Gemini and Devin; when it shows a longer window in a worse state, the card badge follows that window.
 - Route AI workers using quota and pace information with Claude Code / Codex plugins (advanced).
 
 ## Supported services
@@ -160,6 +160,7 @@ The Routing settings tab enables routing, sets the remaining quota floor and dat
 - Pace prediction blends the whole-window average and recent rate equally. Reaching 100% before reset means over pace. Otherwise let E = 100 minus projected use and q be the remaining fraction of the window (using waking time when sleep is configured, clamped to 0–1). The tolerance is `end_tolerance + (early_tolerance - end_tolerance) * q` (defaults 2 and 10 percentage points). E above the tolerance is spare, E at or below half the tolerance is tight, and the rest is on track. The legacy `pacing.tight` and `pacing.on_track` keys are accepted but ignored. Less than 3% elapsed and less than 5% used is fresh. If usage rose by at least 1% in the last two hours, the rate is at least 1.5 times the blended rate, and it would exhaust the quota before reset, yellow advice shows the projected exhaustion time. Advice also mentions another window of the same service, such as a five-hour window, if it runs out first. Wording is determined by `advice_text()` in `src/quotacanvas/render.py`.
 - The English display labels the spare state `Spare` and the tight state `Maxing out`.
 - On each reset, the final usage is saved in `periods.jsonl` (the latest 20 per window) and the next period's card shows the previous remaining amount.
+- Once a window's reset time has passed, it is treated as reset — 0% used, with the next reset estimated from the window length — for both display and routing verdicts, even while the service API still returns pre-reset values.
 - The header and `pick` recommend a service to use now. The score is the amount projected to expire unused × window length ÷ time until reset. Services that are over pace, below 5% remaining, failing to fetch, or waiting for reset are excluded, and Muse (a chat service, not for coding) is never recommended; the score is halved when a window shorter than a day has less than 20% remaining and multiplied by 1.5 for a Codex reset credit expiring within 24 hours. If `status.json` is absent or more than 20 minutes old, `pick` fetches usage once without sending anything to the screen.
 
 ### AI worker routing
@@ -189,6 +190,8 @@ Each worker is a list of window IDs; a trailing `*` matches a prefix. Configurat
 
 Worker names use 1–40 ASCII letters, digits, `.`, `_`, or `-`. `config --json` also returns the display order in `routing.worker_order`. `config --set-json` accepts `routing.workers` as an array of `{"name": ..., "windows": [...]}` objects, whose order takes priority; for an object, `worker_order` can specify the order.
 
+A worker can be kept for monitoring only — still fetched and displayed, but excluded from routing — with `routing mode NAME off` or the "Monitor only" section of the app's Routing tab. Its verdict is `stop` (shown as `monitor only`), so `routing check` exits 3 as for an exhausted worker. When every worker using a provider is monitor only, that provider's cards show a neutral "Monitor only" badge instead of the pace status, and the service is dropped from the "use now" recommendation (while routing is enabled). Balance-only providers (OpenRouter, DeepSeek, Kimi) cannot be set. Muse workers are monitor-only automatically regardless of settings, and the app shows a fixed note instead of a mode picker for them.
+
 Optionally list models in configuration order to show their shared quota, capabilities and invocation at session start:
 
 ```toml
@@ -204,7 +207,7 @@ workers = ["codex"]
 roles = ["review"]
 ```
 
-List both `"impl"` and `"review"` in `roles` to use a model for both implementation and review (the menu bar app's Routing settings tab, "Models" section, has an Implement / Review checkbox per model). Set `enabled = false` on a model to leave it out of the ledger and the review candidates; while routing is enabled, `routing check` then exits 3 without judging it (default `true`).
+List both `"impl"` and `"review"` in `roles` to use a model for both implementation and review (the menu bar app's Routing settings tab, "Models" section, has a use/don't-use switch and Implement / Review checkboxes per model; the last role cannot be unchecked — turn the model off instead). Set `enabled = false` on a model to leave it out of the ledger and the review candidates; while routing is enabled, `routing check` then exits 3 without judging it (default `true`).
 
 `routing line` keeps its existing first line, followed by the model ledger, for example:
 
@@ -233,6 +236,8 @@ For windows of 24 hours or longer (with a known `length`), a window whose `burst
 **Windows shorter than 24 hours** (such as 5-hour windows) do not carry over, so ideally they are used up exactly at reset. With a margin of `short_over_margin_minutes` (default: 10% of the window length, i.e. 30 minutes for a 5-hour window), an over-pace window is `go` when it is projected to run out less than the margin before reset, and `reserve` when it would run out earlier. Once a window becomes `reserve`, it stays `reserve` for the same reset until the gap drops below two thirds of the margin (recorded in `routing.holds` in `status.json` to avoid flapping). The low-remaining `stop` applies only while the reset is at least the margin away; after that the window is used down to 0%.
 
 For windows of 24 hours or longer, over pace is `go` when exhaustion is within `long_over_margin_minutes` (default 120 minutes) before reset; floor rules still take priority. A spare window remains `boost` for the same window ID and reset until E falls to 75% of its tolerance or below; stop and reserve take priority. This state is recorded in `routing.spare_holds`.
+
+A `boost` from a spare or short-window on-track projection is downgraded to `go` (reason `ahead_of_pace`) when the window's used percentage is already above its pace line — `ideal_used` in `status.json` is the even-pace usage. `fresh` windows and burn-mode `boost` are unaffected, and older status.json files without `ideal_used` behave as before.
 
 The default freshness limit is 20 minutes (`stale_minutes`). An old `fetched_at` or `stale_error` on a window of a relevant provider also makes the worker `unknown`. Reset credit counts are displayed but do not change verdicts.
 
@@ -270,12 +275,17 @@ deepseek = ["local:myserver"]         # free = boost, queued = stop, full = rese
 .venv/bin/quota-canvas routing burn gemini on        # enable until 23:59 today
 .venv/bin/quota-canvas routing burn gemini on --until 18:00  # HH:MM or ISO 8601
 .venv/bin/quota-canvas routing burn gemini off       # disable
+.venv/bin/quota-canvas routing mode                  # list worker modes
+.venv/bin/quota-canvas routing mode gemini off       # monitor only
+.venv/bin/quota-canvas routing mode gemini standard  # clear burn and monitor-only
 .venv/bin/quota-canvas routing hook                  # JSON for SessionStart
 ```
 
 `line` and `check` read `~/Library/Application Support/quota-canvas/status.json`; they do not fetch usage from services. When enabled, `run` writes `routing`, including its `line`, to `status.json`. `line` always exits 0 and is silent when disabled. `check` exits 3 for `stop` and 0 otherwise. Normally, `stop` / `reserve` / `unknown` print a note to stderr, while `go` / `boost` are silent. With `--json`, the verdict is printed to stdout with the same exit codes. It is also silent and exits 0 when disabled. An invalid name exits 2; valid names are known provider names, configured worker names or model names (a model with `enabled = false` exits 3). `QUOTA_GATE_FORCE=1` bypasses `check`. Use `--status PATH` / `QUOTA_STATUS_PATH` for the primary file and `--fallback-status PATH` / `QUOTA_STATUS_FALLBACK` for a backup when the primary cannot be used.
 
 While active, burn mode turns `reserve` / `go` / `boost` into `boost`, but leaves `stop` and `unknown` unchanged. Its state is saved in `routing-burn.json` in the same directory. When workers are explicitly configured, `on` accepts only their names. An active entry can still be cleared with `off` after its name has been removed from the configuration. A past `--until` time in HH:MM form means that time tomorrow; a past ISO 8601 time is an error (exit code 2). `burn --json` returns the active entries as JSON for both listing and after a change.
+
+`routing mode` lists each worker's mode — `standard`, `burn` (with its deadline), or `off` (monitor only, described above) — and sets it the same way; `--json` returns `{"modes": [...]}`. `standard` clears both burn and monitor-only, and `burn` clears monitor-only. Monitor-only names are kept in `routing-off.json` next to `routing-burn.json`. Workers whose data comes only from Muse are listed with `"auto": true` and cannot be changed (exit 2).
 
 `hook` reads the same data as `line` and prints one JSON line containing `additionalContext` with the verdict and short routing rules. If the data is missing, stale, or broken, it reports only that the verdict is unavailable. It prints nothing when disabled, when there are no workers, or when configuration or evaluation fails, and always exits 0. `--event NAME` changes the event name in the JSON; the default is `SessionStart`.
 

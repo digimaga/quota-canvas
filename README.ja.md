@@ -15,7 +15,7 @@ Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi / OpenCode G
 - 利用枠の状態を通知する。
 - 利用ペース、枯渇予測、履歴を表示する。
 - 手動配置にカレンダーパネル（≥ 1 日の窓のリセット日に印、週の始まりは日曜 / 月曜から選択）を置ける。
-- 2 段の小パネルに 2 本目の細いバー（5 時間・日次の窓）を出せる。パネルごとに選択（既定では OpenCode Go・OpenDesign Go・Gemini・Devin で表示）。
+- 2 段の小パネルに 2 本目の細いバーを出せる。レイアウト設定でパネルごとに表示の有無と窓を選べる（自動はメインより短い窓を選び、メインが 1 日未満なら最短の 1 日以上の窓＝週間など）。既定では OpenCode Go・OpenDesign Go・Gemini・Devin で表示。2 本目に長い窓を出していてその方が状態が悪いときは、カードのバッジもそちらに合わせる。
 - Claude Code / Codex プラグインで、残量とペースに基づく AI ワーカーの振り分けを支援する（上級者向け）。
 
 ## 対応サービス
@@ -160,6 +160,7 @@ Screen().show(pil_image)   # 1920×462 の横長画像
 - 判定は窓全体の平均速度と直近速度を半々に混ぜて予測する。リセット前に 100% に届くとペース超過。届かないときは、予測の使い残し E（100 − リセット時の予測使用率）を、残り時間の割合 q（睡眠帯を設定していれば起きている時間で数え、0〜1 に収める）に応じた許容幅 `end_tolerance + (early_tolerance - end_tolerance) * q`（既定は 2 と 10 ポイント）と比べる。E が許容幅より大きければ余裕あり、許容幅の半分以下なら適正ペース、その間は順調。旧設定の `pacing.tight` / `pacing.on_track` は読み込むが判定には使わない。経過 3% 未満かつ使用 5% 未満はリセット直後。直近 2 時間の使用増加が 1% 以上、かつ速度が混合速度の 1.5 倍以上で、そのままではリセット前に尽きるときは黄色のアドバイスに枯渇時刻を表示する。同じサービスの 5 時間枠などが先に尽きるときもアドバイスで触れる。文言は `src/quotacanvas/render.py` の `advice_text()` で決まる。
 - 英語表示では「余裕あり」を `Spare`、「適正ペース」を `Maxing out` と表示する。
 - リセットのたびに最終使用率を `periods.jsonl` に窓ごとに最新 20 件保存し、次の期間のカードに前回の残量を表示する。
+- 窓のリセット時刻を過ぎると、API がリセット前の値を返し続けていてもリセット済み（使用 0%、次のリセットは窓の長さから推定）として表示と判定を行う。
 - ヘッダと `pick` は今使う先を表示する。点数はリセット時に使われず消える見込み量 × 窓の長さ ÷ リセットまでの時間。ペース超過・残り 5% 未満・取得失敗中・リセット待ちのサービスと、コーディングに使えない Muse（チャット用）は選ばず、同じサービスの 1 日未満の窓が残り 20% 未満なら点数を半分にし、期限 24 時間以内の Codex リセット権があれば点数を 1.5 倍にする。`pick` は `status.json` がないか 20 分より古い場合、画面に送らず利用量を一度取得する。
 
 ### AI ワーカー振り分け（routing）
@@ -177,6 +178,7 @@ floor_percent = 5
 floor_hours = 24
 stale_minutes = 20
 # short_over_margin_minutes = 30   # 省略時は窓長の 10%
+# long_over_margin_minutes = 120  # 24 時間以上の窓でリセット前に許す超過の猶予
 
 [routing.workers]
 claude = ["claude:*"]
@@ -187,6 +189,8 @@ argon = ["gemini:argon"]
 各ワーカーは窓 ID のリストで定義し、末尾の `*` は前方一致。並び順は `routing line` の表示順。内訳窓（`part_of`）は判定しない。`[routing.workers]` を省略または空にすると、取得したプロバイダごとに独立窓をまとめて 1 ワーカーにする。既定の `gemini` には Argon と Antigravity 経由の Claude / GPT の窓も含まれるため、分けたい場合は明示する。各ワーカーは対象窓のうち最も厳しい判定を採用し、同順位なら残量の少ない窓を代表にする。
 
 ワーカー名は 1〜40 文字の英数字、`.`、`_`、`-` を使う。`config --json` は表示順を `routing.worker_order` にも出力する。`config --set-json` では `routing.workers` に `{"name": ..., "windows": [...]}` の配列も使え、配列の順序が優先される。オブジェクト形式では `worker_order` で順序を指定できる。
+
+ワーカーは監視のみにもできる（`routing mode NAME off`、またはアプリの「振り分け」タブの「監視のみ」）。監視のみのワーカーも取得と表示は続くが、判定は `stop`（`routing line` では `monitor only` と出る）になり、`routing check` は使い切りと同じく exit 3。その provider を使うワーカーがすべて監視のみなら、カードはペースの状態語の代わりに中立色の「監視のみ」バッジを出し、「今使う先」の候補からも外れる（routing が有効なとき）。残高専用の OpenRouter・DeepSeek・Kimi は設定できない。Muse のワーカーは設定に関係なく自動で監視のみになり、変更はできない（アプリにはモード選択ではなく固定の説明が出る）。
 
 任意で、モデル台帳を設定の順に書くと、モデルごとに使う枠・編集の可否・役割・呼び方をセッション開始時に出せる。
 
@@ -203,7 +207,7 @@ workers = ["codex"]
 roles = ["review"]
 ```
 
-`roles` に `"impl"` と `"review"` の両方を書けば、そのモデルを実装にもレビューにも使えます（メニューバーアプリの「振り分け」タブの「モデル」で、モデルごとに実装・レビューのチェックを切り替えられます）。`enabled = false` にしたモデルは台帳にも review 候補にも出さず、routing が有効なときは `routing check` も判定せずに exit 3 にします（既定 true）。
+`roles` に `"impl"` と `"review"` の両方を書けば、そのモデルを実装にもレビューにも使えます（メニューバーアプリの「振り分け」タブの「モデル（使う / 使わない）」で、モデルごとのスイッチと実装・レビューのチェックを切り替えられます。最後の 1 つの役割は外せず、使わないときはスイッチをオフにします）。`enabled = false` にしたモデルは台帳にも review 候補にも出さず、routing が有効なときは `routing check` も判定せずに exit 3 にします（既定 true）。
 
 `routing line` は 1 行目を今までどおりに出し、続けて台帳を出す。
 
@@ -230,6 +234,10 @@ review: 使える 1（reviewer）。このモデルが実装した差分はレ�
 24 時間以上の窓（`length` が分かるもの）では、`burst_exhausts_at`（直近 2 時間の勢いでの枯渇見込み）が now より後かつリセットまで `long_over_margin_minutes` を超えて前なら、ペース判定が over でも（`over_near_reset` より優先して）`reserve`（理由 `burst`）にする。`fresh` は対象外。同じリセットの間は最大 30 分その判定を保つ（`routing.burst_holds`）。
 
 **24 時間未満の窓（5 時間枠など）** は繰り越しがなく、リセットでちょうど使い切るのが理想なので扱いを変える。猶予 margin を `short_over_margin_minutes`（省略時は窓長の 10%。5 時間なら 30 分）とし、ペース超過でも枯渇見込みがリセットの margin 未満前なら `go`、それより早ければ `reserve`。一度 `reserve` になった窓は、同じリセットまでの間は margin の 2/3 を切るまで `reserve` を保つ（判定が行き来しないように `status.json` の `routing.holds` に記録する）。残量による `stop` は、リセットまで margin 以上ある間だけ適用し、それより後は 0% まで使う。
+
+24 時間以上の窓では、ペース超過でも枯渇見込みがリセットの `long_over_margin_minutes`（省略時 120 分）以内前なら `go`。残量の下限による判定はこれより優先する。使い残しで `boost` になった窓は、同じ窓 ID・同じリセットの間は E が許容幅の 75% 以下に下がるまで `boost` を保つ（`stop` と `reserve` が優先）。この状態は `routing.spare_holds` に記録する。
+
+使い残し・短い窓の順調による `boost` でも、使用率がペース線（`status.json` の `ideal_used`。経過時間どおりに使ったときの使用率）より上なら `go`（理由 `ahead_of_pace`）にする。`fresh` と使い切りモードの `boost` は従来どおりで、`ideal_used` の無い古い status.json でも従来どおりに判定する。
 
 データの鮮度は既定 20 分（`stale_minutes`）。対象プロバイダの窓に古い `fetched_at` や `stale_error` がある場合も `unknown` になる。リセット権の数は表示されるが判定は変えない。
 
@@ -267,12 +275,17 @@ deepseek = ["local:myserver"]         # 空き = boost、待ちあり = stop、�
 .venv/bin/quota-canvas routing burn gemini on        # 本日 23:59 まで有効
 .venv/bin/quota-canvas routing burn gemini on --until 18:00  # HH:MM または ISO 8601
 .venv/bin/quota-canvas routing burn gemini off       # 解除
+.venv/bin/quota-canvas routing mode                  # ワーカーのモードを一覧
+.venv/bin/quota-canvas routing mode gemini off       # 監視のみ
+.venv/bin/quota-canvas routing mode gemini standard  # 使い切り・監視のみを解除
 .venv/bin/quota-canvas routing hook                  # SessionStart 用の JSON
 ```
 
 `line` / `check` は `~/Library/Application Support/quota-canvas/status.json` を読み、サービスから取得しない。`run` が更新する `status.json` には有効時に `routing` とその `line` が書かれる。`line` は常に終了コード 0、無効時は無出力。`check` は `stop` で 3、それ以外は 0。通常は `stop` / `reserve` / `unknown` の注意を標準エラーに出し、`go` / `boost` は無出力。`--json` では判定を標準出力に出し、終了コードは同じ。無効時も無出力で 0。無効な名前は 2（有効な名前は既知のプロバイダ名・設定したワーカー名・モデル名。`enabled = false` のモデルは 3）。`QUOTA_GATE_FORCE=1` は `check` を無条件で通す。`--status PATH` / `QUOTA_STATUS_PATH` で主ファイル、`--fallback-status PATH` / `QUOTA_STATUS_FALLBACK` で主が使えないときの予備を指定できる。
 
 使い切りモードは期限内の `reserve` / `go` / `boost` を `boost` にするが、`stop` / `unknown` は変えない。状態は同ディレクトリの `routing-burn.json` に保存する。ワーカーを明示した場合、`on` で指定できるのはその名前のみ。設定から削除した名前でも、有効な使い切りモードが残っていれば `off` で解除できる。`--until` に HH:MM で過去の時刻を指定すると翌日のその時刻、ISO 8601 で過去を指定するとエラー（終了コード 2）。`burn --json` は一覧または変更後の有効な設定を JSON で返す。
+
+`routing mode` はワーカーごとのモード（`standard`・`burn`（期限つき）・`off`＝監視のみ。上記）を一覧し、同じ形で設定もできる。`--json` は `{"modes": [...]}` を返す。`standard` は使い切りと監視のみの両方を解除し、`burn` は監視のみを解除して期限を設定する。監視のみの名前は `routing-burn.json` と同じ場所の `routing-off.json` に保存する。Muse だけのワーカーは `"auto": true` 付きで一覧に出て、変更しようとすると exit 2。
 
 `hook` は `line` と同じデータを読み、判定と短い振り分けルールを `additionalContext` を含む 1 行の JSON で出す。データがない・古い・壊れている場合は判定できない旨だけを出す。無効時、ワーカーが 0 件のとき、設定や判定に問題があるときは無出力で、常に終了コード 0。`--event NAME` で JSON のイベント名を変更でき、既定は `SessionStart`。
 
