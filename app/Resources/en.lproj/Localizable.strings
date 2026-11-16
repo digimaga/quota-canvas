@@ -301,6 +301,7 @@
 "モード" = "Mode";
 "モードを取得中…" = "Fetching modes…";
 "監視のみ（振り分けで使わない）" = "Monitor only (excluded from routing)";
+"AI利用不可" = "Not for AI agents";
 "コーディングに使えないため、自動で監視のみ" = "Monitor only automatically (not usable for coding)";
 "モデル（使う / 使わない）" = "Models (use / don't use)";
 "台帳が未設定です。config.toml の [routing.models.*] でモデルを登録すると、ここで使う / 使わないを選べます。" = "No model ledger is set. Register models under [routing.models.*] in config.toml to choose here which to use.";

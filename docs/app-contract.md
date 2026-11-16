@@ -185,6 +185,8 @@ The app finds the CLI at the path stored in its settings (default
   stays one line. Per worker: `verdict` is one of
   - `stop` — do not use: exhausted (`reason: "exhausted"`) or below the floor
     (`routing.floor_percent`, `reason: "below_floor"`), or monitor-only mode (`reason: "disabled"`), even when data is missing, stale or in error;
+    providers whose terms disallow use from other AI agents (`gate.NO_AGENT_PROVIDERS`, currently Gemini) are always `stop` with `reason: "no_agent"`
+    (the quota line shows「AI利用不可」) even with quota left, while their cards, mode settings and burn stay as they are;
   - `reserve` — usable but pace is over (`reason: "over"`); prefer another worker;
   - `go` — normal use (`reason: "tight"` / `"on_track"` / `"over_near_reset"`);
     `over_near_reset` means a window is projected to exhaust within its configured reset margin;
@@ -399,7 +401,7 @@ output is the envelope so callers can judge freshness:
   `QUOTA_GATE_FORCE=1` still bypasses it. A valid name whose windows are absent from status.json (or when
   status.json is missing / too old / unreadable) is `unknown` with exit 0; with `--json`
   the reason distinguishes `missing` (no windows) from `missing_status` / `stale` /
-  `broken` (the status.json itself). Monitor-only workers instead return `stop` / `disabled` even if status is missing or stale. Silent exit 0 when `routing.enabled = false`, and
+  `broken` (the status.json itself). Monitor-only workers instead return `stop` / `disabled` even if status is missing or stale, and so do Gemini-only workers as `stop` / `no_agent`. Silent exit 0 when `routing.enabled = false`, and
   `QUOTA_GATE_FORCE=1` forces silent exit 0 (skips the gate). `--status PATH` /
   `QUOTA_STATUS_PATH` and `--fallback-status PATH` / `QUOTA_STATUS_FALLBACK` choose the
   status.json (the fallback is used when the primary is missing or older than
@@ -431,7 +433,10 @@ output is the envelope so callers can judge freshness:
   monitor-only automatically: they are listed as `"mode": "off"` with `"auto": true`
   (the key is omitted for other entries), their `evaluate` verdict is `stop` / `disabled`,
   and changing them through this command exits 2 with an error (the app shows a fixed
-  note instead of the mode picker).
+  note instead of the mode picker). Workers whose data comes only from
+  `gate.NO_AGENT_PROVIDERS` (Gemini, whose terms do not allow use from other AI agents)
+  keep their mode setting — no `"auto"` key, changes accepted as before — but `evaluate`
+  always judges them `stop` / `no_agent`.
 - `quota-canvas routing hook [--event NAME]` — one line of JSON for the SessionStart hook
   of the bundled plugin (`plugins/quota-canvas-routing/`):
   `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "…"}}`

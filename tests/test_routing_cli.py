@@ -151,7 +151,8 @@ def test_line_enabled_prints_line_and_exit0(tmp_path):
     _write_status(status, [_win("glm:5h", "glm", "spare", 70.0)])
     rc, out, err = _run(tmp_path, ["routing", "line"], status=status)
     assert rc == 0 and err == ""
-    assert re.fullmatch(r"quota: glm=boost\(70%(?:,~\d\d/\d\d \d\d:\d\d)?\) \(\d\d:\d\d時点\)\n", out), out
+    assert re.fullmatch(r"quota: glm=boost\(70%(?:,~\d\d/\d\d \d\d:\d\d)?\) "
+                        r"gemini=stop\(\?%,AI利用不可\) \(\d\d:\d\d時点\)\n", out), out
 
 
 def test_line_json_outputs_result(tmp_path):
@@ -557,12 +558,13 @@ def test_routing_burn_promotes_stop_in_check_not_forced(tmp_path):
 
 def test_check_known_name_without_windows_is_unknown_exit0(tmp_path):
     """既知名 (KNOWN_PROVIDERS / workers のキー) は status に窓が無くても
-    unknown (missing) で exit 0。引数の妥当性を status の中身に依存させない。"""
+    unknown (missing) で exit 0。引数の妥当性を status の中身に依存させない。
+    (gemini は no_agent 対象なので窓が無ければ stop になる。別テストで担保)"""
     status = tmp_path / "status.json"
     _write_status(status, [_win("glm:5h", "glm", "spare", 70.0)])
-    rc, out, err = _run(tmp_path, ["routing", "check", "gemini"], status=status)
+    rc, out, err = _run(tmp_path, ["routing", "check", "codex"], status=status)
     assert rc == 0 and out == ""
-    assert "gemini=unknown" in err and "missing" in err
+    assert "codex=unknown" in err and "missing" in err
 
 
 def test_check_unknown_name_exit2_even_when_status_stale(tmp_path):
@@ -605,10 +607,29 @@ def test_check_broken_status_reason_broken(tmp_path):
 
 
 def test_line_empty_workers_prints_nothing(tmp_path):
+    """振り分けに使えるワーカーが本当に 0 件のときは何も出さない (空白の崩れた行を
+    出さない)。workers 未指定だと gemini (no_agent の既定ワーカー) が常に 1 件出る
+    ので、0 件になるのは残高専用 provider だけの明示設定のとき。"""
     status = tmp_path / "status.json"
     _write_status(status, [])
-    rc, out, err = _run(tmp_path, ["routing", "line"], status=status)
+    config = _write_config(tmp_path / "cfg.toml", workers={"openrouter": ["openrouter:daily"]})
+    rc, out, err = _run(tmp_path, ["routing", "line"], status=status, config=config)
     assert (rc, out, err) == (0, "", "")
+
+
+def test_line_outputs_gemini_stop_when_no_other_workers(tmp_path):
+    """[P2] 評価ワーカーが 0 件 (status に窓が 1 つも無い) でも、no_agent 対象
+    (既定ワーカー gemini) があれば quota 行とモデル行を出す。hook も同じ。"""
+    status = tmp_path / "status.json"
+    _write_status(status, [])
+    config = _with_models(_write_config(tmp_path / "cfg.toml"),
+                          '[routing.models.hydrogen]\nworkers = ["gemini"]\nroles = ["impl"]\n')
+    rc, out, err = _run(tmp_path, ["routing", "line"], status=status, config=config)
+    assert rc == 0 and out.startswith("quota: gemini=stop(?%,AI利用不可) (")
+    assert "- hydrogen: stop[gemini=stop]" in out
+    rc, hook, err = _run(tmp_path, ["routing", "hook"], status=status, config=config)
+    context = json.loads(hook)["hookSpecificOutput"]["additionalContext"]
+    assert "gemini=stop(?%,AI利用不可)" in context and "- hydrogen: stop[gemini=stop]" in context
 
 
 def test_check_fallback_used_when_primary_stale(tmp_path):
@@ -750,6 +771,178 @@ def test_mode_list_marks_stored_muse_auto_even_without_configured_worker(tmp_pat
     assert rc == 0 and entry["mode"] == "off" and entry["auto"] is True
     rc, out, err = _run(tmp_path, ["routing", "mode", "muse", "standard", "--json"], config=config)
     assert rc == 2
+
+
+def test_gemini_check_is_stop_exit3_even_with_quota_left(tmp_path):
+    """Gemini は利用規約で他の AI からの利用が認められない: 残量があっても
+    check は stop と同じ exit 3・reason は no_agent。line にも AI利用不可を出す。"""
+    status = tmp_path / "status.json"
+    _write_status(status, [_win("gemini:weekly", "gemini", "spare", 60.0)])
+    rc, out, err = _run(tmp_path, ["routing", "check", "gemini"], status=status)
+    assert rc == 3 and "stop" in err
+    rc, out, err = _run(tmp_path, ["routing", "check", "gemini", "--json"], status=status)
+    data = json.loads(out)
+    assert rc == 3 and (data["verdict"], data["reason"]) == ("stop", "no_agent")
+    rc, out, err = _run(tmp_path, ["routing", "line"], status=status)
+    assert rc == 0 and "gemini=stop(60%,AI利用不可" in out
+
+
+def test_gemini_only_configured_workers_are_no_agent(tmp_path):
+    # argon / agclaude のような gemini だけのワーカーも対象 (mode は今までどおり)
+    status = tmp_path / "status.json"
+    _write_status(status, [_win("gemini:argon", "gemini", "spare", 60.0),
+                           _win("gemini:claude", "gemini", "spare", 55.0)])
+    config = _write_config(tmp_path / "cfg.toml", workers={
+        "argon": ["gemini:argon"], "agclaude": ["gemini:claude", "gemini:claude_5h"]})
+    for name in ("argon", "agclaude"):
+        rc, out, err = _run(tmp_path, ["routing", "check", name, "--json"],
+                            status=status, config=config)
+        assert rc == 3 and json.loads(out)["reason"] == "no_agent"
+    rc, out, err = _run(tmp_path, ["routing", "mode", "argon", "burn", "--json"],
+                        config=config)
+    assert rc == 0 and next(x for x in json.loads(out)["modes"]
+                            if x["name"] == "argon")["mode"] == "burn"
+
+
+def test_gemini_check_stops_even_with_stale_status(tmp_path):
+    # status が古くても Gemini は stop (exit 3)。unknown で通さない
+    stale = tmp_path / "stale.json"
+    _write_status(stale, [_win("gemini:weekly", "gemini", "spare", 80)], age_seconds=7200)
+    rc, out, err = _run(tmp_path, ["routing", "check", "gemini", "--json"], status=stale)
+    assert rc == 3 and json.loads(out)["reason"] == "no_agent" and not err
+
+
+def _with_models(path, entries):
+    """[routing.workers] 付き設定に [routing.models] を追記する。"""
+    with path.open("a", encoding="utf-8") as f:
+        f.write("\n" + entries)
+    return path
+
+
+def test_gemini_worker_and_model_stay_stop_when_status_stale(tmp_path):
+    """status が古い: gemini だけのワーカー (argon) もそれを使うモデル (hydrogen) も
+    結果から消えない。check は exit 3、line / hook にも stop で出る。"""
+    stale = tmp_path / "stale.json"
+    _write_status(stale, [_win("gemini:argon", "gemini", "spare", 70.0),
+                          _win("codex:weekly", "codex", "spare", 80.0)], age_seconds=7200)
+    config = _with_models(_write_config(tmp_path / "cfg.toml", workers={"argon": ["gemini:argon"]}),
+                          '[routing.models.hydrogen]\nworkers = ["argon"]\nroles = ["impl"]\n')
+    rc, out, err = _run(tmp_path, ["routing", "check", "argon", "--json"],
+                        status=stale, config=config)
+    assert rc == 3 and json.loads(out)["reason"] == "no_agent"
+    rc, out, err = _run(tmp_path, ["routing", "check", "hydrogen", "--json"],
+                        status=stale, config=config)
+    assert rc == 3 and json.loads(out)["verdict"] == "stop"
+    rc, out, err = _run(tmp_path, ["routing", "line"], status=stale, config=config)
+    assert rc == 0 and "stale" in out and "argon=stop(70%,AI利用不可" in out
+    assert "- hydrogen: stop[argon=stop]" in out
+    rc, hook, err = _run(tmp_path, ["routing", "hook"], status=stale, config=config)
+    context = json.loads(hook)["hookSpecificOutput"]["additionalContext"]
+    assert "argon=stop(70%,AI利用不可" in context and "- hydrogen: stop[argon=stop]" in context
+
+
+def test_gemini_default_worker_shows_in_stale_line(tmp_path):
+    # [routing.workers] 未指定・status が古い: 既定ワーカーの gemini も stale 行に残る
+    stale = tmp_path / "stale.json"
+    _write_status(stale, [_win("gemini:weekly", "gemini", "spare", 63)], age_seconds=7200)
+    rc, out, err = _run(tmp_path, ["routing", "line"], status=stale)
+    assert rc == 0 and "gemini=stop(63%,AI利用不可" in out
+    rc, out, err = _run(tmp_path, ["routing", "line", "--json"], status=stale)
+    worker = json.loads(out)["workers"][0]
+    assert (worker["name"], worker["verdict"], worker["reason"]) == ("gemini", "stop", "no_agent")
+
+
+def test_gemini_check_stop_when_status_missing_or_broken(tmp_path):
+    """status.json が無い・壊れていても (既定ワーカーが空でも) 禁止は解除しない:
+    provider 名 gemini と gemini だけを使うモデル (hydrogen) は stop (exit 3)。"""
+    missing = tmp_path / "missing.json"
+    broken = tmp_path / "broken.json"
+    broken.write_text("{ broken", encoding="utf-8")
+    config = _with_models(_write_config(tmp_path / "cfg.toml"),
+                          '[routing.models.hydrogen]\nworkers = ["gemini"]\nroles = ["impl"]\n')
+    for path in (missing, broken):
+        rc, out, err = _run(tmp_path, ["routing", "check", "gemini"], status=path, config=config)
+        assert rc == 3 and "AI利用不可" in err
+        rc, out, err = _run(tmp_path, ["routing", "check", "gemini", "--json"],
+                            status=path, config=config)
+        assert rc == 3 and json.loads(out)["reason"] == "no_agent" and not err
+        rc, out, err = _run(tmp_path, ["routing", "check", "hydrogen", "--json"],
+                            status=path, config=config)
+        assert rc == 3 and json.loads(out)["verdict"] == "stop"
+    # line も stale の 1 行に gemini の stop が残り、モデル行でも stop になる
+    rc, out, err = _run(tmp_path, ["routing", "line"], status=missing, config=config)
+    assert rc == 0 and out.startswith("quota: stale（status.json なし）")
+    assert "gemini=stop(?%,AI利用不可)" in out
+    assert ("- hydrogen: stop[" + "gemini=stop" + "]") in out  # モデル行も stop
+
+
+def test_gemini_check_stop_with_fresh_status_without_gemini_windows(tmp_path):
+    """status は新しいが gemini の窓もエラーも無い ([routing.workers] 未指定):
+    既定ワーカー扱いの gemini を unknown (missing) に戻さず stop (exit 3) を保つ。"""
+    status = tmp_path / "status.json"
+    _write_status(status, [_win("claude:weekly", "claude", "spare", 70.0)])
+    rc, out, err = _run(tmp_path, ["routing", "check", "gemini", "--json"], status=status)
+    assert rc == 3 and json.loads(out)["reason"] == "no_agent"
+    rc, out, err = _run(tmp_path, ["routing", "check", "gemini"], status=status)
+    assert rc == 3 and "AI利用不可" in err
+
+
+def test_gemini_model_stops_with_fresh_status_without_gemini_windows(tmp_path):
+    """モデル (hydrogen) が gemini を使う: status が新しくても評価結果に
+    gemini が無ければ stop を合成する (check / line / hook のモデル判定)。
+    メインの行 (ワーカーの評価結果) は書き換えない。"""
+    status = tmp_path / "status.json"
+    _write_status(status, [_win("claude:weekly", "claude", "spare", 70.0)])
+    config = _with_models(_write_config(tmp_path / "cfg.toml"),
+                          '[routing.models.hydrogen]\nworkers = ["gemini"]\nroles = ["impl"]\n')
+    rc, out, err = _run(tmp_path, ["routing", "check", "hydrogen", "--json"],
+                        status=status, config=config)
+    assert rc == 3 and json.loads(out)["verdict"] == "stop"
+    rc, out, err = _run(tmp_path, ["routing", "line"], status=status, config=config)
+    assert rc == 0 and "- hydrogen: stop[gemini=stop]" in out
+    assert "gemini=stop" in out.splitlines()[0]  # 対象は evaluate が必ずメインの行にも入れる
+    rc, hook, err = _run(tmp_path, ["routing", "hook"], status=status, config=config)
+    context = json.loads(hook)["hookSpecificOutput"]["additionalContext"]
+    assert "- hydrogen: stop[gemini=stop]" in context
+
+
+def test_gemini_name_with_explicit_claude_windows_is_not_no_agent(tmp_path):
+    """gemini = ["claude:weekly"] の明示設定は中身で判定する: provider 名
+    "gemini" では禁止しない (claude の窓で通常判定・exit 0)。gemini の窓だけの
+    同名設定なら今までどおり stop。"""
+    status = tmp_path / "status.json"
+    _write_status(status, [_win("claude:weekly", "claude", "spare", 70.0)])
+    config = _write_config(tmp_path / "cfg.toml", workers={"gemini": ["claude:weekly"]})
+    rc, out, err = _run(tmp_path, ["routing", "check", "gemini", "--json"],
+                        status=status, config=config)
+    data = json.loads(out)
+    assert rc == 0 and (data["verdict"], data["reason"]) == ("boost", "spare")
+    # status が古いときも no_agent の stop にはせず unknown (stale) の扱い
+    stale = tmp_path / "stale.json"
+    _write_status(stale, [_win("claude:weekly", "claude", "spare", 70.0)], age_seconds=7200)
+    rc, out, err = _run(tmp_path, ["routing", "check", "gemini", "--json"],
+                        status=stale, config=config)
+    assert rc == 0 and json.loads(out)["verdict"] == "unknown"
+    # 逆に gemini の窓だけを束ねる同名設定なら stop (exit 3)
+    gemini_status = tmp_path / "gemini.json"
+    _write_status(gemini_status, [_win("gemini:weekly", "gemini", "spare", 70.0)])
+    config = _write_config(tmp_path / "cfg2.toml", workers={"gemini": ["gemini:weekly"]})
+    rc, out, err = _run(tmp_path, ["routing", "check", "gemini", "--json"],
+                        status=gemini_status, config=config)
+    assert rc == 3 and json.loads(out)["reason"] == "no_agent"
+
+
+def test_gemini_mode_changes_still_accepted(tmp_path):
+    # Gemini は自動で監視のみ (off) にはしない: mode 変更は今までどおり受け付ける
+    rc, out, err = _run(tmp_path, ["routing", "mode", "gemini", "burn", "--json"])
+    assert rc == 0
+    entry = next(x for x in json.loads(out)["modes"] if x["name"] == "gemini")
+    assert entry["mode"] == "burn" and "auto" not in entry
+    for mode in ("off", "standard"):
+        rc, out, err = _run(tmp_path, ["routing", "mode", "gemini", mode, "--json"])
+        assert rc == 0
+        entry = next(x for x in json.loads(out)["modes"] if x["name"] == "gemini")
+        assert entry["mode"] == mode and "auto" not in entry
 
 
 def test_monitor_only_check_and_line_with_missing_or_stale_status(tmp_path):
@@ -915,3 +1108,27 @@ def test_routing_state_transitions_are_serialized(tmp_path, monkeypatch, second_
     assert not one.is_alive() and not two.is_alive() and results == [0, 0]
     assert "grok" in gate.load_burn(gate.BURN_PATH)
     assert "grok" not in gate.load_off(gate.OFF_PATH)
+
+
+def test_gemini_direct_check_stops_when_status_missing_or_broken(tmp_path):
+    """モデル台帳なし・workers 未指定: status が欠落・破損でも check gemini は stop exit 3。"""
+    missing = tmp_path / "none.json"
+    rc, out, err = _run(tmp_path, ["routing", "check", "gemini", "--json"], status=missing)
+    assert rc == 3 and '"no_agent"' in out, (rc, out, err)
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    rc, out, err = _run(tmp_path, ["routing", "check", "gemini", "--json"], status=broken)
+    assert rc == 3 and '"no_agent"' in out, (rc, out, err)
+
+
+def test_gemini_model_stops_with_explicit_workers_lacking_gemini(tmp_path):
+    """workers が claude だけでも、モデル hydrogen が gemini を参照すれば stop。"""
+    status = tmp_path / "status.json"
+    _write_status(status, [_win("claude:weekly", "claude", "spare", 60.0)])
+    config = _write_config(tmp_path / "cfg.toml", workers={"claude": ["claude:*"]})
+    with open(config, "a", encoding="utf-8") as f:
+        f.write('\n[routing.models.hydrogen]\nworkers = ["gemini"]\nroles = ["impl"]\n')
+    rc, out, err = _run(tmp_path, ["routing", "check", "hydrogen"], status=status, config=config)
+    assert rc == 3, (rc, out, err)
+    rc, out, err = _run(tmp_path, ["routing", "line"], status=status, config=config)
+    assert "- hydrogen: stop[gemini=stop]" in out, out

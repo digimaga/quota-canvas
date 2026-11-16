@@ -889,6 +889,8 @@ def test_run_filters_cached_usage_on_config_reload_and_restores_on_enable(monkey
     assert first["recommendation"]["provider"] == "claude"
     assert hidden["cards"] == hidden["windows"] == hidden["errors"] == []
     assert "recommendation" not in hidden
-    assert hidden["routing"]["workers"] == []
+    # 表示を隠しても Gemini は常に stop / no_agent (対象が結果に必ず入る)
+    assert [(w["name"], w["verdict"], w["reason"]) for w in hidden["routing"]["workers"]] == [
+        ("gemini", "stop", "no_agent")]
     assert restored["cards"] and restored["windows"]
     assert restored["recommendation"]["provider"] == "claude"

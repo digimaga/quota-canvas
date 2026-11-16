@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -391,10 +392,11 @@ def test_error_provider_gives_unknown_error():
 
 
 def test_error_provider_propagates_to_windows_of_same_provider():
-    # argon は gemini provider のデータ: gemini の取得失敗で一緒に unknown (quota-gate と同じ)
-    data = status(win("gemini:argon", "gemini", "spare", 50.0),
-                  errors=[{"provider": "gemini", "error": "agy 見つからず"}])
-    result = evaluate(data, cfg(workers={"argon": ["gemini:argon"]}), {}, NOW)
+    # argon は gemini provider のデータ: provider の取得失敗で一緒に unknown
+    # (quota-gate と同じ。gemini 単独ワーカーは常に stop になるので grok で確認)
+    data = status(win("grok:argon", "grok", "spare", 50.0),
+                  errors=[{"provider": "grok", "error": "agy 見つからず"}])
+    result = evaluate(data, cfg(workers={"argon": ["grok:argon"]}), {}, NOW)
     assert result.workers[0].reason == "error"
 
 
@@ -410,7 +412,9 @@ def test_unknown_status_json_is_fail_open():
     result = evaluate({"updated_at": NOW.isoformat()}, cfg(workers={"glm": ["glm:5h"]}), {}, NOW)
     assert result.workers[0].verdict == "unknown"
     result = evaluate(None, cfg(), {}, NOW)
-    assert result.workers == []
+    # 既定ワーカー (workers 未指定) でも gemini だけは no_agent の stop が載る
+    assert [(w.name, w.verdict, w.reason) for w in result.workers] \
+        == [("gemini", "stop", "no_agent")]
 
 
 # --- 既定のワーカー (workers 未指定) ---------------------------------------------
@@ -425,7 +429,8 @@ def test_default_workers_are_present_providers_with_independent_windows():
         errors=[{"provider": "codex", "error": "HTTP 401"}],
     )
     result = evaluate(data, cfg(), {}, NOW)
-    assert [w.name for w in result.workers] == ["claude", "codex", "grok"]  # canonical 順
+    # canonical 順。窓もエラーも無い gemini は no_agent の既定ワーカーとして末尾に足る
+    assert [w.name for w in result.workers] == ["claude", "codex", "grok", "gemini"]
     claude = result.workers[0]
     assert claude.windows == ["claude:weekly", "claude:5h"]  # 内訳を除く独立窓すべて
     assert claude.verdict == "reserve"  # claude:5h が over なので一番悪い方
@@ -466,9 +471,10 @@ def test_default_worker_order_follows_known_providers():
     data = status(win("glm:5h", "glm", "spare", 50.0),
                   win("claude:weekly", "claude", "spare", 50.0))
     result = evaluate(data, cfg(), {}, NOW)
-    assert [w.name for w in result.workers] == ["claude", "glm"]
+    assert [w.name for w in result.workers] == ["claude", "glm", "gemini"]
     # 辞書順 (gemini < grok) と KNOWN_PROVIDERS 順 (grok → gemini) が分かれる
     # 既知2種 + 未知 provider (acme) は末尾。入力順・辞書順のどちらの退行も検出する
+    # (gemini は窓があるので canonical 順の位置。窓が無ければ no_agent の既定として末尾)
     data = status(win("acme:daily", "acme", "spare", 50.0),
                   win("gemini:5h", "gemini", "spare", 50.0),
                   win("grok:weekly", "grok", "spare", 50.0))
@@ -546,20 +552,20 @@ def test_line_matches_quota_gate_format():
             fetched=now),
         win("codex:weekly", "codex", "over", 87.0, resets=later_reset, exhausts=exhaust,
             fetched=now),
-        win("gemini:weekly", "gemini", "spare", 89.9, resets=None, fetched=now),
+        win("acme:daily", "acme", "spare", 89.9, resets=None, fetched=now),
         updated=now,
     )
     i18n.set_language("ja")
     result = evaluate(data, cfg(workers={
         "glm": ["glm:5h"], "grok": ["grok:weekly"], "codex": ["codex:weekly"],
-        "gemini": ["gemini:weekly"]}), {}, now)
+        "acme": ["acme:daily"]}), {}, now)
     line = format_line(result, now, "ja")
     assert line == (
         f"quota: glm=boost(49%,~{gate.fmt_reset(today_reset, now)}) "
         f"grok=reserve(85%,ペース超過·~{gate.fmt_reset(exhaust, now)}枯渇見込み,"
         f"~{gate.fmt_reset(later_reset, now)}) "
         f"codex=reserve(87%,ペース超過·~{gate.fmt_reset(exhaust, now)}枯渇見込み,"
-        f"~{gate.fmt_reset(later_reset, now)}) gemini=boost(90%,spare) "
+        f"~{gate.fmt_reset(later_reset, now)}) acme=boost(90%,spare) "
         f"({gate.fmt_hhmm(now)}時点)"
     )
 
@@ -571,20 +577,20 @@ def test_line_shows_credits_burn_and_no_reset_time():
         win("codex:weekly", "codex", "on_track", 87.0,
             resets=(now + timedelta(days=3)).replace(second=0, microsecond=0),
             fetched=now),
-        win("gemini:weekly", "gemini", "spare", 89.9, resets=None, fetched=now),
+        win("grok:weekly", "grok", "spare", 89.9, resets=None, fetched=now),
         credits={"codex": [{"title": "Full reset",
                             "expires_at": (now + timedelta(days=5)).isoformat()}]},
         updated=now,
     )
     i18n.set_language("ja")
     result = evaluate(data, cfg(workers={"codex": ["codex:weekly"],
-                                         "gemini": ["gemini:weekly"]}),
+                                         "grok": ["grok:weekly"]}),
                       {"codex": burn_until}, now)
     line = format_line(result, now, "ja")
     assert line == (
         "quota: codex=boost(87%,リセット権1,使い切り~23:59,"
         f"~{gate.fmt_reset(data['windows'][0]['resets_at'], now)}) "
-        f"gemini=boost(90%,spare) ({gate.fmt_hhmm(now)}時点)"
+        f"grok=boost(90%,spare) ({gate.fmt_hhmm(now)}時点)"
     )
 
 
@@ -954,6 +960,23 @@ def test_build_status_writes_routing_when_enabled(tmp_path):
     assert routing["line"].startswith("quota: glm=boost(")  # routing line と同じ 1 行
 
 
+def test_build_status_model_lines_show_gemini_stop_without_windows(tmp_path):
+    """[P1] workers 未指定・status に gemini の窓もエラーも無い・モデルが gemini を
+    使う: routing.model_lines は補完前の評価結果ではなく evaluate の結果 (gemini の
+    stop を含む) を見るので ?[gemini=?] にならない。line にも stop が出る。"""
+    from quotacanvas.status import build_status
+
+    cards, usages = _engine_cards()  # gemini の窓は無い (glm / grok のみ)
+    cfg_ = _engine_cfg(tmp_path, '[routing]\nenabled = true\n'
+                                '[routing.models.hydrogen]\nworkers = ["gemini"]\n'
+                                'roles = ["impl"]\n')
+    payload = build_status(cfg_, cards, usages, NOW)
+    routing = payload["routing"]
+    assert "gemini=stop(?%,AI利用不可)" in routing["line"]
+    line = next(l for l in routing["model_lines"] if l.startswith("- hydrogen"))
+    assert "- hydrogen: stop[gemini=stop]" in line
+
+
 def test_build_status_windows_honors_all_windows_over_cards(tmp_path):
     # all_windows を渡すと表示フィルタ後の cards に無い窓も windows に入る
     from quotacanvas.status import build_status
@@ -1057,23 +1080,23 @@ def test_short_over_hysteresis_and_idempotence():
     ("on_track", "exhausted", "stop"), ("spare", "on_track", "boost")])
 def test_mixed_windows(weekly, short, expected):
     week = short_window(2 * 24 * 60, length_hours=168, pace=weekly,
-                        wid="gemini:weekly", provider="gemini")
-    five = short_window(7, pace=short, wid="gemini:5h", provider="gemini")
+                        wid="grok:weekly", provider="grok")
+    five = short_window(7, pace=short, wid="grok:5h", provider="grok")
     result = evaluate(status(week, five), cfg(), {}, NOW)
     assert result.workers[0].verdict == expected
 
 
 def test_holds_track_each_window_even_when_not_representative_or_burned():
-    five = short_window(30, wid="gemini:5h", provider="gemini")
-    week = short_window(0, length_hours=168, pace="exhausted", wid="gemini:week", provider="gemini")
-    result = evaluate(status(five, week), cfg(), {"gemini": NOW + timedelta(hours=1)}, NOW)
+    five = short_window(30, wid="grok:5h", provider="grok")
+    week = short_window(0, length_hours=168, pace="exhausted", wid="grok:week", provider="grok")
+    result = evaluate(status(five, week), cfg(), {"grok": NOW + timedelta(hours=1)}, NOW)
     assert result.workers[0].verdict == "stop"
-    assert result.holds == {"gemini:5h": five["resets_at"]}
-    five = short_window(25, wid="gemini:5h", provider="gemini")
-    result = evaluate(status(five), cfg(), {"gemini": NOW + timedelta(hours=1)}, NOW,
+    assert result.holds == {"grok:5h": five["resets_at"]}
+    five = short_window(25, wid="grok:5h", provider="grok")
+    result = evaluate(status(five), cfg(), {"grok": NOW + timedelta(hours=1)}, NOW,
                       previous=result.to_dict())
     assert result.workers[0].verdict == "boost"
-    assert result.holds == {"gemini:5h": five["resets_at"]}
+    assert result.holds == {"grok:5h": five["resets_at"]}
 
 
 def test_engine_writes_and_reuses_previous_routing(tmp_path, monkeypatch):
@@ -1170,15 +1193,15 @@ def test_judged_window_clears_hold_after_interruption():
 
 def test_hold_is_replaced_for_judged_window_while_another_remains_unjudged():
     first_glm = short_window(30)
-    first_gemini = short_window(30, wid="gemini:5h", provider="gemini")
-    settings = cfg(workers={"glm": ["glm:5h"], "gemini": ["gemini:5h"]})
-    first = evaluate(status(first_glm, first_gemini), settings, {}, NOW)
-    second = evaluate(status(short_window(25, pace="tight"), first_gemini,
-                             errors=[{"provider": "gemini"}]), settings, {}, NOW,
+    first_grok = short_window(30, wid="grok:5h", provider="grok")
+    settings = cfg(workers={"glm": ["glm:5h"], "grok": ["grok:5h"]})
+    first = evaluate(status(first_glm, first_grok), settings, {}, NOW)
+    second = evaluate(status(short_window(25, pace="tight"), first_grok,
+                             errors=[{"provider": "grok"}]), settings, {}, NOW,
                       previous=first.to_dict())
-    assert second.holds == {"gemini:5h": first_gemini["resets_at"]}
+    assert second.holds == {"grok:5h": first_grok["resets_at"]}
     assert second.worker("glm").verdict == "go"
-    assert second.worker("gemini").verdict == "unknown"
+    assert second.worker("grok").verdict == "unknown"
 
 
 def test_reserve_without_reset_has_no_dangling_separator():
@@ -1704,3 +1727,165 @@ def test_evaluate_muse_is_disabled_without_user_setting():
     result = gate.evaluate(data, cfg(workers=None), {}, NOW, off=set())
     muse = [w for w in result.workers if w.name == "muse"]
     assert muse and muse[0].verdict == "stop" and muse[0].reason == "disabled"
+
+
+# --- Gemini は他の AI エージェントに使わせない (no_agent) -------------------------
+
+
+def test_no_agent_providers_is_gemini_only():
+    assert gate.NO_AGENT_PROVIDERS == frozenset(("gemini",))
+
+
+def test_no_agent_workers_only_gemini_only_workers():
+    # 設定例: gemini / argon / agclaude はどれもデータ元が gemini だけなので対象
+    specs = {"gemini": ["gemini:weekly", "gemini:5h"], "argon": ["gemini:argon"],
+             "agclaude": ["gemini:claude", "gemini:claude_5h"],
+             "mix": ["gemini:weekly", "claude:weekly"], "claude": ["claude:*"]}
+    assert gate.no_agent_workers(specs) == {"gemini", "argon", "agclaude"}
+    # 残高専用 provider の窓指定は evaluate と同じく無視して数える
+    assert gate.no_agent_workers({"mix": ["gemini:*", "openrouter:daily"]}) == {"mix"}
+    assert gate.no_agent_workers({"only": ["openrouter:daily"]}) == set()
+    # 前方一致指定 ("gem*" / "gemini*") も gemini に解決される
+    assert gate.no_agent_workers({"pre": ["gem*"]}) == {"pre"}
+    assert gate.no_agent_workers({"pre": ["gemini*"]}) == {"pre"}
+    assert gate.no_agent_workers({"pre": ["gemini*", "claude:*"]}) == set()
+    assert gate.no_agent_workers({"pre": ["g*"]}) == set()  # glm / grok にも一致
+    assert gate.no_agent_workers({"pre": ["*"]}) == set()
+    # Muse だけのワーカーは no_agent ではなく auto_monitor の対象
+    assert gate.no_agent_workers({"m": ["muse:*"]}) == set()
+
+
+def test_evaluate_stale_status_skips_default_gemini_unless_model_names_it():
+    data = status(win("claude:weekly", "claude", "spare", 60.0))
+    result = evaluate(data, cfg(), {}, NOW, stale_status=True)
+    assert result.worker("gemini") is None
+    models = {"hydrogen": SimpleNamespace(workers=["gemini"])}
+    result = evaluate(data, cfg(models=models), {}, NOW, stale_status=True)
+    assert (result.worker("gemini").verdict, result.worker("gemini").reason) == ("stop", "no_agent")
+
+
+def test_evaluate_gemini_worker_always_stops_with_display_data_kept():
+    # 既定ワーカー (workers 未指定) の gemini も対象。表示データは今までどおり
+    data = status(win("gemini:weekly", "gemini", "spare", 60.0),
+                  win("claude:weekly", "claude", "spare", 60.0))
+    result = evaluate(data, cfg(), {}, NOW)
+    gemini = result.worker("gemini")
+    assert (gemini.verdict, gemini.reason) == ("stop", "no_agent")
+    assert gemini.remaining == 60.0 and gemini.status == "spare"
+    assert gemini.windows == ["gemini:weekly"]
+    claude = result.worker("claude")
+    assert (claude.verdict, claude.reason) == ("boost", "spare")
+
+
+@pytest.mark.parametrize("case", ["stale", "error", "missing"])
+def test_gemini_worker_stops_even_when_unjudgeable(case):
+    # 判定できなくても (stale / error / missing) unknown にはならず stop
+    window = win("gemini:weekly", "gemini", "spare", 60.0,
+                 fetched=NOW - timedelta(hours=2) if case == "stale" else NOW)
+    data = status(*([] if case == "missing" else [window]),
+                  errors=[{"provider": "gemini"}] if case == "error" else None)
+    worker = evaluate(data, cfg(workers={"gemini": ["gemini:weekly"]}), {}, NOW).worker("gemini")
+    assert (worker.verdict, worker.reason) == ("stop", "no_agent")
+
+
+def test_gemini_worker_off_keeps_disabled_display():
+    # すでに off (監視のみ) のワーカーは off の表示のまま
+    data = status(win("gemini:weekly", "gemini", "spare", 60.0))
+    result = evaluate(data, cfg(workers={"gemini": ["gemini:weekly"]}), {}, NOW,
+                      off={"gemini"})
+    worker = result.worker("gemini")
+    assert (worker.verdict, worker.reason) == ("stop", "disabled")
+    assert "監視のみ" in format_line(result, NOW, "ja")
+
+
+def test_gemini_burn_mark_shows_but_verdict_stays_stop():
+    # burn 中でも quota 行に使い切りの印は出るが、verdict は stop のまま
+    data = status(win("gemini:weekly", "gemini", "on_track", 50.0))
+    result = evaluate(data, cfg(workers={"gemini": ["gemini:weekly"]}),
+                      {"gemini": NOW + timedelta(hours=1)}, NOW)
+    worker = result.worker("gemini")
+    assert (worker.verdict, worker.reason) == ("stop", "no_agent")
+    assert worker.burn_until is not None
+    line = format_line(result, NOW, "ja")
+    assert line.startswith("quota: gemini=stop(50%,AI利用不可,使い切り~")
+
+
+def test_line_shows_no_agent_reason_in_both_languages():
+    data = status(win("gemini:weekly", "gemini", "spare", 60.0))
+    result = evaluate(data, cfg(workers={"gemini": ["gemini:weekly"]}), {}, NOW)
+    assert "gemini=stop(60%,AI利用不可" in format_line(result, NOW, "ja")
+    assert "gemini=stop(60%,not for AI agents" in format_line(result, NOW, "en")
+
+
+def test_model_lines_mark_gemini_only_model_stop():
+    # hydrogen のような gemini だけを使うモデルは stop になる
+    from quotacanvas.config import RoutingModel
+
+    data = status(win("gemini:weekly", "gemini", "spare", 60.0),
+                  win("claude:weekly", "claude", "spare", 60.0))
+    result = evaluate(data, cfg(workers={"gemini": ["gemini:weekly"],
+                                         "claude": ["claude:weekly"]}), {}, NOW)
+    models = {"hydrogen": RoutingModel(["gemini"], ["impl"]),
+              "other": RoutingModel(["claude"], ["review"])}
+    lines = gate.format_model_lines(models, result, "ja")
+    hydrogen = next(line for line in lines if line.startswith("- hydrogen"))
+    assert "hydrogen: stop" in hydrogen and "gemini=stop" in hydrogen
+    other = next(line for line in lines if line.startswith("- other"))
+    assert "other: boost" in other and "claude=boost" in other
+
+
+def test_evaluate_default_gemini_in_result_without_windows_or_status():
+    """[P1/P2] workers 未指定のとき、status に gemini の窓もエラーも無くても
+    (status が無くても) 既定ワーカー gemini は必ず stop/no_agent で結果に載る。
+    モデル行も ?[gemini=?] に戻さない。補完は evaluate 1 か所なので、
+    status.json の routing も CLI の line / hook / check もこれと同じ結果になる。"""
+    for data in (status(win("claude:weekly", "claude", "spare", 60.0)), None):
+        worker = evaluate(data, cfg(), {}, NOW).worker("gemini")
+        assert (worker.verdict, worker.reason) == ("stop", "no_agent")
+        assert worker.remaining is None
+    from quotacanvas.config import RoutingModel
+
+    result = evaluate(status(win("claude:weekly", "claude", "spare", 60.0)), cfg(), {}, NOW)
+    models = {"hydrogen": RoutingModel(["gemini"], ["impl"])}
+    line = next(l for l in gate.format_model_lines(models, result) if l.startswith("- hydrogen"))
+    assert "- hydrogen: stop[gemini=stop]" in line
+    # 窓があるときは表示データ (残量) も今までどおり残る
+    worker = evaluate(status(win("gemini:weekly", "gemini", "spare", 63.0)), cfg(), {}, NOW) \
+        .worker("gemini")
+    assert (worker.verdict, worker.reason, worker.remaining) == ("stop", "no_agent", 63.0)
+
+
+def test_evaluate_explicit_workers_do_not_add_default_gemini():
+    """[routing.workers] の明示設定があるときは、既定ワーカーの gemini は足さない
+    (gemini だけの明示ワーカーのみが no_agent 対象。それ以外のワーカーの
+    挙動は変えない)。"""
+    data = status(win("claude:weekly", "claude", "spare", 60.0))
+    result = evaluate(data, cfg(workers={"claude": ["claude:weekly"]}), {}, NOW)
+    assert [w.name for w in result.workers] == ["claude"]
+    # gemini だけの明示ワーカーは窓が無くても stop/no_agent で載る
+    result = evaluate(data, cfg(workers={"argon": ["gemini:argon"]}), {}, NOW)
+    argon = result.worker("argon")
+    assert (argon.verdict, argon.reason) == ("stop", "no_agent")
+    assert result.worker("gemini") is None
+
+
+def test_explicit_gemini_config_content_decides_no_agent():
+    """[P2] 同名の明示設定 (gemini = ["claude:*"]) は中身で判定する:
+    gemini の窓だけを束ねるときだけ stop にする。"""
+    data = status(win("claude:weekly", "claude", "spare", 60.0))
+    worker = evaluate(data, cfg(workers={"gemini": ["claude:weekly"]}), {}, NOW).worker("gemini")
+    assert (worker.verdict, worker.reason) == ("boost", "spare")
+    worker = evaluate(data, cfg(workers={"gemini": ["gemini:weekly"]}), {}, NOW).worker("gemini")
+    assert (worker.verdict, worker.reason) == ("stop", "no_agent")
+    # gemini と他 provider の窓を混ぜた明示設定は対象外 (no_agent にしない)
+    worker = evaluate(data, cfg(workers={"gemini": ["gemini:weekly", "claude:weekly"]}),
+                      {}, NOW).worker("gemini")
+    assert worker.reason != "no_agent"
+
+
+def test_check_message_no_agent_reason_both_languages():
+    worker = WorkerResult("gemini", "stop", "no_agent", stale=True)
+    assert gate.check_message(worker, NOW, "ja") == \
+        "quota-canvas: gemini=stop（AI利用不可・他の AI エージェントには使わせない）。QUOTA_GATE_FORCE=1 で無視"
+    assert gate.check_message(worker, NOW, "en") == \
+        "quota-canvas: gemini=stop (not for AI agents; never assign work to it). Set QUOTA_GATE_FORCE=1 to ignore"

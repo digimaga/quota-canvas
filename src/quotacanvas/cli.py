@@ -901,22 +901,26 @@ def _load_gate_status(args, cfg: Config) -> Tuple[str, Optional[dict], str, Path
     return state, data, detail, primary
 
 
-def _disabled_for_stale(data, cfg, now):
+def _stale_stop_workers(data, cfg, now):
+    """status が古い・無い・読めないときに line / hook / check に残すワーカー:
+    監視のみ (disabled) と、他の AI に使わせない (no_agent) の stop の両方。
+    no_agent 対象の合成は evaluate が 1 か所でやるので、status が読めず
+    既定ワーカーが空でも gemini の stop はここに来る
+    (status が読めないからといって禁止を解除しない)。"""
     off = gate.effective_off(cfg.routing, gate.load_off(gate.OFF_PATH), data)
-    if not off:
-        return []
-    result = gate.evaluate(data, cfg.routing, {}, now, off=off)
-    disabled = [worker for worker in result.workers if worker.reason == "disabled"]
-    for worker in disabled:
+    result = gate.evaluate(data, cfg.routing, {}, now, off=off, stale_status=True)
+    workers = [worker for worker in result.workers
+               if worker.reason in ("disabled", "no_agent")]
+    for worker in workers:
         worker.stale = True
-    return disabled
+    return workers
 
 
 def _stale_line_with_disabled(detail, path, data, cfg, now, lang):
     line = gate.format_stale_line(detail, path, data, now, lang)
-    disabled = _disabled_for_stale(data, cfg, now)
-    if disabled:
-        line += " " + gate.format_worker_segments(gate.RoutingResult(workers=disabled), now, lang)
+    kept = _stale_stop_workers(data, cfg, now)
+    if kept:
+        line += " " + gate.format_worker_segments(gate.RoutingResult(workers=kept), now, lang)
     return line
 
 
@@ -932,9 +936,9 @@ def _cmd_routing_line(args, cfg: Config) -> int:
         if args.json:
             if state != "ok":
                 payload = {"state": "stale", "detail": detail}
-                disabled = _disabled_for_stale(data, cfg, now)
-                if disabled:
-                    payload["workers"] = [worker.to_dict() for worker in disabled]
+                kept = _stale_stop_workers(data, cfg, now)
+                if kept:
+                    payload["workers"] = [worker.to_dict() for worker in kept]
                 _print_json(payload)
             else:
                 result = gate.evaluate(data, cfg.routing,
@@ -946,14 +950,14 @@ def _cmd_routing_line(args, cfg: Config) -> int:
             line = _stale_line_with_disabled(detail, path, data, cfg, now, lang)
             if line:
                 print(line)
-                model_result = gate.RoutingResult(workers=_disabled_for_stale(data, cfg, now))
+                model_result = gate.RoutingResult(workers=_stale_stop_workers(data, cfg, now))
                 for model_line in gate.format_model_lines(cfg.routing.models, model_result, lang):
                     print(model_line)
             return 0
         result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
                                previous=data.get("routing"), off=gate.load_off(gate.OFF_PATH))
         line = gate.format_line(result, now, lang)
-        if line:  # ワーカー 0 件のときは何も出さない (空白の崩れた行を出さない)
+        if line:  # 対象ワーカーが 1 つでもあれば出る (no_agent の stop を含む)
             print(line)
             for model_line in gate.format_model_lines(cfg.routing.models, result, lang):
                 print(model_line)
@@ -1012,13 +1016,18 @@ def _routing_check_impl(args, cfg: Config) -> int:
             result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
                                    previous=data.get("routing"), off=off)
         else:
-            result = gate.RoutingResult(workers=_disabled_for_stale(data, cfg, now))
+            result = gate.RoutingResult(workers=_stale_stop_workers(data, cfg, now))
         worker = gate.model_verdict(name, model, result)
         code = 3 if worker.verdict == "stop" else 0
-    elif name in off and state != "ok":
-        result = gate.evaluate(data, cfg.routing, {}, now, off=off)
-        worker = result.worker(name)
-        if worker is not None:
+    elif state != "ok":
+        # status が古い・無い・読めないときも off (disabled) と no_agent (gemini) の
+        # stop は exit 3 を保つ。no_agent 対象の stop は evaluate が必ず結果に入れる
+        # ので、判定は line / hook と同じ evaluate の結果だけを使う。
+        result = gate.evaluate(data, cfg.routing, {}, now, off=off, stale_status=True,
+                               named={name})
+        found = result.worker(name)
+        if found is not None and (name in off or found.reason == "no_agent"):
+            worker = found
             worker.stale = True
             code = 3
     if worker is None:
@@ -1028,7 +1037,7 @@ def _routing_check_impl(args, cfg: Config) -> int:
             code = 0
         else:
             result = gate.evaluate(data, cfg.routing, gate.load_burn(gate.BURN_PATH, now), now,
-                                   previous=data.get("routing"), off=off)
+                                   previous=data.get("routing"), off=off, named={name})
             worker = result.worker(name)
             if worker is None:
                 # そのワーカーの窓もエラーも status に無い → unknown (missing)
@@ -1070,7 +1079,7 @@ def _cmd_routing_hook(args, cfg: Config) -> int:
         if state != "ok":
             line = _stale_line_with_disabled(detail, path, data, cfg, now, lang)
             if line:
-                result = gate.RoutingResult(workers=_disabled_for_stale(data, cfg, now))
+                result = gate.RoutingResult(workers=_stale_stop_workers(data, cfg, now))
                 lines = [line] + gate.format_model_lines(cfg.routing.models, result, lang)
                 _print_hook_context(args.event, "\n".join(lines))
             return 0

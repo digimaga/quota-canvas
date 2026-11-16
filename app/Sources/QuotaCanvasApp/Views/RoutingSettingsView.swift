@@ -315,6 +315,7 @@ struct RoutingSettingsView: View {
         case "fresh": reason = String(localized: "リセット直後")
         case "burn": reason = String(localized: "使い切りモード中")
         case "disabled": reason = String(localized: "監視のみ（振り分けで使わない）")
+        case "no_agent": reason = String(localized: "AI利用不可")
         case "stale": reason = String(localized: "取得データが古い")
         case "missing": reason = String(localized: "窓が見つからない")
         case "missing_status": reason = String(localized: "status.json がない・古い")

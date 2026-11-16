@@ -57,11 +57,13 @@ def test_hook_disabled_is_silent_and_exit0(tmp_path):
     assert (rc, out, err) == (0, "", "")
 
 
-def test_hook_no_workers_is_silent(tmp_path):
+def test_hook_no_workers_still_shows_gemini_no_agent(tmp_path):
+    """窓が 0 件でも、Gemini (AI 利用不可) は evaluate が常に stop で結果に入れるので出る。"""
     status = tmp_path / "status.json"
     _write_status(status, [])
     rc, out, err = _hook(tmp_path, status=status)
-    assert (rc, out, err) == (0, "", "")
+    assert rc == 0 and not err
+    assert "gemini=stop" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
 
 
 def test_hook_exception_is_silent_exit0(tmp_path, monkeypatch):

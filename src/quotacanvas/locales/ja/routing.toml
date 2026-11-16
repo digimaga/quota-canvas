@@ -6,6 +6,7 @@ state_error = "routing の状態を保存できません: {detail}"
 
 [gate]
 disabled = "監視のみ"
+no_agent = "AI利用不可"
 line = "quota: {body} ({at}時点)"
 over = "ペース超過"
 burst = "直近2時間の勢い"
@@ -30,6 +31,7 @@ review_many = "review: 使える {n}（{names}）"
 
 [check]
 disabled = "quota-canvas: {name}=stop（監視のみ・振り分けで使わない）。QUOTA_GATE_FORCE=1 で無視"
+no_agent = "quota-canvas: {name}=stop（AI利用不可・他の AI エージェントには使わせない）。QUOTA_GATE_FORCE=1 で無視"
 model_disabled = "quota-canvas: {name} は設定で使わない扱いです（routing.models の enabled = false）。QUOTA_GATE_FORCE=1 で無視"
 stop = "quota-canvas: {name}=stop（{detail}）。QUOTA_GATE_FORCE=1 で無視"
 reserve = "quota-canvas: {name}=reserve（{detail}）。可能なら他のワーカーを優先"

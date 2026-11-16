@@ -40,6 +40,10 @@ NON_ROUTING_PROVIDERS = frozenset(("openrouter", "deepseek", "kimi"))
 # コーディングに使えず、振り分けでは自動的に「監視のみ」扱いにする provider。
 # providers.Provider.recommendable = False のサービスと同じ集合 (test で一致を見る)。
 AUTO_MONITOR_PROVIDERS = frozenset(("muse",))
+# 利用規約で他の AI エージェントからの利用が認められない provider。
+# 振り分け (line / hook / check) では常に stop にするが、off (監視のみ) 扱いには
+# しない: mode 設定・カードのペース表示・使い切りモード (burn) は今までどおり。
+NO_AGENT_PROVIDERS = frozenset(("gemini",))
 
 # ワーカー名の制約。既定ワーカーの名前は status.json 由来の windows[].provider の
 # 生の文字列なので、この条件を満たす名前だけを判定・表示に使う (format_line の
@@ -423,6 +427,7 @@ class WorkerResult:
     verdict: str                     # stop | reserve | go | boost | unknown
     reason: str                      # exhausted / below_floor / over / burst / tight / on_track /
                                      # spare / fresh / unknown / burn / stale / missing / error /
+                                     # no_agent (Gemini など AI 利用不可) / disabled (監視のみ) /
                                      # free / full / queued / unreachable (local 枠)
     windows: List[str] = field(default_factory=list)  # 判定に使った窓 id
     remaining: Optional[float] = None   # 代表 (一番悪い) 窓の残り %
@@ -734,6 +739,21 @@ def auto_monitor_workers(specs: Dict[str, List[str]]) -> Set[str]:
     """データ元が AUTO_MONITOR_PROVIDERS だけのワーカー名 (自動で監視のみ)。
     利用者の routing mode 設定 (routing-off.json) とは別に、常に監視のみ扱い。
     データ元は evaluate と同じく残高専用 provider の窓指定を除いて数える。"""
+    return _providers_only_workers(specs, AUTO_MONITOR_PROVIDERS)
+
+
+def no_agent_workers(specs: Dict[str, List[str]]) -> Set[str]:
+    """データ元が NO_AGENT_PROVIDERS だけのワーカー名 (他の AI エージェントには
+    使わせない)。evaluate はこれらのワーカーの verdict を常に stop にするが、
+    off (監視のみ) にはしない: mode 設定・カード表示・burn は今までどおり。
+    数え方は auto_monitor_workers と同じ (残高専用 provider を除き、glob も解決)。"""
+    return _providers_only_workers(specs, NO_AGENT_PROVIDERS)
+
+
+def _providers_only_workers(specs: Dict[str, List[str]], targets: Set[str]) -> Set[str]:
+    """データ元が targets だけのワーカー名。データ元は evaluate と同じく
+    残高専用 provider の窓指定を除いて数え、"muse*" / "gem*" などの
+    前方一致指定も既知 provider 名に解決する。"""
     out: Set[str] = set()
     for name, patterns in specs.items():
         original = [p for p in (patterns or []) if isinstance(p, str)]
@@ -742,7 +762,7 @@ def auto_monitor_workers(specs: Dict[str, List[str]]) -> Set[str]:
             continue
         providers = {q for pr in _worker_providers(name, kept)
                      for q in _glob_providers(pr)} - NON_ROUTING_PROVIDERS
-        if providers and providers <= AUTO_MONITOR_PROVIDERS:
+        if providers and providers <= targets:
             out.add(name)
     return out
 
@@ -851,7 +871,9 @@ def _worst(entries: List[dict], floor_percent: float, floor_hours: float, now: d
 
 def evaluate(status: Optional[dict], routing_cfg: "Routing",
              burn: Dict[str, datetime], now: datetime,
-             previous: Optional[dict] = None, off: Optional[Set[str]] = None) -> RoutingResult:
+             previous: Optional[dict] = None, off: Optional[Set[str]] = None,
+             stale_status: bool = False,
+             named: Optional[Set[str]] = None) -> RoutingResult:
     """status.json の windows からワーカーごとの判定を作る (純粋関数)。
 
     routing_cfg は config.Routing (workers / floor_percent / stale_minutes を
@@ -865,13 +887,33 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
     floor = float(getattr(routing_cfg, "floor_percent", DEFAULT_FLOOR_PERCENT))
     floor_hours = float(getattr(routing_cfg, "floor_hours", DEFAULT_FLOOR_HOURS))
     stale_min = int(getattr(routing_cfg, "stale_minutes", DEFAULT_STALE_MINUTES))
-    specs: Dict[str, List[str]] = getattr(routing_cfg, "workers", None) or default_workers(status)
+    configured = getattr(routing_cfg, "workers", None)
+    specs: Dict[str, List[str]] = dict(configured or default_workers(status))
+    # no_agent provider (gemini) は、[routing.workers] に同名の明示設定が無く、
+    # (a) check が名指し (named)、(b) [routing.models] が workers に挙げている、
+    # (c) workers 未指定で status が新しい (既定ワーカー)、のどれかなら、status の
+    # 鮮度・有無に関係なく必ず結果に載せる (下の no_agent で stop / no_agent になる)。
+    # stale_status の絞り込みは、名指しの無い (c) の補完を止めるだけ
+    # (「stale の 1 行だけ」の約束を保つ)。この補完は gate のここ 1 か所だけ。
+    pointed = {w for m in (getattr(routing_cfg, "models", None) or {}).values()
+               for w in (getattr(m, "workers", None) or ())
+               if isinstance(w, str)} | set(named or ())
+    for provider in NO_AGENT_PROVIDERS:
+        if provider in specs or provider in NON_ROUTING_PROVIDERS \
+                or not safe_worker_name(provider):
+            continue
+        if provider in pointed or (not configured and not stale_status):
+            specs[provider] = [w["id"] for w in windows
+                               if w.get("provider") == provider and not w.get("part_of")
+                               and isinstance(w.get("id"), str)
+                               and w["id"] not in ROUTING_ONLY_WINDOWS]
     off = set(off or set())
-    specs = dict(specs)
     for name in sorted(off):
         if safe_worker_name(name) and name not in NON_ROUTING_PROVIDERS:
             specs.setdefault(name, [])
     off |= auto_monitor_workers(specs)  # Muse などは設定に関係なく監視のみ
+    # Gemini だけのワーカーは他の AI エージェントに使わせない (verdict は最後に stop へ)
+    no_agent = no_agent_workers(specs)
     previous_holds = previous.get("holds") if isinstance(previous, dict) else None
     if not isinstance(previous_holds, dict):
         previous_holds = {}
@@ -990,6 +1032,15 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             provider=_one_provider(providers),
             local=local_fields(entry),
         ))
+    if no_agent:
+        # 利用規約で他の AI からの利用が認められない provider (Gemini) だけのワーカーは、
+        # 窓の計算・hold・burn の記録はそのままに、verdict を必ず stop にする
+        # (stale / error / missing で unknown にもしない。off 済みなら disabled のまま。
+        # 窓もエラーも無い対象は上で既定ワーカーとして specs に足してあるので、
+        # ここで必ず stop/no_agent の WorkerResult になる)。
+        workers = [w if w.name not in no_agent or w.reason == "disabled"
+                   else replace(w, verdict="stop", reason="no_agent")
+                   for w in workers]
     return RoutingResult(
         workers=workers,
         at=status.get("updated_at") if isinstance(status, dict) and isinstance(status.get("updated_at"), str) else None,
@@ -1095,6 +1146,8 @@ def format_worker_segments(result: RoutingResult, now: datetime, lang: Optional[
             text = "%s=%s(%s" % (w.name, w.verdict, pct_str(w.remaining))
         if w.reason == "disabled":
             text += "," + t("routing.gate.disabled")
+        if w.reason == "no_agent":
+            text += "," + t("routing.gate.no_agent")
         if w.reason == "ahead_of_pace":
             text += "," + t("routing.gate.ahead_of_pace")
         if w.status == "over" or w.reason in ("over_rounding", "burst"):
@@ -1147,6 +1200,8 @@ def check_message(worker: WorkerResult, now: datetime, lang: Optional[str] = Non
     _set_lang(lang)
     if worker.reason == "disabled":
         return t("routing.check.disabled", name=worker.name)
+    if worker.reason == "no_agent":
+        return t("routing.check.no_agent", name=worker.name)
     if worker.local is not None:
         # local 枠: 残量 % が無いので「待ち n」「満杯 n/容量」「応答なし」で理由を出す
         loc = worker.local

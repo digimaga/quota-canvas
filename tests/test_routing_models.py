@@ -357,7 +357,9 @@ def test_reject_names_with_trailing_newline():
 
 
 @pytest.mark.parametrize("command", ["line", "hook"])
-def test_model_ledger_is_silent_without_first_line(tmp_path, command):
+def test_model_ledger_follows_gemini_first_line_when_no_windows(tmp_path, command):
+    """窓が 0 件でも Gemini (AI 利用不可) の stop が 1 行目に出るので、台帳はその後ろに続く。
+    1 行目が無いときに台帳も出さない約束は stale 側 (下のテスト) が見る。"""
     path = tmp_path / "status.json"
     _write_status(path, [])
     cfg = _models_config(tmp_path, '''
@@ -365,7 +367,8 @@ def test_model_ledger_is_silent_without_first_line(tmp_path, command):
 workers = ["missing"]
 roles = ["review"]
 ''')
-    assert _run(tmp_path, ["routing", command], status=path, config=cfg) == (0, "", "")
+    rc, out, err = _run(tmp_path, ["routing", command], status=path, config=cfg)
+    assert rc == 0 and not err and "gemini=stop" in out and "reviewer" in out
 
 
 @pytest.mark.parametrize("command", ["line", "hook"])
