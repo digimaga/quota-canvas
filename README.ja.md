@@ -2,7 +2,7 @@
 
 [English](README.md) | 日本語
 
-Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi / OpenCode Go / Devin / Muse / OpenDesign の利用枠の残量とペースを、Mac のデスクトップやメニューバー、または任意の TURZX 9.2" USB 画面に表示する macOS アプリ。
+Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi / OpenCode Go / Devin / Muse / OpenDesign / Command Code の利用枠の残量とペースを、Mac のデスクトップやメニューバー、または任意の TURZX 9.2" USB 画面に表示する macOS アプリ。
 
 ![macOS のデスクトップに埋め込んだ QuotaCanvas のパネル](docs/images/desktop-ja.png)
 
@@ -34,6 +34,7 @@ Claude / Codex / GLM / Grok / Gemini / OpenRouter / DeepSeek / Kimi / OpenCode G
 | Devin | 日次・週間の利用枠と、取得できる場合は追加利用残高 | キーチェーンの API キー、Devin CLI のログイン（`~/.local/share/devin/credentials.toml`）、または Devin デスクトップアプリのログイン（`state.vscdb`） |
 | Muse | 週間の利用枠と追加トークン残量 | メニューバーアプリ内の muse.ai ログイン（WebKit セッション。アプリが 5 分ごとに取得） |
 | OpenDesign | 5 時間・7 日の利用枠と、取得できる場合は残高（USD） | OpenDesign CLI のログイン（`vela login`、`~/.amr/config.json`）または `VELA_CONTROL_KEY` |
+| Command Code | 5 時間・週間・月間（課金期間のクレジットのプール）の利用枠と、ある場合は追加購入・無料クレジットの残り | キーチェーン、環境変数 `COMMANDCODE_API_KEY`、または `cmd login` のログイン（`~/.commandcode/auth.json`） |
 
 OpenRouter / DeepSeek / Kimi は公開 API 仕様に基づく実装で、実アカウントでは未検証。詳しくは[認証情報](#認証情報)を参照。
 
@@ -152,6 +153,7 @@ Screen().show(pil_image)   # 1920×462 の横長画像
 - Devin はキーチェーン `quota-canvas/devin`（`set-key devin` で保存）を優先し、次に Devin CLI のログイン `~/.local/share/devin/credentials.toml` の `windsurf_api_key`（`api_server_url` が codeium.com・windsurf.com・devin.ai とそのサブドメインの `https://` のときだけ、そのホストを使う）、次に Devin デスクトップアプリの `state.vscdb` の `windsurfAuthStatus` エントリの `apiKey` を読む。取得できる窓は `devin:1d`（日次）と `devin:weekly`（7 日）。`hideDailyQuota` / `hideWeeklyQuota` が true なら対応する窓を出さず、`overageBalanceMicros` があれば追加利用残高（USD）として表示する。401/403 はキーが無効であることを示す。キーが Devin のアカウントのものか確認する。判定専用の `devin:free` は `~/.claude/run/devin-ratelimit`（環境変数 `QUOTA_CANVAS_DEVIN_FREE_LIMIT_FILE` で差し替え）を読み、無料モデルの制限中は戻る時刻まで使用 100%、制限が無いときは使用 0%・リセットなしの窓になる。
 - Muse はメニューバーアプリが必須。エンジンから muse.ai の `fetchSubscriptionAction` への POST は 403 で拒否されるため、アプリが専用 WebKit セッション（設定 → サービス → Muse の「muse.ai にログイン」）で同じ fetch を 5 分ごとに実行し、応答を `quota-canvas muse-ingest` に渡して `muse-usage.json` に書く（本文・Cookie は残さない）。fetch はそのファイルを読むだけ。ファイル無し・`logged_out`・20 分超で取得失敗。Action ID は `quota-canvas muse-action-id`（キャッシュ。POST が 401・403・429 以外の 4xx（404・409 など）なら `--refresh` で 1 回取り直す）。窓は `muse:weekly`（7 日）。追加トークンは残高行（`追加のトークン 残り NN%`、`currency` は `TOKENS`）。
 - OpenDesign は公式 CLI のログインを読む。環境変数 `VELA_CONTROL_KEY` が最優先（apiUrl は `VELA_API_URL` か既定の `https://amr-api.open-design.ai`）、次に `{AMR_HOME または ~/.amr}/config.json` の `controlKey`（プロファイルは `AMR_PROFILE`、無ければ `"prod"`、それも無ければ唯一のエントリ）。CLI は `npm install -g @powerformer/vela-cli` で入れて `vela login` する。apiUrl は https のみ受け付ける。取得できる窓は `opendesign:5h`（5 時間）と `opendesign:weekly`（7 日）。`wallet.balanceUsd` があれば残高（USD）として表示する。401/403 はログイン切れなので `vela login` でログインし直す。
+- Command Code はキーチェーン `quota-canvas/commandcode`（`set-key commandcode` で保存）を優先し、次に環境変数 `COMMANDCODE_API_KEY`、次に `cmd login` のログイン `~/.commandcode/auth.json` の `apiKey` を読む。公式 CLI の `/usage` と同じ非公式の `alpha` エンドポイント（`/alpha/billing/credits` と `/alpha/billing/subscriptions`。変わる可能性がある）を使う。取得できる窓は `commandcode:5h`・`commandcode:weekly`（ドル建てクレジットの上限。最初のリクエストで開くので、それまでリセット時刻は空）と `commandcode:30d`（プランの月間クレジットを課金期間で使い切るプールとして）。追加購入・無料クレジットは USD の残高として出す。401/403 はログイン切れ（`cmd login` し直し）。
 - Gemini は Antigravity CLI の `agy -p "/usage" --output-format json` から取得する。モデルを呼ばず枠を消費せず、トークンも agy が更新する。`providers.gemini.token_refresh` は旧設定との互換用で現在は使われない。窓は `gemini:weekly`、`gemini:5h`、`gemini:argon` とそのほかのモデル別の週間枠（`gemini-<モデル名>-wtu-weekly` の形のバケットは `gemini:<モデル名>` になり、プランに含まれ `agy` が返したものだけ窓になる）。Pro では Hydrogen は Gemini 3.8 Flash と共有の `gemini:weekly` / `gemini:5h` に含まれる（`/usage` のグループ一覧で確認）。Carbon が Ultra で別枠になるかは未確認、Antigravity 経由の Claude / GPT の `gemini:claude` と `gemini:claude_5h`。パネルに出るのは主枠＋サブ窓 3 行までなので、窓が多い（Ultra など）ときはレイアウト設定で表示する窓を選ぶ。プラン名はキーチェーン service `gemini` / account `antigravity` のトークンで取得できれば表示し、取れなければ「Gemini」とする。
 
 #### 履歴・ペース・推薦

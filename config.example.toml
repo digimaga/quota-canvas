@@ -231,6 +231,12 @@ enabled = true
 # 使うプロファイルは AMR_PROFILE、無ければ "prod"、それも無ければ profiles の唯一の要素
 # color = "#84CC16"
 
+[providers.commandcode]
+enabled = true
+# Command Code 公式 CLI の `cmd login`（~/.commandcode/auth.json の apiKey）を読む。
+# キーチェーン quota-canvas/commandcode と環境変数 COMMANDCODE_API_KEY があればそちらを優先
+# color = "#F97316"
+
 # ローカル LLM サーバー（OpenAI 互換サーバーの並列枠の空きを /metrics から取る）。
 # サーバー名ごとに [providers.local.<名前>] を 1 つ書けます（名前は半角英数字と
 # . _ - で、routing.workers では "local:<名前>" で束ねます）。

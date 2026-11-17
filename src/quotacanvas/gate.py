@@ -35,7 +35,7 @@ if TYPE_CHECKING:  # 循環 import を避ける (実行時は duck typing)
     from .config import Routing
 
 # routing check の既定ワーカー名。残高表示専用のサービスは含めない。
-KNOWN_PROVIDERS = ("claude", "codex", "glm", "grok", "gemini", "opencode", "devin", "muse", "opendesign")
+KNOWN_PROVIDERS = ("claude", "codex", "glm", "grok", "gemini", "opencode", "devin", "muse", "opendesign", "commandcode")
 NON_ROUTING_PROVIDERS = frozenset(("openrouter", "deepseek", "kimi"))
 # コーディングに使えず、振り分けでは自動的に「監視のみ」扱いにする provider。
 # providers.Provider.recommendable = False のサービスと同じ集合 (test で一致を見る)。

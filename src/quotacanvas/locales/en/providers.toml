@@ -14,6 +14,8 @@ muse_resolve_unavailable = "Cannot resolve Muse endpoint (retrying in a few hour
 opendesign_login_required = "No OpenDesign login (run vela login)"
 opendesign_login_expired = "OpenDesign login expired (run vela login again)"
 opendesign_bad_api_url = "apiUrl must be https"
+commandcode_login_required = "No Command Code login (run cmd login)"
+commandcode_login_expired = "Command Code login expired (run cmd login again)"
 reset_credit = "Reset credits"
 
 balance = "Balance"
@@ -48,6 +50,7 @@ opencode_auth = "~/.local/share/opencode/auth.json"
 devin_cli = "Devin CLI login (~/.local/share/devin/credentials.toml)"
 devin_desktop = "Devin desktop app login (state.vscdb)"
 opendesign_config = "OpenDesign CLI login ({path})"
+commandcode_auth = "~/.commandcode/auth.json (cmd login)"
 
 [claude]
 weekly_scoped = "Weekly {model}"

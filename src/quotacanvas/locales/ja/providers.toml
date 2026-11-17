@@ -14,6 +14,8 @@ muse_resolve_unavailable = "Muse の取得先を解決できない（数時間�
 opendesign_login_required = "OpenDesign のログインがありません（vela login でログインしてください）"
 opendesign_login_expired = "OpenDesign のログインが切れました（vela login でログインし直してください）"
 opendesign_bad_api_url = "apiUrl は https のみ受け付けます"
+commandcode_login_required = "Command Code のログインがありません（cmd login でログインしてください）"
+commandcode_login_expired = "Command Code のログインが切れました（cmd login でログインし直してください）"
 reset_credit = "リセット権"
 
 balance = "残高"
@@ -48,6 +50,7 @@ opencode_auth = "~/.local/share/opencode/auth.json"
 devin_cli = "Devin CLI のログイン（~/.local/share/devin/credentials.toml）"
 devin_desktop = "Devin デスクトップアプリのログイン（state.vscdb）"
 opendesign_config = "OpenDesign CLI のログイン（{path}）"
+commandcode_auth = "~/.commandcode/auth.json（cmd login）"
 
 [claude]
 weekly_scoped = "週間 {model}"

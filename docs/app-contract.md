@@ -394,7 +394,7 @@ output is the envelope so callers can judge freshness:
   `stop` → one stderr line, exit 3; `reserve` → one stderr note, exit 0; `unknown` → one
   stderr line (「判定できないためそのまま続行」), exit 0; `go`/`boost` → silent, exit 0.
   A name is valid when it is one of `KNOWN_PROVIDERS` (claude / codex / glm / grok /
-  gemini / opencode / devin / muse / opendesign), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
+  gemini / opencode / devin / muse / opendesign / commandcode), a `[routing.workers]` key or a `[routing.models]` key (the model's verdict is
   the worst of its workers; a worker name wins on collision) — anything else exits 2, regardless of what
   status.json contains. A `[routing.models]` key with `enabled = false` (and no colliding worker / provider name)
   exits 3 without reading status.json — one stderr line, or with `--json` a `stop` / `model_disabled` verdict;
@@ -513,6 +513,23 @@ kinds `5h` / `7d` map to `opendesign:5h` (5 hours) and `opendesign:weekly`
 (7 days) with `used = (limitCredits - remainingCredits) / limitCredits`;
 `plan.tier` names the plan and an optional `wallet.balanceUsd` shows as the
 balance (USD). A 401/403 means the login expired (`vela login` again).
+
+Command Code (`commandcode`, `needs_key = true`) reads Keychain
+`quota-canvas/commandcode`, then `COMMANDCODE_API_KEY`, then `apiKey` in the
+`cmd login` credentials (`~/.commandcode/auth.json`). It GETs
+`https://api.commandcode.ai/alpha/whoami?limits=1` (for `org.id`; individuals have
+none), `/alpha/billing/credits` and `/alpha/billing/subscriptions` (both with
+`?orgId=` for an organization) — the unofficial endpoints behind the CLI's
+`/usage`. `credits.windowLimits.fiveHour` / `weekly` (`{used, cap, resetAt}`, in
+dollar credits; skipped when `limited` is false) map to `commandcode:5h` and
+`commandcode:weekly`; `resetAt` is 0 until the window opens, which gives no reset
+time. `commandcode:30d` is the monthly credit pool, only when the subscription
+is `active` and its `planId` is known: `used = (pool - remaining) / pool` with
+`pool = max(plan credits, monthlyCredits) + purchasedCredits + freeCredits` and
+the reset at `currentPeriodEnd`. Purchased + free credits show as a USD
+balance; `planId` names the plan (e.g. "Command Code GOAT"). whoami and
+subscriptions are optional (their failure drops only the org id / the monthly
+window); a 401/403 means the login expired (`cmd login` again).
 
 ## Config keys the app edits
 

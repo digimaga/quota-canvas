@@ -117,14 +117,15 @@ final class EngineClient: @unchecked Sendable {
     /// WebKit の期限を明示 timeout として渡すので、この既定は明示のない呼び出し
     /// （muse-ingest などローカル処理）の保険。
     static var museTimeout: TimeInterval = 90
-    /// detect（`detect --json`）の既定。エンジンの detect_all は 12 サービスを
+    /// detect（`detect --json`）の既定。エンジンの detect_all は 13 サービスを
     /// 直列に 1 回ずつ取得する（src/quotacanvas/providers/__init__.py の detect_all）:
     /// HTTP は 1 回 15 秒（providers/_base.py TIMEOUT）で claude 1 + codex 2
     /// （利用量とリセット権）+ glm 1 + grok 1 + openrouter 2 + deepseek 1 +
     /// kimi 1 + opencode 1 の最大 10 回 = 150 秒、gemini は agy usage だけで
     /// 30 秒（providers/gemini.py USAGE_TIMEOUT）、muse は HTML+JS 取得で最大
-    /// 約 20 秒、opendesign は (15+3+7.5)×2 = 51 秒（一時失敗の 1 回再試行込み）。
-    /// 最悪合計は約 251 秒で、エンジン起動とパースの余裕を足して 300 秒。
+    /// 約 20 秒、opendesign は (15+3+7.5)×2 = 51 秒（一時失敗の 1 回再試行込み）、
+    /// commandcode は credits 15 + whoami 7.5 + subscriptions 7.5 = 30 秒。
+    /// 最悪合計は約 281 秒で、エンジン起動とパースの余裕を足して 300 秒。
     /// （`detect --cached` はキャッシュ欠損時にこの全取得に落ちるので同じ値）
     static var detectTimeout: TimeInterval = 300
     /// 期限で SIGTERM を送ったあと、無視されていた場合に SIGKILL を送るまでの猶予。
