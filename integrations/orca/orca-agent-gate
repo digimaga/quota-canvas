@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""Quota-aware command wrapper for Orca agents."""
+import errno
+import fcntl
+import json
+import os
+import re
+import signal
+from pathlib import Path
+import shlex
+import subprocess
+import tempfile
+import sys
+import time
+from datetime import datetime, timezone
+
+DEFAULT_WORKERS = {"claude": "claude", "codex": "codex", "opencode": "opencode",
+                   "opencode2": "opencode", "command-code": "commandcode",
+                   "grok": "grok", "devin": "swe2", "pi": None}
+DEFAULT_MODELS = ["swe-2-high", "swe-2-medium", "swe-2-max", "swe-2-flash-high",
+                  "swe-2-flash-medium", "swe-2-flash-max"]
+HOME = Path.home()
+STATE = HOME / ".local/state/orca-agent-gate"
+CONFIG = HOME / ".config/orca-agent-gate/config.json"
+
+
+def message(text):
+    print(text, file=sys.stderr, flush=True)
+
+
+def log(agent, worker, check, decision):
+    def clean(value):
+        return str(value if value is not None else "-").replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        with (STATE / "launch.log").open("a", encoding="utf-8") as stream:
+            stream.write("{} agent={} worker={} check={} decision={}\n".format(
+                datetime.now(timezone.utc).isoformat(), clean(agent), clean(worker), clean(check), clean(decision)))
+    except OSError as exc:
+        message("起動ログを記録できません: {}".format(exc))
+
+
+def stop(reason, allow_off=True):
+    message(reason)
+    message("一時的に使うには ORCA_GATE_FORCE=1 を付けて起動" +
+            ("（または設定でその agent を off）" if allow_off else ""))
+
+
+def find_executable(name, exclude_self=False):
+    for directory in os.environ.get("PATH", os.defpath).split(os.pathsep):
+        candidate = Path(directory or ".") / name
+        try:
+            if candidate.is_file() and os.access(str(candidate), os.X_OK):
+                if exclude_self and os.path.samefile(str(candidate), __file__):
+                    continue
+                return str(candidate.resolve())
+        except OSError:
+            continue
+    return None
+
+
+def check_command():
+    override = os.environ.get("ORCA_GATE_CHECK_CMD", "")
+    if override.strip():
+        return shlex.split(override)
+    path = find_executable("quota-gate")
+    local = HOME / ".claude/bin/quota-gate"
+    if path:
+        return [path, "check"]
+    if local.is_file() and os.access(str(local), os.X_OK):
+        return [str(local), "check"]
+    path = find_executable("quota-canvas")
+    return [path, "routing", "check"] if path else None
+
+
+def bounded_text(handle, limit=32 * 1024):
+    # 停止理由は出力の末尾に出ることが多いので、長い出力は先頭と末尾を残して中を省く。
+    # 子孫が書き続けても読む量が変わらず、共有の書き込み位置も動かさないよう fstat と pread で読む
+    fd = handle.fileno()
+    size = os.fstat(fd).st_size
+    if size <= limit * 2:
+        return os.pread(fd, size, 0).decode("utf-8", "replace")
+    head = os.pread(fd, limit, 0).decode("utf-8", "replace")
+    tail = os.pread(fd, limit, size - limit).decode("utf-8", "replace")
+    return "%s\n...（%d バイト省略）...\n%s" % (head, size - limit * 2, tail)
+
+
+def quota_check(worker):
+    try:
+        command = check_command()
+        if not command:
+            raise FileNotFoundError("quota check command")
+        # 出力はパイプでなく一時ファイルに受ける。出力が多くても書き込みで詰まらず、
+        # 子孫がファイルを持ち続けても終了コードの確認を妨げない
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            process = subprocess.Popen(command + [worker], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                       start_new_session=True)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+                raise
+            stdout = bounded_text(out)
+            stderr = bounded_text(err)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        message("残量を判定できないので通常どおり起動します")
+        return "unknown"
+    if process.returncode == 3:
+        output = (stdout + stderr).strip()
+        if output:
+            message(output)
+        stop("残量の判定により起動を止めました")
+        return "stop"
+    if process.returncode == 0:
+        output = (stdout + stderr).strip()
+        if output:
+            message(output)
+        return "go"
+    message("残量を判定できないので通常どおり起動します")
+    return "unknown"
+
+
+def start_time(pid):
+    try:
+        env = dict(os.environ, LC_ALL="C")
+        result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, timeout=5, env=env)
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def is_dead(pid):
+    try:
+        os.kill(pid, 0)
+    except OSError as exc:
+        return exc.errno == errno.ESRCH
+    return False
+
+
+def board_count(keys):
+    path = Path(os.environ.get("ORCA_GATE_BOARD", str(HOME / ".claude/run/worker-board.json")))
+    try:
+        with path.open(encoding="utf-8") as stream:
+            board = json.load(stream)
+        updated = board["updated_at"]
+        totals = board["total"]
+        if (isinstance(updated, bool) or not isinstance(updated, (int, float))
+                or not 0 <= time.time() - updated <= 600 or not isinstance(totals, dict)):
+            return 0
+        values = (totals.get(key) for key in keys)
+        return sum(value for value in values
+                   if isinstance(value, int) and not isinstance(value, bool) and value >= 0)
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+        return 0
+
+
+def register(worker, cap, board_keys):
+    directory = STATE / worker
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        count = 0
+        for path in directory.iterdir():
+            if not path.name.isdigit():
+                continue
+            try:
+                pid = int(path.name)
+                if pid <= 0 or pid > 2147483647:
+                    raise ValueError("PID の範囲外です")
+                previous = path.read_text(encoding="utf-8").strip()
+                datetime.strptime(previous, "%a %b %d %H:%M:%S %Y")
+                current = start_time(pid)
+                if is_dead(pid) or (current and previous != current):
+                    path.unlink(missing_ok=True)
+                else:
+                    count += 1
+            except FileNotFoundError:
+                continue
+            except (OSError, UnicodeError, ValueError) as exc:
+                message("不正な PID 記録を無視します: {} ({})".format(path.name, exc))
+                try:
+                    if path.is_dir() and not path.is_symlink():
+                        path.rmdir()
+                    else:
+                        path.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    message("PID 記録を削除できません: {}".format(cleanup_error))
+        if count + board_count(board_keys) >= cap:
+            return None
+        own_start = start_time(os.getpid())
+        if not own_start:
+            raise OSError("自分のプロセス起動時刻を取得できません")
+        pid_file = directory / str(os.getpid())
+        pid_file.write_text(own_start + "\n", encoding="utf-8")
+        return pid_file
+
+
+def model_args(args, config, force):
+    allowed = config.get("devin_allowed_models", DEFAULT_MODELS)
+    default = config.get("devin_model", "swe-2-high")
+    if not isinstance(allowed, list) or not all(isinstance(x, str) for x in allowed) or not isinstance(default, str):
+        raise ValueError("devin_model または devin_allowed_models が不正です")
+    models = []
+    index = 0
+    while index < len(args) and args[index] != "--":
+        arg = args[index]
+        if arg == "--model":
+            if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                raise ValueError("--model に値が必要です")
+            else:
+                index += 1
+                models.append(args[index])
+        elif arg.startswith("--model="):
+            model = arg.split("=", 1)[1]
+            if not model:
+                raise ValueError("--model に値が必要です")
+            models.append(model)
+        index += 1
+    if not models:
+        models = [default]
+        position = 1 if args and args[0] == "acp" else 0
+        args = args[:position] + ["--model", default] + args[position:]
+    if not force and any(model not in allowed for model in models):
+        return None
+    return args
+
+
+def worker_limits(agent, worker, options, agents):
+    caps = []
+    keys = set()
+    peers = dict(agents)
+    peers[agent] = options
+    for peer, settings in peers.items():
+        if not isinstance(settings, dict):
+            continue
+        if settings.get("off") is True or settings.get("worker", DEFAULT_WORKERS.get(peer)) != worker:
+            continue
+        cap = settings.get("cap")
+        if cap is not None:
+            if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+                raise ValueError("cap は 1 以上の整数にしてください")
+            caps.append(cap)
+        board_keys = settings.get("board_keys", [])
+        if (not isinstance(board_keys, list) or
+                any(not isinstance(key, str) or not key for key in board_keys) or
+                len(set(board_keys)) != len(board_keys)):
+            raise ValueError("board_keys は重複のない文字列の配列にしてください")
+        keys.update(board_keys)
+    return (min(caps) if caps else None), sorted(keys)
+
+
+def main(argv):
+    agent = argv[1] if len(argv) > 1 else "-"
+    worker = None
+    check = "not-run"
+    decision = "error"
+    pid_file = None
+    try:
+        if os.environ.get("ORCA_AGENT_GATE_PID") == str(os.getpid()):
+            raise ValueError("ラッパーへの再入を検出しました")
+        os.environ["ORCA_AGENT_GATE_PID"] = str(os.getpid())
+        if len(argv) < 2:
+            raise ValueError("使い方: orca-agent-gate <agent-id> [引数...]")
+        if not re.fullmatch(r"[a-z0-9-]+", agent):
+            raise ValueError("agent ID は英小文字・数字・ハイフンのみ使用できます")
+        try:
+            with CONFIG.open(encoding="utf-8") as stream:
+                config = json.load(stream)
+        except FileNotFoundError:
+            config = {}
+        if not isinstance(config, dict) or not isinstance(config.get("agents", {}), dict):
+            raise ValueError("設定は agents を含む JSON オブジェクトにしてください")
+        options = config.get("agents", {}).get(agent, {})
+        if not isinstance(options, dict):
+            raise ValueError("agent の設定は JSON オブジェクトにしてください")
+        worker = options.get("worker", DEFAULT_WORKERS.get(agent))
+        off = options.get("off", False)
+        if not isinstance(off, bool):
+            message("agent の off は真偽値ではないため false として扱います")
+        if off is True:
+            worker = None
+        if worker is not None and (not isinstance(worker, str) or not worker or worker in (".", "..") or "/" in worker or "\\" in worker):
+            raise ValueError("worker はパス区切りを含まない名前にしてください")
+        cap = options.get("cap")
+        if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
+            raise ValueError("cap は 1 以上の整数にしてください")
+        board_keys = options.get("board_keys", [])
+        if (not isinstance(board_keys, list) or
+                any(not isinstance(key, str) or not key for key in board_keys) or
+                len(set(board_keys)) != len(board_keys)):
+            raise ValueError("board_keys は重複のない文字列の配列にしてください")
+        if worker:
+            cap, board_keys = worker_limits(agent, worker, options, config.get("agents", {}))
+        force = os.environ.pop("ORCA_GATE_FORCE", "") == "1"
+        if force:
+            message("強制起動します")
+            check = "force"
+        args = argv[2:]
+        if agent == "devin":
+            args = model_args(args, config, force)
+            if args is None:
+                decision = "stop-model"
+                stop("許可されていない Devin モデルのため起動を止めました", allow_off=False)
+                return 3
+        executable = options.get("cli")
+        if executable is not None:
+            if not isinstance(executable, str) or not os.path.isabs(executable) or not os.path.isfile(executable) or not os.access(executable, os.X_OK) or os.path.samefile(executable, __file__):
+                raise ValueError("設定した CLI の絶対パスが無効、実行不可、またはラッパー自身です")
+        else:
+            executable = find_executable("opencode" if agent == "opencode2" else agent, exclude_self=True)
+            if not executable:
+                raise ValueError("本物の CLI が PATH に見つかりません: {}".format(agent))
+        if worker and not force:
+            check = quota_check(worker)
+            if check == "stop":
+                decision = "stop-quota"
+                return 3
+        if worker and cap is not None and not force:
+            pid_file = register(worker, cap, board_keys)
+            if pid_file is None:
+                decision = "stop-cap"
+                stop("同時起動数の上限に達したため起動を止めました")
+                return 3
+        decision = "exec"
+        log(agent, worker, check, decision)
+        os.execv(executable, [executable] + args)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        message("起動できません: {}".format(exc))
+        if pid_file is not None:
+            pid_file.unlink(missing_ok=True)
+        if decision != "exec":
+            log(agent, worker, check, "error")
+        return 2
+    finally:
+        if decision.startswith("stop"):
+            log(agent, worker, check, decision)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
