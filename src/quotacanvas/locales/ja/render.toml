@@ -118,6 +118,7 @@ prev_left = "前回 {pct}% 余り"
 prev_used = "前回 {pct}% 使用"
 sub_exhaust_at = "{label}枠が {dt} に尽きる見込み"
 sub_exhausted = "{label}枠はすでに上限"
+blocked_by = "{label}上限 · 解除まで {span}"
 
 [advice]
 no_data = "データ不足 · しばらく計測します"

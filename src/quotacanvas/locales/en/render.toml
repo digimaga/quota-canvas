@@ -117,6 +117,7 @@ prev_left = "Last: {pct}% left"
 prev_used = "Last: {pct}% used"
 sub_exhaust_at = "{label} window may run out by {dt}"
 sub_exhausted = "{label} window is maxed out"
+blocked_by = "{label} limit · resets in {span}"
 
 [advice]
 no_data = "No data · measuring"

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import calendar as _cal
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple, Union
@@ -638,6 +639,69 @@ def _sub_note(mp, subs, now=None):
             txt = t("render.card.sub_exhausted", label=sub["label"])
         best = (at, txt)
     return best[1] if best is not None else None
+
+
+# 窓 key のうち期間だけを表す名前 (5h・1d・30d・1.5h・weekly など)。
+# providers/_base.py の _window_identity と各 provider の固定 key が作る形。
+_PERIOD_KEY_RE = re.compile(r"^(?:\d+(?:\.\d+)?[hdwm]|daily|weekly|monthly)$")
+
+
+def _pool(win):
+    # type: (Window) -> str
+    """窓が数えられる利用枠の名前。同じサービスの中で、この値が同じ窓どうし
+    だけが 1 つの利用枠を共有する (遮断の判定に使う)。
+
+    期間だけの key ("5h"・"weekly"・"4h" など) は共通枠 ""。"<系統>_<期間>"
+    は "<系統>" (Gemini の claude_5h → "claude")。それ以外 (Claude の
+    weekly_fable、Gemini の argon・claude など) は key そのもので、特定モデル
+    専用や別系統の枠 (part_of=None でも共通枠とは別に数える)。"""
+    key = win.key
+    if _PERIOD_KEY_RE.match(key):
+        return ""
+    head, sep, tail = key.rpartition("_")
+    if sep and head and _PERIOD_KEY_RE.match(tail):
+        return head
+    return key
+
+
+def _blocked_by(main_pace, candidates, now):
+    # type: (Pace, Sequence[Pace], datetime) -> Optional[Pace]
+    """長い窓に止められている短いメイン窓について、止めている側の Pace を返す。
+
+    メイン窓の長さが 1 日以下で、同じサービス・同じ利用枠 (_pool) のもっと
+    長い窓 (part_of 無し) が EXHAUSTED かつリセットが未来のとき、
+    その Pace。複数あればリセットが最も遅いもの。メイン自身が尽きている
+    (EXHAUSTED、またはリセット不明で状態が出なくても使用 100% 以上) なら
+    None (従来の表示のまま)。"""
+    win = main_pace.window
+    used = win.used_percent
+    pool = _pool(win)
+    if win.length > timedelta(days=1) \
+            or main_pace.status is PaceStatus.EXHAUSTED \
+            or (used is not None and math.isfinite(used) and used >= 100.0):
+        return None
+    best = None  # type: Optional[Tuple[Pace, datetime]]
+    for c in candidates:
+        cw = c.window
+        ra = cw.resets_at
+        if cw.provider != win.provider or cw.part_of is not None \
+                or cw.length <= win.length or _pool(cw) != pool \
+                or c.status is not PaceStatus.EXHAUSTED \
+                or ra is None or ra <= now:
+            continue
+        if best is None or ra > best[1]:
+            best = (c, ra)
+    return best[0] if best is not None else None
+
+
+def _blocked_line(blocked, now):
+    # type: (Pace, datetime) -> str
+    """止められている表示の 1 行: 「週間上限 · 解除まで 3日」。リセットまでの
+    表示の代わりに、止めている窓のラベルと解除までの時間を出す。"""
+    ra = blocked.window.resets_at
+    span = _fmt_span(ra - now) if ra is not None else "--"
+    return t("render.card.blocked_by",
+             label=blocked.window.label or blocked.window.key, span=span)
 
 
 def advice_color(pace):
@@ -1406,8 +1470,8 @@ def _paint_parts(s, x0, y0, x1, y1, r, start, end, parts, muted=False):
 
 
 def _draw_gauge(s, box, win, pace, fill_color, state_color, gauge,
-                marker=1.0, marks=True, left_mark=None, parts=None):
-    # type: (_S, Tuple[float, float, float, float], Window, Pace, tuple, tuple, str, float, bool, Optional[bool], Optional[Sequence[Tuple[float, tuple]]]) -> str
+                marker=1.0, marks=True, left_mark=None, parts=None, muted=False):
+    # type: (_S, Tuple[float, float, float, float], Window, Pace, tuple, tuple, str, float, bool, Optional[bool], Optional[Sequence[Tuple[float, tuple]]], bool) -> str
     """Window gauge bar. gauge="remaining": fill = what is left (full at
     100%); a 45-degree hatch in the state color over [predicted remaining,
     current remaining] shows how much of it will be gone by the reset, and a
@@ -1422,6 +1486,10 @@ def _draw_gauge(s, box, win, pace, fill_color, state_color, gauge,
     ごとに塗り分ける ("used": 左から順に各内訳色、残りはテーマ色 /
     "remaining": 右側の消費済み区間を TRACK 半分混ぜの内訳色)。parts が
     なくても描画結果は変わらない。
+    muted=True のときは長い窓に止められた窓: 実際に使える量は 0 なので
+    remaining は空・used は満杯の薄いバーにし、予測ハッチ・枯渇マーク・
+    内訳・理想▼を描かず、バー全体を市松模様で無効表示にする
+    (窓そのものの残量があるように見せない)。
     Returns the caption string."""
     x0, y0, x1, y1 = box
     r = (y1 - y0) / 2.0
@@ -1438,14 +1506,24 @@ def _draw_gauge(s, box, win, pace, fill_color, state_color, gauge,
         head = t("render.gauge.used_head")
         value = win.used_percent
         ideal_pos = pace.ideal_used_percent
+    if muted:
+        # 長い窓に止められている: 実際に使える量は 0。remaining は空、
+        # used は満杯の muted バーにする。予測ハッチ・枯渇マーク・内訳・
+        # 理想▼は描かない。
+        value = 0.0 if gauge == "remaining" else 100.0
+        ideal_pos = float("nan")
     # 不明 (NaN / inf) はバーを描かない。0% や 100% の正常値に見せない。
-    fill_frac = _clamp(value / 100.0, 0.0, 1.0) if used_ok else 0.0
+    # ただし muted のとき value は確定値 (remaining=0% / used=100%) なので、
+    # メイン窓の使用率が不明でも塗り幅は計算する。
+    fill_frac = _clamp(value / 100.0, 0.0, 1.0) \
+        if used_ok or muted else 0.0
 
     fill_w = bw * fill_frac
     if fill_w > 2:
-        s.rrect((x0, y0, x0 + fill_w, y1), radius=r, fill=fill_color)
+        s.rrect((x0, y0, x0 + fill_w, y1), radius=r,
+                fill=_mix(fill_color, TRACK, 0.85) if muted else fill_color)
 
-    if parts and used_ok:
+    if parts and used_ok and not muted:
         parts = [(p, c) for p, c in parts if _finite(p)]
     else:
         parts = []
@@ -1460,6 +1538,8 @@ def _draw_gauge(s, box, win, pace, fill_color, state_color, gauge,
 
     pe = pace.projected_end_percent if _finite(pace.projected_end_percent) \
         else None
+    if muted:
+        pe = None
     if pe is not None and gauge == "remaining" and used_ok:
         # hatch the part of the fill predicted to be consumed by the reset
         pred_frac = _clamp(max(0.0, 100.0 - pe) / 100.0, 0.0, 1.0)
@@ -1490,6 +1570,10 @@ def _draw_gauge(s, box, win, pace, fill_color, state_color, gauge,
             tx_ = x1 - 4 - tw - 10
             s.polygon([(tx_ - 8, cy - 5), (tx_ - 8, cy + 5), (tx_, cy)],
                       fill=WHITE)
+
+    if muted:
+        # バー全体を市松模様で無効表示にする (角丸の内側だけ)
+        _checker_rect(s, (x0 + r, y0, x1 - r, y1), _mix(TRACK, BG, 0.5))
 
     # fixed budget boundaries: one line per day (hour) of the window;
     # dark over the fill, light over the track, neutral on the card ticks
@@ -1541,8 +1625,8 @@ PREV_INDICATOR_MIN_W = 230
 
 
 def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
-                       stale=None, parts=None):
-    # type: (_S, Tuple[int, int, int, int], str, tuple, List[dict], datetime, str, tuple, Optional[Tuple[str, Optional[datetime]]], Optional[List[Tuple[Window, tuple]]]) -> None
+                       stale=None, parts=None, windows=None):
+    # type: (_S, Tuple[int, int, int, int], str, tuple, List[dict], datetime, str, tuple, Optional[Tuple[str, Optional[datetime]]], Optional[List[Tuple[Window, tuple]]], Optional[Sequence[Pace]]) -> None
     """One large panel: main window (big number, indicators, main gauge) plus
     one compact row per sub window at the bottom, and a single advice line on
     the bottom row. `subs` are dicts {"pace", "label", "theme"}; a sub may
@@ -1550,13 +1634,20 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
     the name dot use the theme color `theme`; state colors appear only on
     badge / advice / left band / prediction hatch, plus red / green
     on the % numbers when over / spare (white when percent_colors is
-    off)."""
+    off). windows は同じサービスの取得済みの窓すべて (遮断判定の候補)。
+    None なら表示中の subs の窓だけを見る。"""
     x0, y0, x1, y1 = box
     card_w = x1 - x0
     narrow = card_w < NARROW_W
     mp = main_item[1]
     win = mp.window
     color = _STATUS_COLOR[mp.status]
+    # 短いメイン窓が同じサービスの長い窓の使い切りに止められているときは、
+    # その窓の状態 (EXHAUSTED) で描く。実際に使える量は 0 になる。候補は
+    # 表示中のサブ窓だけでなく取得済みの全窓 (subs に出ていない窓でも止まる)。
+    cands = windows if windows is not None \
+        else [sub["pace"] for sub in subs]
+    blocked = _blocked_by(mp, cands, now)
 
     # badge = the main window's status. Sub rows carry their own colors, so a
     # model-scoped sub ("週間 Fable") or another service must not drag the
@@ -1570,6 +1661,8 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
         pool = long_subs or pool
     badge_status = max((p.status for p in pool),
                        key=lambda st: _STATUS_RANK[st])
+    if blocked is not None:
+        badge_status = blocked.status      # 止めている窓の状態 (EXHAUSTED)
     badge_color = _STATUS_COLOR[badge_status]
     monitor = win.provider in s.monitor_only
     if monitor:
@@ -1585,7 +1678,15 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
     cw = tx1 - tx0
 
     # -- 1. header: service name + status badge -----------------------------
-    badge = t("render.badge.monitor_only") if monitor else _badge(badge_status)
+    # 監視のみの配色は保つが、長い窓に止められているときはバッジの文言を
+    # 上限到達 (EXHAUSTED) にする (「監視のみ」だけでは使えないことが
+    # 伝わらない)。
+    if monitor and blocked is not None:
+        badge = _badge(blocked.status)
+    elif monitor:
+        badge = t("render.badge.monitor_only")
+    else:
+        badge = _badge(badge_status)
     bf = F("w6", 17)
     bh = 26
     bx1 = tx1
@@ -1605,14 +1706,17 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
            anchor="lm")
 
     # -- 2. main window: big number + word + label --------------------------
-    pct = _window_pct(win, gauge)
+    pct = _pct(0.0 if gauge == "remaining" else 100.0) \
+        if blocked is not None else _window_pct(win, gauge)
     word = t("render.word.remaining") if gauge == "remaining" \
         else t("render.word.used")
     pf = _fit_font(s, pct, "w8", 64 if narrow else 84, cw * 0.5, min_size=44)
     pw = s.textlength(pct, font=pf)
     num_base = y0 + (138 if narrow else 150)
     s.text((tx0, num_base), pct, font=pf,
-           fill=WHITE if monitor else _num_color(s, mp.status), anchor="ls")
+           fill=WHITE if monitor else _num_color(
+               s, blocked.status if blocked is not None else mp.status),
+           anchor="ls")
     wx = tx0 + pw + 12
     wf = F("w5", 17)
     s.text((wx, num_base + 2), word, font=wf, fill=TEXT_DIM, anchor="ls")
@@ -1621,21 +1725,29 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
         g = s.lead_gap(8)
         # 残り幅に合わせて縮小 → 省略 (5 列では固定 15px だと右端をはみ出す)。
         avail = tx1 - (block_end + g)
-        lf, shown = _fit_text(s, "· " + win.label, "w5", 15,
+        # 止められているときは窓名にその窓自身の値を添える ("· 5時間 100%")
+        label_txt = "· " + win.label if blocked is None else \
+            "· %s %s" % (win.label, _window_pct(win, gauge))
+        lf, shown = _fit_text(s, label_txt, "w5", 15,
                               max(1, avail), min_size=10)
         if avail > 0 and s.textlength(shown, font=lf) <= avail:
             s.text((block_end + g, num_base + 2), shown, font=lf,
                    fill=TEXT_FAINT, anchor="ls")
             block_end += g + s.textlength(shown, font=lf)
-    prev_txt = _prev_line(mp, gauge)          # F3: "前回 36% 余り" など
-    if prev_txt:
+    prev_txt = _prev_line(mp, gauge) if blocked is None else None
+    side_txt = prev_txt
+    if blocked is not None and not win.label:
+        # メイン窓そのものの値は小さく残す ("5h 100%")。前回の結果は出さない。
+        # 窓名があるときは上の "· 5時間 100%" に含めたので重ねない
+        side_txt = "%s %s" % (win.key, _window_pct(win, gauge))
+    if side_txt:
         # 大きい % の横 ("残り · 週間" の後ろ) に同じ小ささで添え、経過など
         # 右の指標とは混ぜない。後ろに入りきらない広いカード (右に指標列が
         # ある) では "残り · 週間" の真上に置く。それも無理なら出さない。
         lf = F("w5", 15)
-        tail = "· " + prev_txt
+        tail = "· " + side_txt
         tail_w = s.textlength(tail, font=lf)
-        prev_w = s.textlength(prev_txt, font=lf)
+        prev_w = s.textlength(side_txt, font=lf)
         limit = tx1 if narrow else tx1 - PREV_INDICATOR_MIN_W
         g = s.lead_gap(8)
         if block_end + g + tail_w <= limit:
@@ -1643,7 +1755,7 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
                    fill=TEXT_FAINT, anchor="ls")
             block_end += g + tail_w
         elif not narrow and wx + prev_w <= limit:
-            s.text((wx, num_base - 24), prev_txt, font=lf, fill=TEXT_FAINT,
+            s.text((wx, num_base - 24), side_txt, font=lf, fill=TEXT_FAINT,
                    anchor="ls")
             block_end = max(block_end, wx + prev_w)
 
@@ -1661,18 +1773,20 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
         proj = t("render.card.projected", pct=_num(mp.projected_end_percent))
     else:
         proj = t("render.card.no_projection")
+    blocked_txt = _blocked_line(blocked, now) if blocked is not None else None
     reset_span = _fmt_span(win.resets_at - now) if win.resets_at is not None else None
-    reset_line = t("render.card.reset_line", dt=_fmt_dt(win.resets_at),
-                   span=reset_span) \
-        if win.resets_at is not None else t("render.card.no_reset")
+    reset_line = blocked_txt if blocked_txt is not None else (
+        t("render.card.reset_line", dt=_fmt_dt(win.resets_at), span=reset_span)
+        if win.resets_at is not None else t("render.card.no_reset"))
 
     balances = getattr(main_item[0], "balances", None) or []
     if balances:
         reset_line += " · " + _balance_text(balances[0])
 
     if narrow:
-        l1 = el + (t("render.card.narrow_el_reset", span=reset_span)
-                   if reset_span else "")
+        l1 = el + ((" · " + blocked_txt) if blocked_txt is not None else
+                   (t("render.card.narrow_el_reset", span=reset_span)
+                    if reset_span else ""))
         if balances:
             l1 += " · " + _balance_text(balances[0])
         ind_lines = [l1, proj]
@@ -1706,7 +1820,8 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
     advice_cy = y1 - 24
     _draw_gauge(s, (tx0, gy0, tx1, gy1), win, mp, theme, color, gauge,
                 left_mark=not narrow,
-                parts=[(w.used_percent, c) for w, c in (parts or [])])
+                parts=[(w.used_percent, c) for w, c in (parts or [])],
+                muted=blocked is not None)
 
     # -- 4. sub-window rows between the gauge and the advice line, packed
     #       from just under the gauge (same top as the reset credits) --------
@@ -1796,9 +1911,11 @@ def _draw_service_card(s, box, name, main_item, subs, now, gauge, theme,
         _draw_reset_credits(s, tx0, cw, gap_top, limit, credits, now)
 
     # -- 5. advice (bottom row) ----------------------------------------------
-    adv = advice_text(mp, narrow, now)
-    note = _sub_note(mp, subs, now)           # F2: 先に尽きるサブ窓に触れる
-    color = MONITOR if monitor else advice_color(mp)  # burst の警告が出るときは spare / on_track でも黄 (バッジ・帯は status 色)
+    adv_pace = blocked if blocked is not None else mp
+    adv = advice_text(adv_pace, narrow, now)
+    # 止められているときは止めている窓が注記の役割を果たすので _sub_note は出さない
+    note = None if blocked is not None else _sub_note(mp, subs, now)  # F2: 先に尽きるサブ窓に触れる
+    color = MONITOR if monitor else advice_color(adv_pace)  # burst の警告が出るときは spare / on_track でも黄 (バッジ・帯は status 色)
     if note:
         joined = "%s · %s" % (adv, note)
         if s.textlength(joined, F("w6", 22)) <= cw * 1.2:
@@ -1851,8 +1968,8 @@ def _draw_small_error(s, box, name, error, theme):
 
 
 def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
-                      parts=None, second=None):
-    # type: (_S, Tuple[int, int, int, int], str, tuple, datetime, str, tuple, Optional[Tuple[str, Optional[datetime]]], Optional[List[Tuple[Window, tuple]]], Optional[tuple]) -> None
+                      parts=None, second=None, windows=None):
+    # type: (_S, Tuple[int, int, int, int], str, tuple, datetime, str, tuple, Optional[Tuple[str, Optional[datetime]]], Optional[List[Tuple[Window, tuple]]], Optional[tuple], Optional[Sequence[Pace]]) -> None
     """One small slot panel: theme dot + service name + window label, a small
     status badge, a big remaining %, a divider + gauge (with the ideal
     triangle), the reset countdown and a one-line compact advice. stale is the
@@ -1877,6 +1994,18 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
         if sp.window.length >= timedelta(days=1) \
                 and _STATUS_RANK[sp.status] > _STATUS_RANK[mp.status]:
             bp = sp
+    # メインの短い窓が同じサービスの長い窓の使い切りに止められているときは
+    # その窓の状態で描く。候補は 2 本目のバーの有無に関係なく、同じ
+    # サービスの取得済みの全窓 (windows)。None なら second 側の窓だけ見る。
+    if windows is not None:
+        cands = windows
+    elif dual:
+        cands = [p for _pu, p in second[0].get("usable") or []]
+    else:
+        cands = []
+    blocked = _blocked_by(mp, cands, now)
+    if blocked is not None:
+        bp = blocked
     color = _STATUS_COLOR[bp.status]
     gauge_color = _STATUS_COLOR[mp.status]
     monitor = win.provider in s.monitor_only
@@ -1893,7 +2022,13 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     cw = tx1 - tx0
 
     # -- 1. header: theme dot + "サービス名 · 窓ラベル", badge on the right --
-    badge = t("render.badge.monitor_only") if monitor else _badge(bp.status)
+    # 大パネルと同じく、監視のみでも遮断時はバッジ文言を上限到達にする
+    if monitor and blocked is not None:
+        badge = _badge(blocked.status)
+    elif monitor:
+        badge = t("render.badge.monitor_only")
+    else:
+        badge = _badge(bp.status)
     bf = F("w6", 13)
     bh = 22
     bx1 = tx1
@@ -1918,22 +2053,28 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
 
     reset_span = _fmt_span(win.resets_at - now) if win.resets_at is not None \
         else None
-    rtxt = t("render.card.reset_compact", span=reset_span) \
-        if reset_span is not None else t("render.card.no_reset")
+    if blocked is not None:
+        rtxt = _blocked_line(blocked, now)
+    else:
+        rtxt = t("render.card.reset_compact", span=reset_span) \
+            if reset_span is not None else t("render.card.no_reset")
 
     balances = getattr(main_item[0], "balances", None) or []
     if balances:
         rtxt = _balance_text(balances[0]) + " · " + rtxt
 
     # -- 2. big remaining % ---------------------------------------------------
-    pct = _window_pct(win, gauge)
+    pct = _pct(0.0 if gauge == "remaining" else 100.0) \
+        if blocked is not None else _window_pct(win, gauge)
     word = t("render.word.remaining") if gauge == "remaining" \
         else t("render.word.used")
     pct_y = y0 + (88 if dual else 94)
     pf = _fit_font(s, pct, "w8", 48 if dual else 52, cw * 0.6,
                    min_size=30 if dual else 32)
     s.text((tx0, pct_y), pct, font=pf,
-           fill=WHITE if monitor else _num_color(s, mp.status), anchor="ls")
+           fill=WHITE if monitor else _num_color(
+               s, blocked.status if blocked is not None else mp.status),
+           anchor="ls")
     wx = tx0 + s.textlength(pct, font=pf) + 10
     word_f = F("w5", 15)
     s.text((wx, pct_y + 2), word, font=word_f, fill=TEXT_DIM, anchor="ls")
@@ -1942,13 +2083,18 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
         # の上の空き) に置く。右上の取得失敗マークの下に収まる高さ・幅で。
         rf, rt = _fit_text(s, rtxt, "w4", 13, tx1 - wx, min_size=10)
         s.text((wx, pct_y - 22), rt, font=rf, fill=TEXT_DIM, anchor="ls")
-    prev_txt = _prev_line(mp, gauge)          # F3: 入らなければ省略
-    if prev_txt:
+    prev_txt = _prev_line(mp, gauge) if blocked is None else None
+    side_txt = prev_txt
+    if blocked is not None:
+        # メイン窓そのものの値は小さく残す ("5時間 100%")。前回の結果は出さない
+        side_txt = "%s %s" % (win.label or win.key, _window_pct(win, gauge))
+    if side_txt:
         px = wx + s.textlength(word, font=word_f) + 10
         avail = tx1 - px
         if avail >= 60:
-            vf, shown = _fit_text(s, prev_txt, "w5", 13, avail, min_size=9)
-            s.text((px, pct_y + 2), shown, font=vf, fill=TEXT_FAINT, anchor="ls")
+            vf, shown = _fit_text(s, side_txt, "w5", 13, avail, min_size=9)
+            s.text((px, pct_y + 2), shown, font=vf, fill=TEXT_FAINT,
+                   anchor="ls")
 
     # -- 3. divider + gauge ---------------------------------------------------
     gy0, gy1 = (y0 + 108, y0 + 122) if dual else (y0 + 122, y0 + 140)
@@ -1956,7 +2102,8 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
            fill=DIVIDER, width=1)
     _draw_gauge(s, (tx0, gy0, tx1, gy1), win, mp, theme, gauge_color,
                 gauge, marker=0.7 if dual else 0.8, marks=False,
-                parts=[(w.used_percent, c) for w, c in (parts or [])])
+                parts=[(w.used_percent, c) for w, c in (parts or [])],
+                muted=blocked is not None)
     if dual:
         _draw_second_bar(s, (tx0, tx1), y0 + 150, second, theme, gauge)
 
@@ -2002,9 +2149,11 @@ def _draw_small_panel(s, box, name, main_item, now, gauge, theme, stale=None,
     for f, txt, bb in rows:                  # txt: モジュールの t (i18n) を保つ
         s.text((tx0, ty - bb[1]), txt, font=f, fill=TEXT_DIM, anchor="ls")
         ty += (bb[3] - bb[1]) + 2
-    # burst の警告が出るときは spare / fresh でも黄 (バッジ・帯は status 色)
-    s.text((tx0, y1 - 8), adv_shown, font=af, fill=MONITOR if monitor else advice_color(mp),
-           anchor="ls")
+    # burst の警告が出るときは spare / fresh でも黄 (バッジ・帯は status 色)。
+    # 遮断時は bp=止めている窓なのでアドバイスの色もそちらに合わせる
+    # (dual 側と同じ。遮断でないとき bp は mp か second で従来どおり)。
+    s.text((tx0, y1 - 8), adv_shown, font=af,
+           fill=MONITOR if monitor else advice_color(bp), anchor="ls")
 def _draw_second_bar(s, xs, cy, second, theme, gauge):
     # type: (_S, Tuple[float, float], float, tuple, tuple, str) -> None
     """小パネルの 2 本目のバー 1 行: 窓ラベル + ゲージ + 数値。second は
@@ -2214,7 +2363,8 @@ def _draw_large_column(s, box, p, colors, gauge, now):
         subs.append({"pace": sp, "label": label,
                      "theme": _brand_color(colors, su.provider)})
     _draw_service_card(s, box, p["g"]["name"], mi, subs, now, gauge, theme,
-                       stale=p["g"].get("stale"), parts=parts)
+                       stale=p["g"].get("stale"), parts=parts,
+                       windows=[wp for _pu, wp in p["g"]["usable"]])
 
 
 def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
@@ -2298,7 +2448,8 @@ def render(cards, now, offset=(0, 0), gauge="remaining", colors=None,
                 _draw_small_panel(s, sbox, p["g"]["name"], p["main"], now,
                                   gauge, theme, stale=p["g"].get("stale"),
                                   parts=p.get("parts") or [],
-                                  second=p.get("second"))
+                                  second=p.get("second"),
+                                  windows=[wp for _pu, wp in p["g"]["usable"]])
     return img
 
 
