@@ -11,7 +11,9 @@ from zoneinfo import ZoneInfo
 from .models import Pace, PaceStatus, Sample, Window
 
 _DAY = timedelta(days=1)
+_LONG_WINDOW = timedelta(days=7)     # この長さ以上の窓はペース線 (ideal) 基準で補正する
 _BURST_WINDOW = timedelta(hours=2)   # F2: 直近の加速を見る区間
+_PACE_EPS = 1e-9                     # ペース線 (ideal) 比較で許す浮動小数点誤差
 
 # 睡眠帯 (pacing.sleep): (start, end) のローカル時刻。None = 機能オフ。
 Sleep = Tuple[time, time]
@@ -98,14 +100,22 @@ def _recent_rate(
 ) -> Optional[float]:
     """Recent consumption speed (%/day) over the lookback span, or None.
 
-    lookback (1h / 24h) と基準点探しは壁時計のまま (`wall_elapsed` は壁時計の
-    経過で clamp する)。割る span だけ `span` (「長さを測る関数」、睡眠あり
-    なら起きている時間) に置き換える。起きている時間が lookback の半分未満
-    (短すぎて分母が縮みすぎる) なら None。
+    lookback (1h / 24h / 長い窓は 長さ÷7) と基準点探しは壁時計のまま
+    (`wall_elapsed` は壁時計の経過で clamp する)。割る span だけ `span`
+    (「長さを測る関数」、睡眠ありなら起きている時間) に置き換える。
+    起きている時間が lookback の半分未満 (短すぎて分母が縮みすぎる) なら None。
     """
     if not samples:
         return None
-    cap = timedelta(hours=1) if length < _DAY else timedelta(hours=24)
+    if length < _DAY:
+        cap = timedelta(hours=1)
+    elif length < _LONG_WINDOW:
+        cap = timedelta(hours=24)
+    else:
+        # 長い窓の「直近」は 1 日では短すぎる (30 日枠で 1 日だけ多く使うと
+        # 直近速度が跳ねて OVER になる) ので、長さの 1/7 を下限 24h で取る。
+        # 週間は 1/7 = 24h なので従来どおり。
+        cap = max(timedelta(hours=24), length / 7)
     lookback = min(cap, wall_elapsed)
     if lookback <= timedelta(0):
         return None
@@ -152,6 +162,40 @@ def _burst_rate(
     if moved < 1.0:                          # 直近 2 時間で 1% 未満は加速と呼ばない
         return None, moved
     return max(0.0, moved / _as_days(active)), moved
+
+
+def _pace_line_correction(
+    used: float, ideal: float, margin: float, rate: Optional[float],
+    rate_win: Optional[float], t_days: float,
+) -> Tuple[Optional[float], bool]:
+    """長い利用枠 (7日以上) の混合 rate をペース線 (ideal) 基準で補正する。
+
+    戻り値は (補正後 rate, exhausts_at を付けないか)。
+    - used > ideal + margin: ペース線を超えているのを直近の休み (遅い
+      rate_recent) で隠さないよう、窓全体の平均速度 rate_win を下限にする。
+      結果として OVER・exhausts_at がリセット前になりうる。
+    - used <= ideal: ペース線より下なら混合の予測だけで OVER にしない。
+      rate を残量速度 (100-used)/t_days で頭打ちにする (最悪 leftover 0 →
+      TIGHT)。この速度ではリセットちょうどまでしか届かないので、浮動小数の
+      誤差で reached < resets にならないよう exhausts_at は必ず付けない
+      (True を返す)。
+    - ideal < used <= ideal + margin: 誤差帯なので混合 rate のまま。
+
+    比較には _PACE_EPS の許容を入れる (used == ideal のつもりでも浮動小数点の
+    誤差で ideal がわずかに小さくなり、「ペース線より下」の帯から外れる
+    ことがある)。
+    """
+    if rate is None:
+        return None, False
+    if used > ideal + margin + _PACE_EPS:
+        if rate_win is not None:
+            rate = max(rate, rate_win)
+        return rate, False
+    if used <= ideal + _PACE_EPS:
+        if t_days > 0:
+            rate = min(rate, (100.0 - used) / t_days)
+        return rate, True
+    return rate, False
 
 
 def _interpolated(points: List[Tuple[datetime, float]], at: datetime) -> float:
@@ -271,8 +315,9 @@ def compute_pace(window: Window, samples: List[Sample], now: datetime, tz=None,
     start = resets.astimezone(timezone.utc) - length if sleep is not None else resets - length
     active_len = span(start, resets)  # sleep が無ければ length と同じ
     elapsed = min(max(span(start, now), timedelta(0)), active_len)
-    # lookback (1h / 24h) の上限は壁時計の経過で clamp する (表示や recent の
-    # 「直近」の考えかたは壁時計どおり。割る分母だけ起きている時間)。
+    # lookback (1h / 24h / 長い窓は 長さ÷7) の上限は壁時計の経過で clamp する
+    # (表示や recent の「直近」の考えかたは壁時計どおり。割る分母だけ起きて
+    # いる時間)。
     wall_elapsed = min(max(now - start, timedelta(0)), length)
     length_days = _as_days(active_len)
     fraction = _as_days(elapsed) / length_days if length_days > 0 else 0.0
@@ -290,7 +335,19 @@ def compute_pace(window: Window, samples: List[Sample], now: datetime, tz=None,
     # 基準にする (経過 0 で基準が無ければ 1% 以上動いていれば burst)。
     burst_raw, _moved = _burst_rate(used, same_period, now, span=span)
 
-    if elapsed < 0.03 * active_len and used < 5:
+    t_days = _as_days(span(now, resets))  # リセットまでの起きている時間
+    # tolerance は t_days と length_days だけで決まる。長い窓の補正で
+    # 「ペース線からの誤差帯」(margin = tolerance / 2) に使うので先に出す。
+    remaining_fraction = min(1.0, max(0.0, t_days / length_days)) if length_days > 0 else 0.0
+    tolerance = end_tolerance + (early_tolerance - end_tolerance) * remaining_fraction
+
+    fresh = elapsed < 0.03 * active_len and used < 5
+    if (fresh and length >= _LONG_WINDOW and elapsed.total_seconds() > 0
+            and used > ideal + tolerance / 2 + _PACE_EPS):
+        # 長い窓で既にペース線 + margin を超えているなら FRESH に逃がさず、
+        # 通常の判定 (ペース線補正) に進める。短い窓や経過 0 は従来どおり。
+        fresh = False
+    if fresh:
         # F5: リセット直後で使用もまだ少ない (この時点で resets は必ずある)。
         # 「不明」ではなく枠が開いている状態として FRESH を返す。
         # FRESH 判定の 3% も起きている時間どうしで比べる。
@@ -312,11 +369,18 @@ def compute_pace(window: Window, samples: List[Sample], now: datetime, tz=None,
     else:
         rate = rate_win if rate_win is not None else rate_recent
 
-    t_days = _as_days(span(now, resets))  # リセットまでの起きている時間
+    # 長い利用枠 (7日以上) では混合 rate をペース線基準で補正し、projected・
+    # exhausts_at・adjust・burst の基準・leftover はすべて補正後の rate で出す。
+    suppress_exhausts_at = False
+    if length >= _LONG_WINDOW and elapsed.total_seconds() > 0:
+        rate, suppress_exhausts_at = _pace_line_correction(
+            used, ideal, tolerance / 2, rate, rate_win, t_days)
+
     projected = used + rate * t_days if rate is not None else used
 
     exhausts_at = None
-    if rate is not None and rate > 0 and used < 100:
+    if (rate is not None and rate > 0 and used < 100
+            and not suppress_exhausts_at):
         reached = advance((100.0 - used) / rate)
         if reached < resets:
             exhausts_at = reached
@@ -340,8 +404,6 @@ def compute_pace(window: Window, samples: List[Sample], now: datetime, tz=None,
     allowance = (100.0 - used) / wall_days if wall_days > 0 else None
 
     leftover = 100.0 - projected
-    remaining_fraction = min(1.0, max(0.0, t_days / length_days)) if length_days > 0 else 0.0
-    tolerance = end_tolerance + (early_tolerance - end_tolerance) * remaining_fraction
 
     # 使用率は多くの provider が整数で返すので、実際は最大 1% 多く使っている。週の序盤は
     # 経過が短く 1% の差で速度が大きく変わり、10% → 11% の 1 段で「収まる」から「超過」へ
@@ -354,7 +416,12 @@ def compute_pace(window: Window, samples: List[Sample], now: datetime, tz=None,
         rate_win_hi = used_hi / _as_days(elapsed)
         rate_hi = (0.5 * rate_win_hi + 0.5 * rate_recent_hi if rate_recent_hi is not None
                    else rate_win_hi)
-        if rate_hi > 0:
+        suppress_hi = False
+        if length >= _LONG_WINDOW:
+            # used+1% の見込みにも本体と同じペース線補正を掛ける
+            rate_hi, suppress_hi = _pace_line_correction(
+                used_hi, ideal, tolerance / 2, rate_hi, rate_win_hi, t_days)
+        if rate_hi > 0 and not suppress_hi:
             reached = advance((100.0 - used_hi) / rate_hi)
             if reached < resets:
                 cautious_exhausts_at = reached

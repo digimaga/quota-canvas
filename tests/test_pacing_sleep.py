@@ -340,14 +340,18 @@ def test_recent_rate_lookback_clamped_by_wall_elapsed():
     # になり基準に選ばれる (古い実装では 07:00 のサンプルが基準だった)。
     now = datetime(2026, 10, 25, 21, 0, 0, tzinfo=UTC)
     reset = datetime(2026, 11, 1, 4, 0, 0, tzinfo=UTC)
-    win = Window("claude", "weekly", "週間", 40.0, reset, timedelta(days=7))
+    # used はペース線補正の効かない帯 (ideal < used <= ideal + tolerance/2) に
+    # 取る。ideal = 13/112*100 ≈ 11.6 で used = 14 はその中: 補正が掛かると
+    # rate が窓全体の平均に丸められて基準点の違いが見えなくなるため
+    # (以前の 40 ではペース線超過で rate_win に置き換わってしまう)。
+    win = Window("claude", "weekly", "週間", 14.0, reset, timedelta(days=7))
     samples = [
         Sample("claude:weekly", datetime(2026, 10, 25, 5, 0, tzinfo=UTC), 5.0, reset),
         Sample("claude:weekly", datetime(2026, 10, 25, 7, 0, tzinfo=UTC), 10.0, reset),
     ]
     pace = compute_pace(win, samples, now, tz=UTC, sleep=SLEEP)
-    # rate = 0.5 * rate_win(40*24/13) + 0.5 * recent(35*24/13): 基準は 05:00
-    assert pace.rate_per_day == pytest.approx(75 * 12 / 13)
+    # rate = 0.5 * rate_win(14*24/13) + 0.5 * recent(9*24/13): 基準は 05:00
+    assert pace.rate_per_day == pytest.approx(23 * 12 / 13)
 
 
 # --- daily_used は sleep があっても窓開始から 24 時間区切り (壁時計) ------------

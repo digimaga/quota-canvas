@@ -1417,6 +1417,27 @@ def test_fable_follows_overall_weekly_rounding():
     assert (result.verdict, result.reason) == ("reserve", "over_rounding")
 
 
+def test_over_rounding_when_only_rounded_up_use_exceeds_pace_line():
+    """used+1% だけがペース線 + margin を超える週間 (pacing のペース線補正):
+    status は spare のままだが cautious_exhausts_at が付くので reserve。"""
+    from quotacanvas.models import Sample, Window
+    from quotacanvas.pacing import compute_pace
+
+    start = NOW - timedelta(days=2)
+    reset = start + timedelta(days=7)
+    w = Window("claude", "weekly", "週間", 32.0, reset, timedelta(days=7))
+    pace = compute_pace(
+        w, [Sample("claude:weekly", NOW - timedelta(days=1), 27.0, reset)], NOW)
+    assert pace.cautious_exhausts_at is not None
+    entry = win("claude:weekly", "claude", pace.status.value, 68.0, resets=reset)
+    entry["length"] = 7 * 86400
+    entry["cautious_exhausts_at"] = \
+        pace.cautious_exhausts_at.isoformat(timespec="seconds")
+    worker = evaluate(status(entry), cfg(), {}, NOW).workers[0]
+    assert (worker.verdict, worker.reason) == ("reserve", "over_rounding")
+    assert worker.exhausts_at == entry["cautious_exhausts_at"]
+
+
 # --- burst (直近 2 時間の勢いでリセット前に尽きる) -------------------------------
 
 

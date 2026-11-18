@@ -365,3 +365,130 @@ def test_no_cautious_exhausts_for_short_window():
     pace = compute_pace(five_h, [], NOW)
     assert pace.exhausts_at is None  # the cautious branch is otherwise reachable
     assert pace.cautious_exhausts_at is None
+
+
+# --- 長い利用枠 (7日以上) のペース線補正 -------------------------------------
+
+
+def test_weekly_above_pace_line_with_recent_rest_is_over():
+    """週間: used がペース線を大きく超えていれば、直近の休み (rate_recent が
+    低い) で SPARE に逃がさない。補正前は混合 rate が半分 (9.1/d) になって
+    leftover > tolerance の SPARE だった。"""
+    now = START + timedelta(hours=66)              # 経過 約 39% → ideal 約 39.3
+    base = samp(now - timedelta(hours=30), 50.0)   # 直近 30h は used 50 のまま
+    pace = compute_pace(weekly(50.0), [base], now)
+    assert pace.ideal_used_percent == pytest.approx(66 / (7 * 24) * 100)
+    # 直近速度 0 との混合を捨てて、窓全体の平均速度 (50%/2.75日) が下限になる
+    assert pace.rate_per_day == pytest.approx(50.0 / (66 / 24))
+    assert pace.status is PaceStatus.OVER
+    assert pace.exhausts_at is not None
+    assert pace.exhausts_at < RESET
+
+
+def test_weekly_below_pace_line_with_fast_recent_is_not_over():
+    """週間: ペース線より下なら、直近が速くても混合の予測だけでは OVER に
+    しない。rate を残量速度 (100-used)/t_days で頭打ちにするので、最悪でも
+    leftover 0 → TIGHT。補正前は混合 23/d で 1.96 日後に尽きる OVER だった。"""
+    now = START + timedelta(days=5)                # 経過 約 71% → ideal 約 71.4
+    base = samp(now - timedelta(days=1), 20.0)     # 直近 24h で +35% (速い)
+    pace = compute_pace(weekly(55.0), [base], now)
+    assert pace.rate_per_day == pytest.approx(45.0 / 2.0)  # 残量速度に頭打ち
+    assert pace.status is PaceStatus.TIGHT
+    assert pace.exhausts_at is None
+    assert pace.cautious_exhausts_at is None  # used+1% の見込みもペース線以下
+
+
+def test_monthly_below_pace_line_is_not_over():
+    """30 日窓: used がペース線よりずっと下なら OVER にしない (補正前は
+    直近 1 日の使用量が速度を跳ね上げて OVER になっていた)。
+    exhausts_at は必ず None。"""
+    start = datetime(2026, 10, 20, tzinfo=UTC)
+    reset = start + timedelta(days=30)
+    now = start + timedelta(days=14.7)             # 経過 約 49% → ideal 約 49
+    win = Window("codex", "monthly", "月間", 29.0, reset, timedelta(days=30))
+    samples = [
+        Sample("codex:monthly", now - timedelta(days=5), 15.0, reset),
+        Sample("codex:monthly", now - timedelta(hours=24), 19.0, reset),
+    ]
+    pace = compute_pace(win, samples, now)
+    assert pace.ideal_used_percent == pytest.approx(49.0)
+    assert pace.status is not PaceStatus.OVER
+    assert pace.exhausts_at is None
+
+
+def test_monthly_recent_rate_uses_seventh_of_length_lookback():
+    """30 日窓の lookback は 24h ではなく 長さ÷7 (約 4.29 日): 基準点は
+    カットオフ (4.29 日前) 以前の最後のサンプル = 5 日前のものになる。
+    24h ルックバックなら基準は -24h (19) → recent 10/d になる。"""
+    start = datetime(2026, 10, 20, tzinfo=UTC)
+    reset = start + timedelta(days=30)
+    now = start + timedelta(days=14.7)
+    win = Window("codex", "monthly", "月間", 29.0, reset, timedelta(days=30))
+    samples = [
+        Sample("codex:monthly", now - timedelta(days=5), 15.0, reset),
+        Sample("codex:monthly", now - timedelta(hours=24), 19.0, reset),
+    ]
+    pace = compute_pace(win, samples, now)
+    # 基準 -5日 → recent = (29-15)/5d = 2.8/d、窓全体は 29/14.7d
+    assert pace.rate_per_day == pytest.approx(0.5 * (29.0 / 14.7) + 0.5 * (14.0 / 5.0))
+
+
+def test_pace_line_float_error_stays_below_line():
+    """used がペース線ちょうどでも、ideal が浮動小数でわずかに小さくなると
+    (1.442/7*100 = 20.599999999999998) used <= ideal を外れて誤差帯に落ち、
+    直近速度が少し速いだけで OVER になっていた。比較の許容誤差で
+    「ペース線以下」側に判定する。"""
+    now = START + timedelta(days=1.442)        # ideal は 20.6 のはずが 2e-15 小さい
+    base = samp(now - timedelta(hours=24), 6.0)  # 直近 14.6/d (窓平均 14.29/d より少し速い)
+    pace = compute_pace(weekly(20.6), [base], now)
+    assert pace.ideal_used_percent == pytest.approx(20.6)
+    assert pace.rate_per_day == pytest.approx(79.4 / (7 - 1.442))  # 残量速度に頭打ち
+    assert pace.status is PaceStatus.TIGHT
+    assert pace.exhausts_at is None
+
+
+def test_cautious_exhausts_when_only_rounded_up_use_exceeds_margin():
+    """used は誤差帯 (ideal < used <= ideal + margin) だが used+1% だけ
+    ペース線 + margin を越える週間。本体は混合 rate のまま (SPARE) で、
+    cautious (used+1%) 側は rate_win に引き上げられてリセット前に尽きる。"""
+    base = samp(NOW - timedelta(hours=24), 27.0)   # 直近 5/d → 混合 10.5/d
+    pace = compute_pace(weekly(32.0), [base], NOW)
+    # 経過 2 日 → ideal 約 28.57、margin 約 3.86: used 32 は帯の中、33 は越える
+    assert pace.status is PaceStatus.SPARE
+    assert pace.exhausts_at is None
+    assert pace.cautious_exhausts_at is not None
+    assert NOW < pace.cautious_exhausts_at < RESET
+
+
+def test_fresh_bypassed_when_over_pace_line_margin():
+    """長い窓ではリセット直後でも used が ideal + margin を超えていれば
+    FRESH に逃がさない (補正より前の早期 return で判定自体が
+    スキップされていた)。early_tolerance=4・end_tolerance=2 の週間開始
+    1 時間・used 4: ideal 約 0.60 + margin 約 1.99 を超えるので OVER。"""
+    now = START + timedelta(hours=1)
+    pace = compute_pace(weekly(4.0), [], now,
+                        early_tolerance=4.0, end_tolerance=2.0)
+    assert pace.status is PaceStatus.OVER
+    assert pace.exhausts_at is not None
+    # 超えていなければ従来どおり FRESH: 週間の used 2、および 7 日未満の窓
+    assert compute_pace(weekly(2.0), [], now,
+                        early_tolerance=4.0, end_tolerance=2.0).status is PaceStatus.FRESH
+    shorter = Window("claude", "weekly", "週間", 4.0,
+                     START + timedelta(days=6), timedelta(days=6))
+    assert compute_pace(shorter, [], now,
+                        early_tolerance=4.0, end_tolerance=2.0).status is PaceStatus.FRESH
+
+
+def test_pace_line_correction_not_applied_below_seven_days():
+    """長さが 7 日をわずかに下回る窓には補正が掛からない: 週間と同じ形
+    (ペース線超過 + 直近の休み) でも rate は混合のままで OVER にならない。"""
+    length = timedelta(days=7) - timedelta(seconds=1)
+    reset = START + length
+    now = START + timedelta(hours=66)
+    win = Window("claude", "weekly", "週間", 50.0, reset, length)
+    base = Sample("claude:weekly", now - timedelta(hours=30), 50.0, reset)
+    pace = compute_pace(win, [base], now)
+    # 補正の掛かる週間なら rate_win (50/2.75d) に引き上げられて OVER になる
+    assert pace.rate_per_day == pytest.approx(0.5 * (50.0 / (66 / 24)))
+    assert pace.status is PaceStatus.SPARE
+    assert pace.exhausts_at is None
