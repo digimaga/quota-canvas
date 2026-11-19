@@ -33,7 +33,7 @@ class GateTests(unittest.TestCase):
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.bin) + ":/usr/bin:/bin",
                         TEST_OUTPUT=str(self.output), ORCA_GATE_CHECK_CMD=str(self.check),
                         CHECK_EXIT="0", CHECK_MESSAGE="")
-        for name in ("ORCA_GATE_HOOK", "ORCA_PANE_KEY", "QUOTA_STATUS_PATH", "ORCA_GATE_NOW"):
+        for name in ("ORCA_GATE_HOOK", "ORCA_PANE_KEY", "QUOTA_STATUS_PATH", "ORCA_GATE_NOW", "OPENDESIGN_API_KEY"):
             self.env.pop(name, None)
         self.config = {"agents": {"codex": {"cli": str(self.cli)}, "devin": {"cli": str(self.cli)}}}
         self.save_config()
@@ -505,6 +505,149 @@ class RuntimeGateTests(unittest.TestCase):
         path.write_text(json.dumps({"updated_at": (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat(),
                                     "routing": {"workers": [item]}}))
 
+    def configure_opendesign(self, code):
+        self.cli.write_text("#!/usr/bin/python3\nimport json, os\n"
+                            "print(json.dumps({'generated': os.environ.get('OPENDESIGN_API_KEY') == 'dummy-generated-key', "
+                            "'existing': os.environ.get('OPENDESIGN_API_KEY') == 'dummy-existing-key', "
+                            "'present': 'OPENDESIGN_API_KEY' in os.environ}))\n")
+        self.config["agents"]["opencode"] = {
+            "cli": str(self.cli), "worker": None,
+            "opendesign_key": {"worker": "opendesign", "command": ["/usr/bin/python3", "-c", code]},
+        }
+        self.save_config()
+
+    def assert_opendesign_result(self, result, reason, generated=False, existing=False, present=False):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"generated": generated, "existing": existing, "present": present})
+        log = (self.home / ".local/state/orca-agent-gate/launch.log").read_text()
+        self.assertIn("opendesign=" + reason, log.splitlines()[-1])
+        for value in ("dummy-generated-key", "dummy-existing-key", "dummy-command-marker"):
+            self.assertNotIn(value, log)
+            self.assertNotIn(value, result.stderr)
+
+    def test_opendesign_key_on_and_default_off(self):
+        self.configure_opendesign("print('dummy-generated-key\\nignored') # dummy-command-marker")
+        self.write_status("go", worker="opendesign")
+        self.assert_opendesign_result(self.run_gate("opencode"), "on", generated=True, present=True)
+        del self.config["agents"]["opencode"]["opendesign_key"]
+        self.save_config()
+        before = (self.home / ".local/state/orca-agent-gate/launch.log").read_text().splitlines()
+        result = self.run_gate("opencode")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout)["present"])
+        after = (self.home / ".local/state/orca-agent-gate/launch.log").read_text().splitlines()
+        self.assertNotIn("opendesign=", after[len(before)])
+
+    def test_opendesign_stop_and_allow(self):
+        self.configure_opendesign("print('dummy-generated-key') # dummy-command-marker")
+        self.write_status("stop", worker="opendesign")
+        self.assert_opendesign_result(self.run_gate("opencode"), "off(stop)")
+        self.assertEqual(self.run_gate("allow", ["opendesign", "5"]).returncode, 0)
+        self.assert_opendesign_result(self.run_gate("opencode"), "on", generated=True, present=True)
+
+    def test_opendesign_existing_key_is_preserved(self):
+        self.configure_opendesign("raise Exception('dummy-command-marker')")
+        self.write_status("stop", worker="opendesign")
+        result = self.run_gate("opencode", OPENDESIGN_API_KEY="dummy-existing-key")
+        self.assert_opendesign_result(result, "off(already-set)", existing=True, present=True)
+
+    def test_existing_key_is_hidden_from_check_and_passed_to_cli(self):
+        self.configure_opendesign("raise Exception('should not run')")
+        self.config["agents"]["opencode"]["worker"] = "opencode"
+        self.save_config()
+        check_output = self.home / "check-env.json"
+        self.check.write_text("#!/usr/bin/python3\nimport json, os\n"
+                              "with open(os.environ['CHECK_OUTPUT'], 'w') as f:\n"
+                              " json.dump('OPENDESIGN_API_KEY' in os.environ, f)\n")
+        result = self.run_gate("opencode", OPENDESIGN_API_KEY="dummy-existing-key",
+                               CHECK_OUTPUT=str(check_output))
+        self.assertFalse(json.loads(check_output.read_text()))
+        self.assert_opendesign_result(result, "off(already-set)", existing=True, present=True)
+
+    def test_key_command_does_not_inherit_parent_key(self):
+        gate = runpy.run_path(str(GATE))
+        settings = {"opendesign_key": {"worker": "opendesign", "command": [
+            "/usr/bin/python3", "-c", "import os, sys; sys.exit(1) if 'OPENDESIGN_API_KEY' in os.environ else print('dummy-generated-key')"]}}
+        target_env = {}
+        with patch.dict(os.environ, {"OPENDESIGN_API_KEY": "dummy-existing-key"}):
+            self.assertEqual(gate["opendesign_key"](settings, target_env), "on")
+        self.assertEqual(target_env["OPENDESIGN_API_KEY"], "dummy-generated-key")
+
+    def test_opendesign_output_and_key_limits(self):
+        for code in ("print('dummy-generated-key'); print('x' * 8192)",
+                     "print('x' * 1025)", "print('é' * 1025)"):
+            with self.subTest(code=code):
+                self.configure_opendesign(code)
+                self.assert_opendesign_result(self.run_gate("opencode"), "off(command-failed)")
+        for code in ("print('x' * 1024)", "print('x'); print('y' * 8189)"):
+            with self.subTest(code=code):
+                self.configure_opendesign(code)
+                self.assert_opendesign_result(self.run_gate("opencode"), "on", present=True)
+
+    def test_opendesign_fifo_status_does_not_block_launch(self):
+        self.configure_opendesign("print('dummy-generated-key')")
+        self.status.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(self.status)
+        result = subprocess.run([str(GATE), "opencode"], env=self.env, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, timeout=20)
+        self.assert_opendesign_result(result, "on", generated=True, present=True)
+
+    def test_opendesign_deeply_nested_status_does_not_block_launch(self):
+        self.configure_opendesign("print('dummy-generated-key')")
+        self.status.parent.mkdir(parents=True, exist_ok=True)
+        self.status.write_text("[" * 200000 + "]" * 200000)
+        result = subprocess.run([str(GATE), "opencode"], env=self.env, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, timeout=20)
+        self.assert_opendesign_result(result, "on", generated=True, present=True)
+
+    def test_opendesign_fifo_allow_file_does_not_block_launch(self):
+        self.configure_opendesign("print('dummy-generated-key')")
+        self.write_status("stop", worker="opendesign")
+        allow = self.home / ".local/state/orca-agent-gate/allow"
+        allow.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(allow / "opendesign")
+        result = subprocess.run([str(GATE), "opencode"], env=self.env, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, timeout=20)
+        self.assert_opendesign_result(result, "off(stop)")
+
+    def test_opendesign_read_error_reaps_child(self):
+        gate = runpy.run_path(str(GATE))
+        settings = {"opendesign_key": {"worker": "opendesign", "command": [
+            "/usr/bin/python3", "-c", "import time; print('x', flush=True); time.sleep(30)"]}}
+        procs = []
+        real_popen = subprocess.Popen
+        def spy(*args, **kwargs):
+            procs.append(real_popen(*args, **kwargs))
+            return procs[-1]
+        for target in ("register", "read"):
+            with self.subTest(target=target):
+                procs.clear()
+                env = {}
+                if target == "register":
+                    patcher = patch("selectors.DefaultSelector.register", side_effect=OSError("dummy"))
+                else:
+                    real_read = os.read
+                    def failing_read(fd, size):
+                        if procs and fd == procs[0].stdout.fileno():
+                            raise OSError("dummy")
+                        return real_read(fd, size)
+                    patcher = patch.object(os, "read", failing_read)
+                with patch.object(subprocess, "Popen", spy), patcher:
+                    started = time.monotonic()
+                    self.assertEqual(gate["opendesign_key"](settings, env), "off(command-failed)")
+                self.assertLess(time.monotonic() - started, 10)
+                self.assertIsNotNone(procs[0].returncode)
+                self.assertNotIn("OPENDESIGN_API_KEY", env)
+
+    def test_opendesign_command_failures(self):
+        for code, reason in (("import sys; print('dummy-generated-key', file=sys.stderr); sys.exit(1)", "command-failed"),
+                             ("print('')", "empty"),
+                             ("import time; time.sleep(30)", "timeout")):
+            with self.subTest(reason=reason):
+                self.configure_opendesign(code + " # dummy-command-marker")
+                result = self.run_gate("opencode")
+                self.assert_opendesign_result(result, "off(" + reason + ")")
+
     def hook_call(self, agent="claude", pane="pane-1", payload=None, **env):
         return subprocess.run([str(GATE), "hook", agent], env=dict(self.env, ORCA_PANE_KEY=pane, **env),
                               input=json.dumps(payload or {"session_id": "session-1"}),
@@ -548,6 +691,51 @@ class RuntimeGateTests(unittest.TestCase):
                 self.assertNotIn("allow_until", data)
         self.assertEqual(json.loads(self.run_gate("verdict", ["codex"]).stdout)["verdict"], "unknown")
         self.assertEqual(self.run_gate("verdict", ["../bad"]).returncode, 2)
+
+    def test_verdict_output_is_truncated_for_huge_reason(self):
+        self.write_status("stop", reason="x" * 500000)
+        result = self.run_gate("verdict", ["claude"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(len(result.stdout), 4096)
+        data = json.loads(result.stdout)
+        self.assertEqual((data["worker"], data["verdict"], data["allowed"]), ("claude", "stop", False))
+
+    def test_extreme_allow_expiry_is_treated_as_no_allow(self):
+        self.write_status("stop")
+        path = self.home / ".local/state/orca-agent-gate/allow/claude"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("9999-12-31T23:59:59-23:59\n")
+        data = json.loads(self.run_gate("verdict", ["claude"]).stdout)
+        self.assertEqual((data["verdict"], data["allowed"]), ("stop", False))
+        self.assertNotIn("allow_until", data)
+        self.assertEqual(self.hook_call().returncode, 2)
+        result = self.run_gate("codex")
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_extreme_allow_expiry_keeps_opencode_launch_running(self):
+        self.configure_opendesign("print('dummy-generated-key')")
+        self.write_status("stop", worker="opendesign")
+        allow = self.home / ".local/state/orca-agent-gate/allow/opendesign"
+        allow.parent.mkdir(parents=True, exist_ok=True)
+        allow.write_text("9999-12-31T23:59:59-23:59\n")
+        result = self.run_gate("opencode")
+        self.assertNotIn("Traceback", result.stderr)
+        self.assert_opendesign_result(result, "off(stop)")
+
+    def test_verdict_non_string_reason_is_stringified(self):
+        self.write_status("stop", reason=12345)
+        data = json.loads(self.run_gate("verdict", ["claude"]).stdout)
+        self.assertEqual((data["verdict"], data["allowed"], data["reason"]), ("stop", False, "12345"))
+
+    def test_verdict_non_finite_and_falsy_fields_keep_stop(self):
+        self.status.parent.mkdir(parents=True, exist_ok=True)
+        self.status.write_text('{"updated_at": "%s", "routing": {"workers": [{"name": "claude", '
+                               '"verdict": "stop", "reason": 0, "remaining": 1e999, "resets_at": null}]}}'
+                               % datetime.now(timezone.utc).isoformat())
+        result = self.run_gate("verdict", ["claude"])
+        self.assertNotIn("Infinity", result.stdout)
+        data = json.loads(result.stdout)
+        self.assertEqual((data["verdict"], data["allowed"], data["reason"], data["remaining"]), ("stop", False, "0", None))
 
     def test_stale_remote_override_and_burn_expiry(self):
         self.write_status(age=1201)

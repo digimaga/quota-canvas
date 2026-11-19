@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Quota-aware command wrapper for Orca agents."""
+import math
 import errno
 import fcntl
 import hashlib
 import json
 import os
 import re
+import selectors
 import signal
+import stat
 from pathlib import Path
 import shlex
 import subprocess
@@ -29,7 +32,7 @@ def message(text):
     print(text, file=sys.stderr, flush=True)
 
 
-def log(agent, worker, check, decision, model=None):
+def log(agent, worker, check, decision, model=None, opendesign=None):
     def clean(value):
         return str(value if value is not None else "-").replace("\n", " ").replace("\r", " ").replace("\t", " ")
     try:
@@ -39,6 +42,8 @@ def log(agent, worker, check, decision, model=None):
                 datetime.now(timezone.utc).isoformat(), clean(agent), clean(worker), clean(check), clean(decision))
             if model is not None:
                 line += " model={}".format(clean(model))
+            if opendesign is not None:
+                line += " opendesign={}".format(opendesign)
             stream.write(line + "\n")
     except OSError as exc:
         message("起動ログを記録できません: {}".format(exc))
@@ -89,6 +94,12 @@ def bounded_text(handle, limit=32 * 1024):
     return "%s\n...（%d バイト省略）...\n%s" % (head, size - limit * 2, tail)
 
 
+def child_environment():
+    env = os.environ.copy()
+    env.pop("OPENDESIGN_API_KEY", None)
+    return env
+
+
 def quota_check(worker):
     try:
         command = check_command()
@@ -98,7 +109,7 @@ def quota_check(worker):
         # 子孫がファイルを持ち続けても終了コードの確認を妨げない
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             process = subprocess.Popen(command + [worker], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
-                                       start_new_session=True)
+                                       start_new_session=True, env=child_environment())
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -130,7 +141,7 @@ def quota_check(worker):
 
 def start_time(pid):
     try:
-        env = dict(os.environ, LC_ALL="C")
+        env = dict(child_environment(), LC_ALL="C")
         result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, text=True, timeout=5, env=env)
         return result.stdout.strip() if result.returncode == 0 else ""
@@ -332,6 +343,25 @@ def parse_datetime(value):
     return parsed if parsed.tzinfo is not None else parsed.astimezone()
 
 
+def read_regular_text(path, limit=1024 * 1024):
+    # FIFO などで open/read が戻らないのを避ける。通常ファイル以外・上限超過は OSError。
+    fd = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "通常ファイルではありません")
+        data = b""
+        while len(data) <= limit:
+            chunk = os.read(fd, limit + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+        if len(data) > limit:
+            raise OSError(errno.EFBIG, "ファイルが大きすぎます")
+        return data.decode("utf-8")
+    finally:
+        os.close(fd)
+
+
 def read_verdict(worker):
     result = {"worker": worker, "verdict": "unknown", "reason": "status.json が無い",
               "remaining": None, "resets_at": None, "stale": True, "source": "none"}
@@ -342,11 +372,10 @@ def read_verdict(worker):
     now = datetime.now(timezone.utc)
     for path, source in paths:
         try:
-            with path.open(encoding="utf-8") as stream:
-                data = json.load(stream)
+            data = json.loads(read_regular_text(path))
         except FileNotFoundError:
             continue
-        except (OSError, UnicodeError, ValueError):
+        except (OSError, UnicodeError, ValueError, RecursionError):
             result["reason"] = "status.json が読めない"
             continue
         updated = parse_datetime(data.get("updated_at")) if isinstance(data, dict) else None
@@ -372,7 +401,7 @@ def read_verdict(worker):
             continue
         result.update(source=source, stale=stale,
                       verdict=verdict if not stale else "unknown",
-                      reason=item.get("reason") or "", remaining=item.get("remaining"),
+                      reason="" if item.get("reason") is None else item.get("reason"), remaining=item.get("remaining"),
                       resets_at=item.get("resets_at"))
         until = parse_datetime(item.get("burn_until"))
         if not stale and verdict == "boost" and result["reason"] == "burn" and until is not None and until < now:
@@ -406,14 +435,83 @@ def hook_log(agent, worker, verdict, decision):
 
 def allow_expiration(worker):
     try:
-        until = parse_datetime((STATE / "allow" / worker).read_text(encoding="utf-8").strip())
+        until = parse_datetime(read_regular_text(STATE / "allow" / worker).strip())
         return until.astimezone(timezone.utc) if until is not None and until > datetime.now(timezone.utc) else None
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError, ValueError, OverflowError):
         return None
 
 
 def allow_active(worker):
     return allow_expiration(worker) is not None
+
+
+def opendesign_key(options, env):
+    if "opendesign_key" not in options:
+        return None
+    if "OPENDESIGN_API_KEY" in env:
+        return "off(already-set)"
+    settings = options["opendesign_key"]
+    if not isinstance(settings, dict):
+        return "off(command-failed)"
+    worker = settings.get("worker")
+    command = settings.get("command")
+    if (not valid_worker(worker) or worker in (".", "..") or
+            not isinstance(command, list) or not command or not command[0] or
+            any(not isinstance(arg, str) for arg in command)):
+        return "off(command-failed)"
+    if read_verdict(worker)["verdict"] == "stop" and not allow_active(worker):
+        return "off(stop)"
+    try:
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, start_new_session=True,
+                                   env=child_environment())
+        deadline = time.monotonic() + 15
+        output = bytearray()
+        failure = None
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise subprocess.TimeoutExpired(command, 15)
+                    chunk = os.read(process.stdout.fileno(), 8192 + 1 - len(output))
+                    if not chunk:
+                        selector.unregister(process.stdout)
+                    else:
+                        output.extend(chunk)
+                        if len(output) > 8192:
+                            failure = "off(command-failed)"
+                            break
+            if failure is None:
+                process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            failure = "off(timeout)"
+        except OSError:
+            failure = "off(command-failed)"
+        finally:
+            if failure is not None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+            process.stdout.close()
+        if failure is not None:
+            return failure
+        if process.returncode != 0:
+            return "off(command-failed)"
+        key = output.split(b"\n", 1)[0].rstrip(b"\r").decode("utf-8")
+        if len(key) > 1024:
+            return "off(command-failed)"
+        if not key.strip():
+            return "off(empty)"
+        if "\x00" in key:
+            return "off(command-failed)"
+    except (OSError, ValueError, UnicodeError):
+        return "off(command-failed)"
+    env["OPENDESIGN_API_KEY"] = key
+    return "on"
 
 
 def hook_state(key, state):
@@ -530,7 +628,16 @@ def dispatch(argv):
         result["allowed"] = until is not None
         if until is not None:
             result["allow_until"] = until.isoformat()
-        print(json.dumps(result, ensure_ascii=False))
+        for key, value in list(result.items()):
+            if isinstance(value, float) and not math.isfinite(value):
+                result[key] = None
+            elif key in ("reason", "allow_until") and value is not None and not isinstance(value, str):
+                result[key] = str(value)[:200]
+            elif isinstance(value, str) and len(value) > 200:
+                result[key] = value[:200]
+            elif key != "allowed" and not isinstance(value, (str, int, float, bool, type(None))):
+                result[key] = str(value)[:200]
+        print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 0
     if len(argv) > 1 and argv[1] == "hook":
         if len(argv) != 3 or not re.fullmatch(r"[a-z0-9-]+", argv[2]):
@@ -621,16 +728,18 @@ def main(argv):
                 decision = "stop-cap"
                 stop("同時起動数の上限に達したため起動を止めました")
                 return 3
+        exec_env = os.environ.copy()
+        opendesign = opendesign_key(options, exec_env)
         decision = "exec"
-        log(agent, worker, check, decision, added_model)
+        log(agent, worker, check, decision, added_model, opendesign)
         if os.environ.get("ORCA_GATE_HOOK") != "off":
             if force:
-                os.environ["ORCA_GATE_HOOK"] = "off"
+                exec_env["ORCA_GATE_HOOK"] = "off"
             elif worker:
-                os.environ["ORCA_GATE_HOOK"] = worker
+                exec_env["ORCA_GATE_HOOK"] = worker
             else:
-                os.environ.pop("ORCA_GATE_HOOK", None)
-        os.execv(executable, [executable] + args)
+                exec_env.pop("ORCA_GATE_HOOK", None)
+        os.execve(executable, [executable] + args, exec_env)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         message("起動できません: {}".format(exc))
         if pid_file is not None:

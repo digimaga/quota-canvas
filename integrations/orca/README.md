@@ -36,6 +36,16 @@ Command が環境変数を展開しない場合もあるため、**`$HOME` を�
 
 `worker` は判定・同時本数の単位、`cli` は実行可能ファイルの絶対パス、`cap` はその worker の 1 以上の同時本数です。省略時は cap なし。複数 agent が worker を共有する場合は、設定された最小の cap と `board_keys` の和集合を使います。agent ID は英小文字・数字・ハイフンのみです。`off` は JSON の `true` のときだけ有効で、真偽値以外は警告して無効として扱います。`off: true` または `worker: null` は残量・同時本数の判定を無効にします。既定 worker は `claude → claude`、`codex → codex`、`opencode` と `opencode2 → opencode`、`command-code → commandcode`、`grok → grok`、`devin → swe2`、`pi` と未知の ID は判定なしです。
 
+OpenDesign Go を使う場合は、opencode 側で provider `opendesign` とモデル `opendesign/deepseek-v4.1-flash` を設定し、必要な agent にキー取得を指定できます（既定では何もしません）。
+
+```json
+{"agents": {"opencode": {"opendesign_key": {"worker": "opendesign", "command": ["/path/to/print-key"]}}}}
+```
+
+agent の既定 worker `opencode` が `stop` の場合は、キー取得より前に起動が止まります。起動ゲートを外すには `worker: null` を指定してください。provider ごとの判定は `integrations/opencode` のプラグインと `opencode_providers` の対応表で行います。
+
+既存の `OPENDESIGN_API_KEY` は優先されます。未設定時は指定 worker の判定が `stop` でなければ、または `allow` 中なら、コマンドをシェルなしで実行し、標準出力の1行目を起動先の環境変数に渡します。出力は最大 8 KiB、キーの1行目は最大 1024 文字で、超過時は取得失敗として扱います。15秒でタイムアウトし、取得失敗・空・停止判定でも CLI は通常どおり起動します。結果だけを `launch.log` の `opendesign=...` に記録し、キーやコマンドは記録しません。`command` の argv に秘密値を置かないでください。キーは opencode とその子プロセス（opencode が起動するツール）の環境に入ります。
+
 判定コマンドは `ORCA_GATE_CHECK_CMD`、PATH または `~/.claude/bin` の `quota-gate check`、PATH の `quota-canvas routing check` の順に選び、末尾に worker を渡します。`ORCA_GATE_CHECK_CMD` はコマンドと固定引数を空白区切りで指定します（引用符を使えます）。exit 3 は停止、exit 0 の出力は注意として表示します。コマンドがない、10 秒で終了しない、その他の異常時は判定不能を通知して通常どおり起動します。タイムアウト時は判定コマンドのプロセスグループを終了します。判定コマンドの出力は一時ファイルで受けるため、出力が多くても判定は止まりません。CLI がラッパーへ `exec` で転送して同じ PID で再入した場合は停止します。転送スクリプトが子プロセスとしてラッパーを呼ぶ場合は検出できないので、`cli` には実体の実行ファイルの絶対パスを指定してください。
 
 cap を設定すると `~/.local/state/orca-agent-gate/<worker>/<pid>` に起動時刻を保存します。次回の起動時に終了済み PID や再利用された PID を掃除します。同時本数の確認と PID 登録は worker ごとのロックで直列化します。任意の `board_keys` に文字列の配列を指定すると、`~/.claude/run/worker-board.json` の `total` 内の該当キーを合算します。`updated_at` が現在から 600 秒以内の JSON のみ有効です。ファイルがない、壊れている、古い場合は足しません。`ORCA_GATE_BOARD` で掲示板のパスを変更できます。掲示板と PID 記録が同じ起動を表す場合は重複して数えます。
@@ -64,4 +74,4 @@ Claude Code の `UserPromptSubmit` フックから再判定できます。`./int
 
 判定が `stop` の場合は次の入力を止めます（終了中のターンや会話は残ります）。`reserve` と判定不能は変化時に一度だけ注意を表示し、`go` と `boost` は無言です。使い切り期限を過ぎた判定は `reserve` として扱います。`ORCA_GATE_FORCE=1` で起動したセッションでは、起動時のゲートに加えて実行中の再判定も無効になります。
 
-`status.json` は5分ごとの同期なので判定に遅れがあります。送信済みターンの途中では止めません。フックを外すと再判定は効かず、現時点で Claude 以外の CLI は未対応です。Pi は `integrations/pi/` を参照してください。
+`status.json` は5分ごとの同期なので判定に遅れがあります。送信済みターンの途中では止めません。フックを外すと再判定は効きません。Claude 以外では、OpenCode（`integrations/opencode` のプラグイン）と Pi（`integrations/pi/` の拡張）が要求の直前に残量を見直します。そのほかの CLI は起動時の判定だけです。
