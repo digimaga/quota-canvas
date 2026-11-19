@@ -445,9 +445,55 @@ def allow_active(worker):
     return allow_expiration(worker) is not None
 
 
-def opendesign_key(options, env):
+OPENCODE_VALUE_FLAGS = {"--server", "--session", "-s", "--prompt", "--log-level", "--completions"}
+OPENCODE_INTERACTIVE = {"run", "mini"}
+OPENCODE_SUBCOMMANDS = {"upgrade", "update", "uninstall", "acp", "api", "debug", "auth", "mcp", "plugin", "models",
+                        "stats", "mini", "run", "session", "service", "reload", "pair", "serve"}
+
+
+OPENCODE_MANAGE_FLAGS = {"--help", "-h", "--version", "-v", "--wizard", "--completions"}
+
+
+def opencode_launch(args):
+    """OpenCode の起動の種類を返す。
+    "launch": 対話起動（サブコマンドなし・ディレクトリ指定）と run・mini で、サーバーの指定がない。
+    "private": 上と同じ起動で、--standalone が付いている（起動ごとの専用サーバー）。
+    "other": 管理用のサブコマンド・--help などの管理用オプション・--server・--no-standalone・--standalone=。
+    最初の -- より後ろはメッセージなので見ない。"""
+    command = None
+    skip = False
+    private = False
+    for arg in args:
+        if arg == "--":
+            break
+        if skip:
+            skip = False
+            continue
+        if arg == "--standalone":
+            private = True
+            continue
+        if (arg in ("--no-standalone", "--server") or arg in OPENCODE_MANAGE_FLAGS or
+                arg.startswith(("--server=", "--standalone=", "--completions="))):
+            return "other"
+        if arg in OPENCODE_VALUE_FLAGS:
+            skip = True
+        elif arg.startswith("-"):
+            continue
+        elif command is None:
+            command = arg
+    if command is not None and command in OPENCODE_SUBCOMMANDS and command not in OPENCODE_INTERACTIVE:
+        return "other"
+    return "private" if private else "launch"
+
+
+def opendesign_key(options, env, launch):
     if "opendesign_key" not in options:
         return None
+    if launch != "private":
+        # 常駐サービス・別サーバー・管理用コマンドにはキーを渡さない（サービスが起動元の環境を受け継ぐため）。
+        # 起動元の環境に既にあるキーも外す
+        env.pop("OPENDESIGN_API_KEY", None)
+        return "off(shared-server)"
     if "OPENDESIGN_API_KEY" in env:
         return "off(already-set)"
     settings = options["opendesign_key"]
@@ -703,6 +749,15 @@ def main(argv):
                 command_code_needs_model(args)):
             added_model = command_code_model()
             args = ["-m", added_model] + args
+        launch = opencode_launch(args)
+        standalone = options.get("standalone", False)
+        if not isinstance(standalone, bool):
+            message("agent の standalone は真偽値ではないため false として扱います")
+        elif standalone and launch == "launch":
+            # OpenCode 2.x は既定で常駐サービスにつなぐ。ここで渡す環境変数（キー・ORCA_PANE_KEY）と
+            # プラグインを効かせるには、起動ごとに専用のサーバーを立てる --standalone が要る
+            args = ["--standalone"] + args
+            launch = "private"
         if agent == "devin":
             args = model_args(args, config, force)
             if args is None:
@@ -729,7 +784,7 @@ def main(argv):
                 stop("同時起動数の上限に達したため起動を止めました")
                 return 3
         exec_env = os.environ.copy()
-        opendesign = opendesign_key(options, exec_env)
+        opendesign = opendesign_key(options, exec_env, launch)
         decision = "exec"
         log(agent, worker, check, decision, added_model, opendesign)
         if os.environ.get("ORCA_GATE_HOOK") != "off":

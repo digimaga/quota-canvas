@@ -2,6 +2,8 @@
 
 OpenCode 2.3.2 の `model.request` hook で、選択中の provider に対応する worker の残量を要求ごとに確認します。Orca の pane 内で `ORCA_PANE_KEY` が空でなく、`ORCA_GATE_HOOK` が `off` でないときにだけ動きます。モデルの切り替え後も各要求の provider を使います。
 
+プラグインは OpenCode のサーバー側で動きます。OpenCode 2.x の既定の常駐サービスには Orca の環境変数が届かないので、`orca-agent-gate` の opencode 設定で `"standalone": true` を指定し、起動ごとに専用のサーバーを立ててください（`integrations/orca/README.md`）。`--server URL`・`--server=URL` で既存のサーバーにつなぐ場合も、起動元のキーや Orca の環境変数はそのサーバーに届かず、プラグインはそのサーバーの環境で判定します。
+
 `OPENCODE_QUOTA_WORKERS` が設定されていれば `opencode-go=opencode,opendesign=opendesign` のような対応表として優先します。空文字は空の対応表です。未設定なら `~/.config/orca-agent-gate/config.json` の `opencode_providers` を読みます。どちらにも指定がなければ対応表は空です。
 
 ```json

@@ -39,8 +39,12 @@ Command が環境変数を展開しない場合もあるため、**`$HOME` を�
 OpenDesign Go を使う場合は、opencode 側で provider `opendesign` とモデル `opendesign/deepseek-v4.1-flash` を設定し、必要な agent にキー取得を指定できます（既定では何もしません）。
 
 ```json
-{"agents": {"opencode": {"opendesign_key": {"worker": "opendesign", "command": ["/path/to/print-key"]}}}}
+{"agents": {"opencode": {"standalone": true, "opendesign_key": {"worker": "opendesign", "command": ["/path/to/print-key"]}}}}
 ```
+
+OpenCode 2.x は既定で常駐サービス（`opencode serve --service`）につなぐため、起動時に渡した環境変数（このキーや `ORCA_PANE_KEY`）とプラグインはそのままでは効きません。`standalone: true` にすると、対話起動（サブコマンドなし・ディレクトリ指定）と `run`・`mini` のときだけ先頭に `--standalone` を足し、起動ごとに専用のサーバーを立てます。`models`・`service`・`serve` などの管理用サブコマンドと、`--help`・`-h`・`--version`・`-v`・`--wizard`・`--completions` には足しません。最初の `--` より前に `--standalone`・`--no-standalone`・`--standalone=値`・`--server URL`・`--server=URL` があるときも足しません。`--server` で既存のサーバーにつなぐ場合、起動時の環境変数（キーや `ORCA_PANE_KEY`）はそのサーバーに届きません。真偽値以外は警告して無効として扱います。
+
+OpenDesign のキーは、専用サーバーで動く起動（`standalone: true` で `--standalone` を足したとき、または自分で `--standalone` を付けた対話起動・`run`・`mini`）にだけ渡します。常駐サービスにつなぐ起動・`--server`・管理用サブコマンド（`serve --service` などで常駐サービスを立てる場合を含む）では取得コマンドを呼ばず、起動元の環境に既にある `OPENDESIGN_API_KEY` も外して、`launch.log` に `opendesign=off(shared-server)` と記録します。常駐サービスが起動元の環境を受け継いでキーを持ち続けないようにするためです。
 
 agent の既定 worker `opencode` が `stop` の場合は、キー取得より前に起動が止まります。起動ゲートを外すには `worker: null` を指定してください。provider ごとの判定は `integrations/opencode` のプラグインと `opencode_providers` の対応表で行います。
 

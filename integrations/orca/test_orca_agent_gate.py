@@ -511,7 +511,7 @@ class RuntimeGateTests(unittest.TestCase):
                             "'existing': os.environ.get('OPENDESIGN_API_KEY') == 'dummy-existing-key', "
                             "'present': 'OPENDESIGN_API_KEY' in os.environ}))\n")
         self.config["agents"]["opencode"] = {
-            "cli": str(self.cli), "worker": None,
+            "cli": str(self.cli), "worker": None, "standalone": True,
             "opendesign_key": {"worker": "opendesign", "command": ["/usr/bin/python3", "-c", code]},
         }
         self.save_config()
@@ -524,6 +524,34 @@ class RuntimeGateTests(unittest.TestCase):
         for value in ("dummy-generated-key", "dummy-existing-key", "dummy-command-marker"):
             self.assertNotIn(value, log)
             self.assertNotIn(value, result.stderr)
+
+    def test_standalone_option_prepends_flag_once(self):
+        self.cli.write_text("#!/usr/bin/python3\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+        self.config["agents"]["opencode"] = {"cli": str(self.cli), "worker": None, "standalone": True}
+        self.save_config()
+        cases = [([], ["--standalone"]), (["run", "x"], ["--standalone", "run", "x"]),
+                 (["run", "--standalone", "x"], ["run", "--standalone", "x"]),
+                 (["--server", "http://127.0.0.1:1"], ["--server", "http://127.0.0.1:1"]),
+                 (["--server=http://127.0.0.1:1"], ["--server=http://127.0.0.1:1"]),
+                 (["run", "--", "--server"], ["--standalone", "run", "--", "--server"]),
+                 (["-s", "run", "mini"], ["--standalone", "-s", "run", "mini"]),
+                 (["--prompt", "models", "."], ["--standalone", "--prompt", "models", "."]),
+                 (["/tmp/project"], ["--standalone", "/tmp/project"]),
+                 (["models"], ["models"]), (["--standalone", "x"], ["--standalone", "x"]),
+                 (["config"], ["--standalone", "config"]), (["debug", "config"], ["debug", "config"]),
+                 (["--no-standalone"], ["--no-standalone"]), (["--standalone=false"], ["--standalone=false"]),
+                 (["service", "stop"], ["service", "stop"]),
+                 (["--completions", "bash"], ["--completions", "bash"]), (["--help"], ["--help"]),
+                 (["--version"], ["--version"]), (["run", "-h"], ["run", "-h"]), (["--wizard"], ["--wizard"])]
+        for args, expected in cases:
+            result = self.run_gate("opencode", args)
+            self.assertEqual((result.returncode, json.loads(result.stdout)), (0, expected), result.stderr)
+        for value in (False, "yes"):
+            self.config["agents"]["opencode"]["standalone"] = value
+            self.save_config()
+            result = self.run_gate("opencode", ["run"])
+            self.assertEqual(json.loads(result.stdout), ["run"])
+        self.assertIn("standalone", result.stderr)
 
     def test_opendesign_key_on_and_default_off(self):
         self.configure_opendesign("print('dummy-generated-key\\nignored') # dummy-command-marker")
@@ -570,7 +598,7 @@ class RuntimeGateTests(unittest.TestCase):
             "/usr/bin/python3", "-c", "import os, sys; sys.exit(1) if 'OPENDESIGN_API_KEY' in os.environ else print('dummy-generated-key')"]}}
         target_env = {}
         with patch.dict(os.environ, {"OPENDESIGN_API_KEY": "dummy-existing-key"}):
-            self.assertEqual(gate["opendesign_key"](settings, target_env), "on")
+            self.assertEqual(gate["opendesign_key"](settings, target_env, "private"), "on")
         self.assertEqual(target_env["OPENDESIGN_API_KEY"], "dummy-generated-key")
 
     def test_opendesign_output_and_key_limits(self):
@@ -634,7 +662,7 @@ class RuntimeGateTests(unittest.TestCase):
                     patcher = patch.object(os, "read", failing_read)
                 with patch.object(subprocess, "Popen", spy), patcher:
                     started = time.monotonic()
-                    self.assertEqual(gate["opendesign_key"](settings, env), "off(command-failed)")
+                    self.assertEqual(gate["opendesign_key"](settings, env, "private"), "off(command-failed)")
                 self.assertLess(time.monotonic() - started, 10)
                 self.assertIsNotNone(procs[0].returncode)
                 self.assertNotIn("OPENDESIGN_API_KEY", env)
@@ -711,6 +739,25 @@ class RuntimeGateTests(unittest.TestCase):
         self.assertEqual(self.hook_call().returncode, 2)
         result = self.run_gate("codex")
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_opendesign_key_only_for_private_server(self):
+        marker = self.home / "key-command-ran"
+        self.configure_opendesign("open({!r}, 'w').close(); print('dummy-generated-key')".format(str(marker)))
+        self.write_status("go", worker="opendesign")
+        for args in (["serve", "--service"], ["service", "start"], ["--server", "http://127.0.0.1:1"],
+                     ["--server=http://127.0.0.1:1", "run"], ["--no-standalone"], ["--help"], ["models"]):
+            self.assert_opendesign_result(self.run_gate("opencode", args), "off(shared-server)")
+            self.assertFalse(marker.exists(), args)
+        self.config["agents"]["opencode"]["standalone"] = False
+        self.save_config()
+        self.assert_opendesign_result(self.run_gate("opencode", ["run"]), "off(shared-server)")
+        self.assertFalse(marker.exists())
+        self.assert_opendesign_result(self.run_gate("opencode", ["serve", "--service"],
+                                                    OPENDESIGN_API_KEY="dummy-existing-key"), "off(shared-server)")
+        self.assertFalse(marker.exists())
+        self.assert_opendesign_result(self.run_gate("opencode", ["run", "--standalone"]), "on",
+                                      generated=True, present=True)
+        self.assertTrue(marker.exists())
 
     def test_extreme_allow_expiry_keeps_opencode_launch_running(self):
         self.configure_opendesign("print('dummy-generated-key')")
