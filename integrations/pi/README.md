@@ -9,7 +9,7 @@ heartbeat は TTL の 3 分の 1 ごと（最大 30 秒）に送り、通信は�
 ./integrations/pi/install.sh
 ```
 
-インストール先は `~/.pi/agent/extensions/ds-gate-lease.ts` です。ゲート URL はリポジトリに含めないので、Mac ごとに `~/.config/deepseek-run/config.json` へ `{"gate_url": "http://<ゲートのアドレス>:<ポート>"}` を書くか環境変数で渡してください。既存ファイルは `.bak`（重複時は連番）に退避します。Pi を再起動または `/reload` してください。
+インストール先は `~/.pi/agent/extensions/` の `ds-gate-lease.ts` と `quota-guard.ts` です。ゲート URL はリポジトリに含めないので、Mac ごとに `~/.config/deepseek-run/config.json` へ `{"gate_url": "http://<ゲートのアドレス>:<ポート>"}` を書くか環境変数で渡してください。既存ファイルはそれぞれ `.bak`（重複時は連番）に退避します。Pi を再起動または `/reload` してください。
 
 | 環境変数 | 意味 |
 | --- | --- |
@@ -25,3 +25,11 @@ URL・鍵の未設定や取得失敗は既定で `ctx.abort()` により中断�
 待機中に接続が切れた場合は、ゲートが待ち行列から要求を除外し、応答前に切断した要求にはリースを発行しない仕様を前提とします。通常終了やセッション切替、ユーザー中断では解放を試みますが、ネットワーク障害や強制終了では TTL による回収を待ちます。ステータス行は Pi の UI がある場合に表示します。
 
 現在の Pi 拡張 API は `before_provider_request` に実際のモデルを渡さず、コンパクション内部の要求もそのイベントを通りません。この拡張は選択中の `ctx.model` で判定するため、virtual model などが別プロバイダへルーティングする場合は保護できません。自動・手動コンパクションは `session_before_compact` とその中断シグナルで保護しますが、ルーティング後のモデルを参照できない制約は同じです。実際に送るモデルを確実に保護するには Pi 側の API 対応が必要です。
+
+## 残量ガード
+
+`quota-guard.ts` は Orca の端末（`ORCA_PANE_KEY` が空でない場合）で、モデルへの要求直前に `orca-agent-gate verdict <worker>` の残量判定を確認します。`ORCA_GATE_HOOK=off` のときだけ無効になり、空または未設定なら有効です。起動時の環境に `ORCA_GATE_HOOK=off` を明示すれば、ラッパー経由でも保持されます。対応を設定したプロバイダだけが対象で、既定の対応はありません。たとえば `PI_QUOTA_WORKERS='provider-a=worker-a,provider-b=worker-b'` と指定するか、環境変数が未設定なら `~/.config/orca-agent-gate/config.json` の `"pi_providers": {"provider-a": "worker-a"}` で設定します。環境変数は設定ファイル全体より優先し、空文字なら対応は空です。CLI の場所は `ORCA_AGENT_GATE_BIN`、未指定なら `~/.local/bin/orca-agent-gate` です。
+
+`stop` は警告して要求を中断し、会話は残します。回復後に送り直すか、一時的に許可するには `orca-agent-gate allow <worker>` を使います。`stop` でも CLI の応答が `allowed: true` なら続行し、状態が変わったときに許可期限を通知します。`reserve` と `unknown` は判定が変わったときだけ警告し、続行します。`go` と `boost` は通知せず続行します。CLI の失敗・タイムアウト・不正な応答も `unknown` として続行します。要求ごとに再判定し、同じ worker の照会が進行中の場合だけその結果を共有します。
+
+判定元の同期は 5 分ごとのため、実際の残量から遅れる場合があります。送信済みのストリーム中の要求は止めません。また、選択中の `ctx.model` を使うため、virtual model による別プロバイダへのルーティングや、上記イベントを通らないコンパクション内部の要求は保護できません。

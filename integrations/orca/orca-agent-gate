@@ -2,6 +2,7 @@
 """Quota-aware command wrapper for Orca agents."""
 import errno
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -12,7 +13,7 @@ import subprocess
 import tempfile
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 DEFAULT_WORKERS = {"claude": "claude", "codex": "codex", "opencode": "opencode",
                    "opencode2": "opencode", "command-code": "commandcode",
@@ -28,14 +29,17 @@ def message(text):
     print(text, file=sys.stderr, flush=True)
 
 
-def log(agent, worker, check, decision):
+def log(agent, worker, check, decision, model=None):
     def clean(value):
         return str(value if value is not None else "-").replace("\n", " ").replace("\r", " ").replace("\t", " ")
     try:
         STATE.mkdir(parents=True, exist_ok=True)
         with (STATE / "launch.log").open("a", encoding="utf-8") as stream:
-            stream.write("{} agent={} worker={} check={} decision={}\n".format(
-                datetime.now(timezone.utc).isoformat(), clean(agent), clean(worker), clean(check), clean(decision)))
+            line = "{} agent={} worker={} check={} decision={}".format(
+                datetime.now(timezone.utc).isoformat(), clean(agent), clean(worker), clean(check), clean(decision))
+            if model is not None:
+                line += " model={}".format(clean(model))
+            stream.write(line + "\n")
     except OSError as exc:
         message("起動ログを記録できません: {}".format(exc))
 
@@ -200,6 +204,61 @@ def register(worker, cap, board_keys):
         return pid_file
 
 
+def command_code_model():
+    override = os.environ.get("ORCA_GATE_NOW", "")
+    now = None
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}", override):
+        try:
+            now = datetime.strptime(override, "%Y-%m-%dT%H:%M").replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if now.weekday() < 5 and (1 <= now.hour < 4 or 6 <= now.hour < 10):
+        return "z-ai/glm-5.3-flash"
+    return "deepseek/deepseek-v4.1-flash"
+
+
+COMMAND_CODE_SUBCOMMANDS = frozenset((
+    "info", "status", "help", "whoami", "update", "feedback", "taste", "learn-taste",
+    "mcp", "cloud", "skills", "acp", "mods", "login", "logout", "config",
+    "providers", "issue",
+))
+
+COMMAND_CODE_REQUIRED_VALUE_OPTIONS = frozenset((
+    "--session", "-n", "--name",
+    "--max-turns", "--output-format", "--tools-enable", "--effort", "--theme",
+    "--config", "--permission-mode", "--add-dir", "--base", "--mod", "--mod-option", "--skill",
+))
+
+COMMAND_CODE_OPTIONAL_VALUE_OPTIONS = frozenset((
+    "-r", "--resume", "--sessions", "-p", "--print", "-w", "--worktree", "--cloud",
+))
+
+
+def command_code_needs_model(args):
+    first_word = None
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            if first_word is None and index + 1 < len(args):
+                first_word = args[index + 1]
+            break
+        if arg == "--model" or arg.startswith("--model=") or arg.startswith("-m"):
+            return False
+        if arg in COMMAND_CODE_REQUIRED_VALUE_OPTIONS:
+            if index + 1 < len(args):
+                index += 1
+        elif arg in COMMAND_CODE_OPTIONAL_VALUE_OPTIONS:
+            if index + 1 < len(args) and not args[index + 1].startswith("-"):
+                index += 1
+        elif not arg.startswith("-") and first_word is None:
+            first_word = arg
+        index += 1
+    return first_word not in COMMAND_CODE_SUBCOMMANDS
+
+
 def model_args(args, config, force):
     allowed = config.get("devin_allowed_models", DEFAULT_MODELS)
     default = config.get("devin_model", "swe-2-high")
@@ -254,6 +313,237 @@ def worker_limits(agent, worker, options, agents):
     return (min(caps) if caps else None), sorted(keys)
 
 
+
+def valid_worker(worker):
+    return (isinstance(worker, str) and worker != "off" and not worker.startswith("-") and
+            re.fullmatch(r"[A-Za-z0-9._-]{1,40}", worker) is not None)
+
+
+def parse_datetime(value):
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if value.endswith(("Z", "z")):
+        value = value[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.astimezone()
+
+
+def read_verdict(worker):
+    result = {"worker": worker, "verdict": "unknown", "reason": "status.json が無い",
+              "remaining": None, "resets_at": None, "stale": True, "source": "none"}
+    root = HOME / "Library/Application Support/quota-canvas"
+    override = os.environ.get("QUOTA_STATUS_PATH")
+    paths = [(Path(override), "env")] if override else [(root / "status.json", "local"),
+                                                         (root / "remote/status.json", "remote")]
+    now = datetime.now(timezone.utc)
+    for path, source in paths:
+        try:
+            with path.open(encoding="utf-8") as stream:
+                data = json.load(stream)
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError, ValueError):
+            result["reason"] = "status.json が読めない"
+            continue
+        updated = parse_datetime(data.get("updated_at")) if isinstance(data, dict) else None
+        if updated is None or now - updated > timedelta(minutes=20) or updated - now >= timedelta(minutes=5):
+            result["reason"] = "status.json が古い"
+            continue
+        routing = data.get("routing")
+        if not isinstance(routing, dict):
+            result["reason"] = "status.json に routing が無い"
+            continue
+        workers = routing.get("workers")
+        if not isinstance(workers, list):
+            result["reason"] = "status.json に workers が無い"
+            continue
+        item = next((item for item in workers if isinstance(item, dict) and item.get("name") == worker), None)
+        if item is None:
+            result["reason"] = "status.json に worker が無い"
+            continue
+        stale = item.get("stale") is True
+        verdict = item.get("verdict")
+        if verdict not in ("stop", "reserve", "go", "boost", "unknown"):
+            result["reason"] = "status.json の verdict が不正"
+            continue
+        result.update(source=source, stale=stale,
+                      verdict=verdict if not stale else "unknown",
+                      reason=item.get("reason") or "", remaining=item.get("remaining"),
+                      resets_at=item.get("resets_at"))
+        until = parse_datetime(item.get("burn_until"))
+        if not stale and verdict == "boost" and result["reason"] == "burn" and until is not None and until < now:
+            result.update(verdict="reserve", reason="burn_expired")
+        return result
+    return result
+
+
+def agent_options(agent):
+    try:
+        with CONFIG.open(encoding="utf-8") as stream:
+            config = json.load(stream)
+    except FileNotFoundError:
+        return {}
+    if not isinstance(config, dict) or not isinstance(config.get("agents", {}), dict):
+        raise ValueError("agent 設定が不正です")
+    options = config.get("agents", {}).get(agent, {})
+    if not isinstance(options, dict):
+        raise ValueError("agent 設定が不正です")
+    return options
+
+
+def hook_log(agent, worker, verdict, decision):
+    STATE.mkdir(parents=True, exist_ok=True)
+    def clean(value):
+        return str(value).replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    with (STATE / "hook.log").open("a", encoding="utf-8") as stream:
+        stream.write("{} agent={} worker={} verdict={} decision={}\n".format(
+            datetime.now(timezone.utc).isoformat(), clean(agent), clean(worker), clean(verdict), clean(decision)))
+
+
+def allow_expiration(worker):
+    try:
+        until = parse_datetime((STATE / "allow" / worker).read_text(encoding="utf-8").strip())
+        return until.astimezone(timezone.utc) if until is not None and until > datetime.now(timezone.utc) else None
+    except (OSError, UnicodeError):
+        return None
+
+
+def allow_active(worker):
+    return allow_expiration(worker) is not None
+
+
+def hook_state(key, state):
+    if not key:
+        return None
+    # Pane keys are normally safe filenames. Hash any unsafe key to keep state in its directory.
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", key) or len(key) > 200:
+        key = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    directory = STATE / "hook"
+    directory.mkdir(parents=True, exist_ok=True)
+    cutoff = time.time() - 7 * 24 * 60 * 60
+    for path in directory.glob("*.json"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except FileNotFoundError:
+            pass
+    path = directory / (key + ".json")
+    with (directory / (key + ".lock")).open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return None
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError, UnicodeError):
+            previous = None
+        path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    return previous
+
+
+def hook(agent):
+    strict = agent in ("command-code", "devin")
+    worker = None
+    try:
+        override = os.environ.get("ORCA_GATE_HOOK", "")
+        pane = os.environ.get("ORCA_PANE_KEY", "")
+        if not pane or override == "off":
+            return 0
+        if override and not valid_worker(override):
+            return 0
+        options = agent_options(agent)
+        strict = options.get("hook_block_unknown", strict) is True
+        if options.get("hook") is False:
+            return 0
+        worker = override if override else options.get("worker", DEFAULT_WORKERS.get(agent))
+        if not override and options.get("off") is True:
+            worker = None
+        if not valid_worker(worker):
+            return 0
+        sys.stdin.buffer.read(1024 * 1024)
+        result = read_verdict(worker)
+        verdict = result["verdict"]
+        allowed = allow_active(worker) if verdict in ("stop", "unknown") or result["stale"] else False
+        blocked = (verdict == "stop" or ((verdict == "unknown" or result["stale"]) and strict)) and not allowed
+        state = {"worker": worker, "verdict": verdict, "allowed": allowed}
+        try:
+            previous = hook_state(pane, state)
+        except Exception:
+            previous = None
+        if blocked:
+            message("残量の判定が {}（worker: {}・理由: {}）になったため、この入力は送信していません。端末と会話はそのままです。回復後に同じ入力を送り直してください。一時的に通すには orca-agent-gate allow {} [分]".format(verdict, worker, result["reason"], worker))
+            try:
+                hook_log(agent, worker, verdict, "block")
+            except Exception:
+                pass
+            return 2
+        if (verdict in ("reserve", "unknown") or allowed) and previous != state:
+            suffix = "（一時許可中）" if allowed else ""
+            print(json.dumps({"systemMessage": "残量の判定は {}（worker: {}・理由: {}）です{}。".format(verdict, worker, result["reason"], suffix)}, ensure_ascii=False))
+            try:
+                hook_log(agent, worker, verdict, "warn")
+            except Exception:
+                pass
+        return 0
+    except Exception as exc:
+        if strict:
+            message("残量の判定を確認できないため、この入力は送信していません。端末と会話はそのままです。回復後に同じ入力を送り直してください。")
+            try:
+                hook_log(agent, worker or "-", "unknown", "block")
+            except Exception:
+                pass
+            return 2
+        return 0
+
+
+def allow_command(args):
+    if len(args) not in (1, 2) or not valid_worker(args[0]):
+        message("使い方: orca-agent-gate allow <worker> [分|off]")
+        return 2
+    path = STATE / "allow" / args[0]
+    if len(args) == 2 and args[1] == "off":
+        path.unlink(missing_ok=True)
+        return 0
+    try:
+        minutes = int(args[1]) if len(args) == 2 else 60
+        if not 1 <= minutes <= 720:
+            raise ValueError
+    except ValueError:
+        message("分は 1 から 720 の整数にしてください")
+        return 2
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text((datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat() + "\n", encoding="utf-8")
+    return 0
+
+
+def dispatch(argv):
+    if len(argv) > 1 and argv[1] == "verdict":
+        if len(argv) != 3 or not valid_worker(argv[2]):
+            message("使い方: orca-agent-gate verdict <worker>")
+            return 2
+        result = read_verdict(argv[2])
+        until = allow_expiration(argv[2])
+        result["allowed"] = until is not None
+        if until is not None:
+            result["allow_until"] = until.isoformat()
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    if len(argv) > 1 and argv[1] == "hook":
+        if len(argv) != 3 or not re.fullmatch(r"[a-z0-9-]+", argv[2]):
+            return 0
+        return hook(argv[2])
+    if len(argv) > 1 and argv[1] == "allow":
+        try:
+            return allow_command(argv[2:])
+        except OSError as exc:
+            message("一時許可を更新できません: {}".format(exc))
+            return 2
+    return main(argv)
+
 def main(argv):
     agent = argv[1] if len(argv) > 1 else "-"
     worker = None
@@ -279,13 +569,13 @@ def main(argv):
         if not isinstance(options, dict):
             raise ValueError("agent の設定は JSON オブジェクトにしてください")
         worker = options.get("worker", DEFAULT_WORKERS.get(agent))
+        if worker is not None and (not valid_worker(worker) or worker in (".", "..")):
+            raise ValueError("worker は英数字・記号 . _ - の 1〜40 文字（先頭の -、off、.、.. を除く）にしてください")
         off = options.get("off", False)
         if not isinstance(off, bool):
             message("agent の off は真偽値ではないため false として扱います")
         if off is True:
             worker = None
-        if worker is not None and (not isinstance(worker, str) or not worker or worker in (".", "..") or "/" in worker or "\\" in worker):
-            raise ValueError("worker はパス区切りを含まない名前にしてください")
         cap = options.get("cap")
         if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
             raise ValueError("cap は 1 以上の整数にしてください")
@@ -301,6 +591,11 @@ def main(argv):
             message("強制起動します")
             check = "force"
         args = argv[2:]
+        added_model = None
+        if (agent == "command-code" and options.get("auto_model") is not False and
+                command_code_needs_model(args)):
+            added_model = command_code_model()
+            args = ["-m", added_model] + args
         if agent == "devin":
             args = model_args(args, config, force)
             if args is None:
@@ -327,7 +622,14 @@ def main(argv):
                 stop("同時起動数の上限に達したため起動を止めました")
                 return 3
         decision = "exec"
-        log(agent, worker, check, decision)
+        log(agent, worker, check, decision, added_model)
+        if os.environ.get("ORCA_GATE_HOOK") != "off":
+            if force:
+                os.environ["ORCA_GATE_HOOK"] = "off"
+            elif worker:
+                os.environ["ORCA_GATE_HOOK"] = worker
+            else:
+                os.environ.pop("ORCA_GATE_HOOK", None)
         os.execv(executable, [executable] + args)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         message("起動できません: {}".format(exc))
@@ -342,4 +644,4 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(dispatch(sys.argv))
