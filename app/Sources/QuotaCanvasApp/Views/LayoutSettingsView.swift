@@ -321,7 +321,8 @@ struct LayoutSettingsView: View {
                                         GridItem(.flexible(minimum: 10, maximum: .infinity), alignment: .leading)],
                               alignment: .leading, spacing: 4) {
                         ForEach(Self.subCandidates(main: slot.main, windows: windows,
-                                                   selected: effectiveSubs(slot))) { window in
+                                                   selected: effectiveSubs(slot),
+                                                   resolvedMain: slot.main.flatMap { resolvedMainWindows[$0] })) { window in
                             Toggle(window.label, isOn: subBinding(slot, window.id))
                                 .toggleStyle(.checkbox)
                                 .lineLimit(1)
@@ -407,9 +408,12 @@ struct LayoutSettingsView: View {
 
     /// 2 本目の窓の候補: 主枠と同じサービス（窓 ID の ":" の前が同じ）の独立窓から
     /// エンジンが実際にメインに使う窓を除いた一覧（エンジンはメイン自身を 2 本目に選べない）。
-    /// main が窓 ID なら main 自身を除く。main がサービス ID（":" 無し）のときは、
-    /// status.json の main_window が取れていれば（resolvedMain）その窓だけを除き、
-    /// 取れなければ resolvedMainWindow の推定（render.py _main_rank と同じ規則）を fallback にする。
+    /// main が窓 ID なら main 自身を除き、その窓が今の取得結果に無く同じサービスの別の窓で
+    /// 代わりに描かれている（status.json の main_window = resolvedMain。窓 ID の main には
+    /// 代わりに描いたときだけ載る）ときはその窓も除く。
+    /// main がサービス ID（":" 無し）のときは、status.json の main_window が取れていれば
+    /// （resolvedMain）その窓だけを除き、取れなければ resolvedMainWindow の推定
+    /// （render.py _main_rank と同じ規則）を fallback にする。
     /// 内訳窓（part_of 付き）も選べないので候補に出さない。
     /// 一覧に無い窓が設定に残っているときは外せるように候補に残す。
     static func secondWindowCandidates(main: String?, windows: [WindowChoice],
@@ -417,7 +421,7 @@ struct LayoutSettingsView: View {
         guard let main, acceptsSecondBar(main) else { return [] }
         let provider = main.split(separator: ":", maxSplits: 1)[0]
         let excludedMain = main.contains(":")
-            ? main
+            ? (resolvedMain ?? main)
             : (resolvedMain ?? resolvedMainWindow(provider: String(provider), windows: windows))
         var candidates = windows.filter { window in
             window.id.contains(":") && window.id != main && window.id != excludedMain
@@ -450,12 +454,16 @@ struct LayoutSettingsView: View {
     }
 
     /// サブ窓の候補: 主枠と同じサービスの窓（主枠自身を除く）。以前に別サービスの窓を
-    /// サブにしていた設定は、外せるように選択中のものだけ残す。
-    static func subCandidates(main: String?, windows: [WindowChoice], selected: [String]) -> [WindowChoice] {
+    /// サブにしていた設定は、外せるように選択中のものだけ残す。主枠の窓が今無く別の窓で
+    /// 代わりに描かれている（resolvedMain）ときはその窓も新しくは選べない（選択中なら残す）。
+    static func subCandidates(main: String?, windows: [WindowChoice], selected: [String],
+                              resolvedMain: String? = nil) -> [WindowChoice] {
         guard let main, acceptsSubs(main) else { return [] }
         let provider = main.split(separator: ":", maxSplits: 1)[0]
+        let substituted = main.contains(":") ? resolvedMain : nil
         return windows.filter { window in
             guard isSubCandidate(window.id), window.id != main else { return false }
+            if window.id == substituted { return selected.contains(window.id) }
             return window.id.split(separator: ":", maxSplits: 1)[0] == provider
                 || selected.contains(window.id)
         }

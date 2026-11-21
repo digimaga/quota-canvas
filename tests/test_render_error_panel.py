@@ -75,12 +75,20 @@ def test_unknown_service_window_id_disappears():
     assert cols == []
 
 
-def test_window_id_missing_on_healthy_service_is_none():
-    # 取得成功していて窓 key だけ存在しない場合はエラーパネルにしない
-    # (large は列ごと消え、両段空の small 列も消える: 従来どおり)
-    assert _layout_columns(_ok_cards(), [PanelSpec("claude:weekly")]) == []
-    assert _layout_columns(_ok_cards(),
-                           [PanelSpec("claude:weekly", size="small")]) == []
+def test_window_id_missing_on_healthy_service_falls_back():
+    # 取得成功していて窓 key だけ存在しない場合 (プラン変更など) はエラー
+    # パネルにせず、同じサービスの別の窓で代わりに描く
+    for size in ("large", "small"):
+        cols = _layout_columns(_ok_cards(), [PanelSpec("claude:weekly", size=size)])
+        panel = cols[0][1][0]
+        assert panel["main"][1].window.id == "claude:5h"
+
+
+def test_window_id_missing_without_spare_window_is_none():
+    # 代わりの窓がほかのパネルの main なら選ばず、従来どおり消える
+    specs = [PanelSpec("claude:5h"), PanelSpec("claude:weekly")]
+    cols = _layout_columns(_ok_cards(), specs)
+    assert [c[1][0]["main"][1].window.id for c in cols] == ["claude:5h"]
 
 
 def test_provider_id_error_panel_shape_unchanged():

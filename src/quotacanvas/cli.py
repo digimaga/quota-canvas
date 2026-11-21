@@ -488,6 +488,16 @@ def _render_layout(cfg: Config, cards: Optional[List[Card]] = None):
         # 入れると他パネルの自動サブからその窓が消えてしまう。
         if p.subs is not None and p.main != "calendar":
             used.update(p.subs)
+    # main の窓が今無く同じサービスの別の窓で代わりに描くパネルは、その窓が
+    # メインになるので自動サブに入れない (描画側の fallback_mains と同じ割り当て)。
+    try:
+        from .render import _lookups, fallback_mains
+    except (ImportError, AttributeError):
+        pass
+    else:
+        for fb in fallback_mains(_lookups(cards or []), cfg.layout.panels):
+            if fb is not None:
+                used.add(fb[1].window.id)
     shown = [pace.window.id for _, pace in (cards or []) if pace is not None]
     specs = []
     for p in cfg.layout.panels:

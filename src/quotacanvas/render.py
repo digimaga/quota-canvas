@@ -27,7 +27,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Collection, Dict, List, Optional, Sequence, Tuple, Union
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -1100,13 +1100,68 @@ def _resolve_second(g, main_win, spec):
     return (g,) + pick if pick else None
 
 
-def _resolve_panel(lookups, spec):
-    # type: (Tuple[dict, dict], PanelSpec) -> Optional[dict]
+def _fallback_main(g, taken=()):
+    # type: (dict, Collection[str]) -> Optional[tuple]
+    """main の窓 id が今の取得結果に無いときの代わりのメイン窓 (pu, p)。
+
+    プラン変更で窓が無くなる (Devin Max は日次枠を hideDailyQuota で隠す) と
+    パネルごと消えるので、同じサービスの usable 窓から _main_rank が最も高い
+    ものを選ぶ。内訳窓と、ほかのパネルが使う窓 (taken) は選ばない (同じ窓の
+    パネルが 2 枚にならないように)。無ければ None。"""
+    best = None
+    for it in g["usable"]:
+        w = it[1].window
+        if w.part_of is not None or w.id in taken:
+            continue
+        if best is None or _main_rank(w) > _main_rank(best[1].window):
+            best = it
+    return best
+
+
+def fallback_mains(lookups, specs):
+    # type: (Tuple[dict, dict], Sequence[PanelSpec]) -> List[Optional[tuple]]
+    """specs と同じ並びで、main の窓 id が今無いパネルの代わりのメイン窓
+    (pu, p) を返す (代わりが要らない・選べないパネルは None)。
+
+    先に、今ある窓 id の main と、サービス ID の main が実際に使う窓を予約し、
+    代わりの窓は先頭のパネルから順に予約していく。同じ消えた窓 id を複数の
+    パネルに置いたときは先頭の 1 枚だけを代わりに描く (アプリは main ごとに
+    main_window を 1 つしか持てないため)。描画・status.json・自動サブ
+    の割り当てがみな同じ結果を使うよう、ここ 1 か所で決める。読むのは
+    ``.main`` だけなので config 側の Panel も渡せる。"""
+    by_prov, by_win = lookups
+    taken = set()
+    for sp in specs:
+        main = sp.main or ""
+        if main in by_win:
+            taken.add(main)
+        elif main in by_prov and by_prov[main]["best"] is not None:
+            taken.add(by_prov[main]["best"][1].window.id)
+    out = []  # type: List[Optional[tuple]]
+    substituted = set()
+    for sp in specs:
+        main = sp.main or ""
+        fb = None
+        if ":" in main and main not in by_win and main not in substituted:
+            substituted.add(main)
+            g = by_prov.get(main.split(":", 1)[0])
+            if g is not None and not (g["error"] and g["best"] is None):
+                fb = _fallback_main(g, taken)
+                if fb is not None:
+                    taken.add(fb[1].window.id)
+        out.append(fb)
+    return out
+
+
+def _resolve_panel(lookups, spec, fallback=None):
+    # type: (Tuple[dict, dict], PanelSpec, Optional[tuple]) -> Optional[dict]
     """Turn one PanelSpec into a drawable panel. Returns None when ``main``
     cannot be resolved (the caller decides: a large column disappears, a
     small slot stays empty). main = provider id auto-picks the service's
     best window; a failed service (provider id, or a window id whose group
     has an error and no usable window) becomes an error panel (main=None).
+    main = 窓 id がその窓を今持たない (プラン変更など) ときは、fallback
+    (fallback_mains が選んだ同じサービスの別の窓 (pu, p)) で代わりに描く。
     main = CALENDAR_MAIN は窓を持たないカレンダー 1 枚 (subs は無視、
     local:<名前> と同じ扱い)。
     The panel dict also carries the main window's breakdown ("parts"):
@@ -1133,9 +1188,12 @@ def _resolve_panel(lookups, spec):
             if g is not None and g["error"] and g["best"] is None:
                 return {"spec": spec, "g": g, "main": None, "subs": [],
                         "parts": []}
-            return None                     # unknown id: not drawable
-        g, mi = found[0], (found[1], found[2])
-        subs = _resolve_subs(by_win, spec.subs, spec.main)
+            mi = fallback
+            if mi is None or g is None:
+                return None                 # unknown id: not drawable
+        else:
+            g, mi = found[0], (found[1], found[2])
+        subs = _resolve_subs(by_win, spec.subs, mi[1].window.id)
         parts = _resolve_parts(g, mi[1].window, spec.subs)
     return {"spec": spec, "g": g, "main": mi, "subs": subs, "parts": parts,
             "second": _resolve_second(g, mi[1].window, spec)}
@@ -1149,15 +1207,18 @@ def _layout_columns(cards, specs):
     service keeps its error panel; a column vanishes only when nothing can be
     drawn in it (unresolvable large column, or both small rows empty)."""
     lookups = _lookups(cards)
+    # group_columns は specs の並びを保つので、列を先頭から辿る順に割り当てを使う
+    # (同じ PanelSpec を 2 回置いても位置ごとの割り当てになるよう id() では引かない)。
+    fallbacks = iter(fallback_mains(lookups, specs))
     cols = []  # type: List[Tuple[str, List[Optional[dict]]]]
     for column in group_columns(specs)[:MAX_COLUMNS]:
         if column[0].size == "large":
-            p = _resolve_panel(lookups, column[0])
+            p = _resolve_panel(lookups, column[0], next(fallbacks))
             if p is not None:
                 cols.append(("large", [p]))
         else:
-            slots = [_resolve_panel(lookups, sp) if sp.main else None
-                     for sp in column]
+            slots = [_resolve_panel(lookups, sp, fb) if sp.main else None
+                     for sp, fb in [(sp, next(fallbacks)) for sp in column]]
             if any(slot is not None for slot in slots):
                 cols.append(("small", slots))
     return cols

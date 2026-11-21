@@ -198,24 +198,27 @@ def _layout_payload(cfg: Config, cards: Sequence[Tuple[ProviderUsage, Optional[P
 def _with_main_windows(entries: List[Dict[str, Any]], specs: Sequence[Any],
                        cards: Sequence[Tuple[ProviderUsage, Optional[Pace]]]
                        ) -> List[Dict[str, Any]]:
-    """main がサービス ID のパネルに、描画が実際に選んだメイン窓の ID を
-    "main_window" として足す (アプリの 2 本目の窓の候補から外すため)。
-    解決できなければ足さない。"""
+    """main がサービス ID のパネルと、main の窓が今無く同じサービスの別の窓で
+    代わりに描いたパネルに、描画が実際に選んだメイン窓の ID を "main_window"
+    として足す (アプリの 2 本目の窓の候補から外すため)。解決できなければ足さない。"""
     try:
-        from .render import _lookups, _resolve_panel
+        from .render import _lookups, _resolve_panel, fallback_mains
     except (ImportError, AttributeError):
         return entries
     lookups = _lookups(cards)
-    for entry, spec in zip(entries, specs):
+    fallbacks = fallback_mains(lookups, specs)
+    for entry, spec, fallback in zip(entries, specs, fallbacks):
         main = entry.get("main") or ""
-        if not main or ":" in main:
+        if not main:
             continue
         try:
-            panel = _resolve_panel(lookups, spec)
+            panel = _resolve_panel(lookups, spec, fallback)
         except Exception:  # 表示ヒントなので、解決の失敗で status を壊さない
             continue
         if panel and panel.get("main") is not None:
-            entry["main_window"] = panel["main"][1].window.id
+            chosen = panel["main"][1].window.id
+            if ":" not in main or chosen != main:
+                entry["main_window"] = chosen
     return entries
 
 

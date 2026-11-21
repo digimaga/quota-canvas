@@ -335,6 +335,13 @@ struct RegressionTests {
                                                         selected: nil).map(\.id)
               == ["opencode:weekly", "opencode:daily"],
               "window-id main drops only itself and breakdown windows")
+        // main の窓が今無く、エンジンが同じサービスの別の窓で代わりに描いている
+        // (status.json の main_window) ときはその窓も選べない。保存済みなら外せるよう残す。
+        check(LayoutSettingsView.secondWindowCandidates(main: "opencode:1d", windows: serviceWindows,
+                                                        selected: "opencode:weekly",
+                                                        resolvedMain: "opencode:weekly").map(\.id)
+              == ["opencode:5h", "opencode:daily", "opencode:weekly"],
+              "window-id main that fell back drops the substituted window")
         check(LayoutSettingsView.secondWindowCandidates(main: "opencode", windows: serviceWindows,
                                                         selected: "opencode:weekly").map(\.id)
               == ["opencode:5h", "opencode:daily", "opencode:weekly"],
@@ -399,10 +406,19 @@ struct RegressionTests {
                                                         selected: nil, resolvedMain: "opencode:daily").map(\.id)
               == ["opencode:5h", "opencode:weekly"],
               "a reported main different from the estimate is the only exclusion")
+        // 窓 ID の main に main_window が載るのは代わりの窓で描いたときだけ: その窓も除く。
         check(LayoutSettingsView.secondWindowCandidates(main: "opencode:5h", windows: serviceWindows,
                                                         selected: nil, resolvedMain: "opencode:daily").map(\.id)
-              == ["opencode:weekly", "opencode:daily"],
-              "a window-id main drops only itself even with a reported main")
+              == ["opencode:weekly"],
+              "a window-id main drops itself and its reported substitute")
+        check(LayoutSettingsView.subCandidates(main: "opencode:1d", windows: serviceWindows, selected: [],
+                                               resolvedMain: "opencode:weekly").map(\.id)
+              == ["opencode:5h", "opencode:daily", "opencode:weekly_a"]
+              && LayoutSettingsView.subCandidates(main: "opencode:1d", windows: serviceWindows,
+                                                  selected: ["opencode:weekly"],
+                                                  resolvedMain: "opencode:weekly").map(\.id)
+              == ["opencode:5h", "opencode:weekly", "opencode:daily", "opencode:weekly_a"],
+              "a substituted main window is not offered as a new sub but stays removable")
 
         let statusJSON = #"{"updated_at":"2026-10-28T12:00:00Z","cards":[{"id":"one","fetched_at":"2026-10-28T10:00:00Z"},{"id":"two","fetched_at":42},{"id":"three"}]}"#
         let decoded = try JSONDecoder().decode(EngineStatus.self, from: Data(statusJSON.utf8))

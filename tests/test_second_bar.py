@@ -307,3 +307,77 @@ def test_status_layout_reports_resolved_main_window():
     out = _layout_payload(None, cards, specs)
     assert out[0]["main_window"] == "opencode:weekly"   # サービス ID → 実際のメイン
     assert "main_window" not in out[1] and "main_window" not in out[2]
+
+
+def _devin_max():
+    """Devin Max 相当: 日次枠 (1d) が隠され、週間と devin:free だけ。"""
+    weekly = Window("devin", "weekly", "週間", 0.0,
+                    NOW + timedelta(days=1), timedelta(days=7))
+    free = Window("devin", "free", "無料枠", 0.0, None, timedelta(hours=5))
+    pu = ProviderUsage("devin", "Devin Max", [weekly, free], None, NOW)
+    return [(pu, compute_pace(w, [], NOW)) for w in (weekly, free)]
+
+
+def test_missing_main_window_falls_back_to_same_service():
+    """main の窓がプラン変更で消えても、同じサービスの窓でパネルを描く。"""
+    spec = PanelSpec(main="devin:1d", size="small", second_window="devin:weekly")
+    cols = _layout_columns(_devin_max(), [spec])
+    panel = cols[0][1][0]
+    assert panel["main"][1].window.id == "devin:weekly"
+    assert panel["second"] is None          # メインと同じ窓は 2 本目に出さない
+
+
+def test_fallback_skips_windows_named_by_other_panels():
+    """代わりの窓は、ほかのパネルが main に名指ししている窓を選ばない。"""
+    cards = _service("opencode")
+    specs = [PanelSpec(main="opencode:weekly", size="small"),
+             PanelSpec(main="opencode:1d", size="small")]
+    cols = _layout_columns(cards, specs)
+    mains = [slot["main"][1].window.id for _k, slots in cols for slot in slots if slot]
+    assert mains == ["opencode:weekly", "opencode:5h"]
+
+
+def test_fallback_none_when_service_absent():
+    assert _layout_columns(_service("opencode"), [PanelSpec(main="devin:1d")]) == []
+
+
+def test_status_layout_reports_fallback_main_window():
+    from quotacanvas.status import _layout_payload
+    out = _layout_payload(None, _devin_max(), [PanelSpec(main="devin:1d", size="small")])
+    assert out[0]["main_window"] == "devin:weekly"
+
+
+def test_two_missing_mains_do_not_share_fallback():
+    """同じサービスの消えた窓 id が 2 枚あっても、同じ代わりの窓を取り合わない。
+    サービス ID の main が使う窓も代わりに選ばない。"""
+    cards = _service("opencode", extra=(
+        Window("opencode", "1d", "1日", 10.0, NOW + timedelta(hours=3), timedelta(days=1)),))
+    specs = [PanelSpec(main="opencode", size="small"),
+             PanelSpec(main="opencode:30d", size="small"),
+             PanelSpec(main="opencode:gone", size="small")]
+    cols = _layout_columns(cards, specs)
+    mains = [slot["main"][1].window.id for _k, slots in cols for slot in slots if slot]
+    assert mains == ["opencode:weekly", "opencode:1d", "opencode:5h"]
+
+
+def test_auto_subs_skip_fallback_main(tmp_path):
+    """subs 省略の large パネルで、代わりのメインになる窓は自動サブに入れない。"""
+    from quotacanvas.cli import _render_layout
+    cards = _service("opencode", extra=(
+        Window("opencode", "1d", "1日", 10.0, NOW + timedelta(hours=3), timedelta(days=1)),))
+    cfg = load_config(_cfg(tmp_path, """
+        [[layout.panels]]
+        main = "opencode:30d"
+        """))
+    specs = _render_layout(cfg, cards)
+    assert specs[0].subs == ["opencode:5h", "opencode:1d"]
+    col = _layout_columns(cards, specs)[0][1][0]
+    assert col["main"][1].window.id == "opencode:weekly"
+
+
+def test_same_missing_main_twice_substitutes_first_only():
+    """同じ消えた窓 id を 2 枚 (同じ PanelSpec の再利用も) 置くと、先頭だけ代わりに描く。"""
+    spec = PanelSpec(main="devin:1d", size="small")
+    cols = _layout_columns(_devin_max(), [spec, spec])
+    slots = cols[0][1]
+    assert slots[0]["main"][1].window.id == "devin:weekly" and slots[1] is None
