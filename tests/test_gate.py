@@ -1302,11 +1302,22 @@ def test_burn_concurrent_updates_preserve_each_worker(tmp_path, monkeypatch):
     ["codex:weekly", "codex:5h"],
     ["codex:weekly", "codex:short*"],
 ])
-def test_partial_window_match_is_missing_even_with_burn(patterns):
+def test_partial_window_match_judges_remaining_windows(patterns):
+    # 取得に成功した provider で名指しの窓だけ無いのは、プランにその窓が無い
+    # （例: 上位プランで 5h 制限が無くなった）とみなし、残った窓で判定する。
+    # 取得失敗・前回値は手前で unknown（error / stale）になる。
     routing = cfg(workers={"codex": patterns})
     data = status(win("codex:weekly", "codex", "spare", 80))
     result = evaluate(data, routing, {"codex": NOW + timedelta(hours=1)}, NOW)
-    assert (result.workers[0].verdict, result.workers[0].reason) == ("unknown", "missing")
+    w = result.workers[0]
+    assert w.verdict == "boost" and w.windows == ["codex:weekly"]
+
+
+def test_partial_window_match_with_fetch_error_stays_unknown():
+    data = status(win("codex:weekly", "codex", "spare", 80))
+    data["errors"] = [{"provider": "codex", "error": "HTTP 500"}]
+    result = evaluate(data, cfg(workers={"codex": ["codex:weekly", "codex:5h"]}), {}, NOW)
+    assert (result.workers[0].verdict, result.workers[0].reason) == ("unknown", "error")
 
 
 def test_spare_hysteresis_and_reset():
@@ -1910,3 +1921,54 @@ def test_check_message_no_agent_reason_both_languages():
         "quota-canvas: gemini=stop（AI利用不可・他の AI エージェントには使わせない）。QUOTA_GATE_FORCE=1 で無視"
     assert gate.check_message(worker, NOW, "en") == \
         "quota-canvas: gemini=stop (not for AI agents; never assign work to it). Set QUOTA_GATE_FORCE=1 to ignore"
+
+
+def test_vanished_window_of_live_provider_is_ignored():
+    # プラン変更で opencode:5h が無くなっても、同じ provider の残った窓で判定する
+    data = status(win("opencode:weekly", "opencode", "spare", 40.0),
+                  win("opencode:30d", "opencode", "spare", 30.0))
+    result = evaluate(data, cfg(workers={"opencode": ["opencode:5h", "opencode:weekly",
+                                                      "opencode:30d"]}), {}, NOW)
+    w = result.workers[0]
+    assert w.verdict == "boost" and w.reason != "missing"
+    assert w.windows == ["opencode:weekly", "opencode:30d"]
+
+
+def test_missing_window_of_other_provider_still_missing():
+    # 別 provider の名指しの窓が無いときは、残りが取れていても missing のまま
+    data = status(win("claude:weekly", "claude", "spare", 40.0))
+    result = evaluate(data, cfg(workers={"fable": ["claude:weekly", "fable:weekly"]}), {}, NOW)
+    assert (result.workers[0].verdict, result.workers[0].reason) == ("unknown", "missing")
+
+
+def test_vanished_window_with_unlisted_sibling_stays_missing():
+    # 5h が消え、指定外の 6h が出てきたら付け替えかもしれないので missing のまま
+    data = status(win("codex:weekly", "codex", "spare", 80),
+                  win("codex:6h", "codex", "exhausted", 100))
+    result = evaluate(data, cfg(workers={"codex": ["codex:weekly", "codex:5h"]}), {}, NOW)
+    assert (result.workers[0].verdict, result.workers[0].reason) == ("unknown", "missing")
+
+
+def test_mixed_file_and_api_patterns_check_api_staleness():
+    # 判定専用の窓と API 窓の混在指定で API の窓が欠けても、前回値なら stale
+    old = NOW - timedelta(hours=2)
+    data = status(win("devin:free", "devin", "spare", 100.0),
+                  win("devin:weekly", "devin", "spare", 80.0, fetched=old))
+    result = evaluate(data, cfg(workers={"swe2": ["devin:free", "devin:1d", "devin:weekly"]}),
+                      {}, NOW)
+    assert (result.workers[0].verdict, result.workers[0].reason) == ("unknown", "stale")
+
+
+def test_named_routing_only_window_missing_stays_missing():
+    # 判定専用の窓を名指ししたのに無ければ、API の窓が取れていても missing
+    data = status(win("devin:weekly", "devin", "spare", 80.0))
+    result = evaluate(data, cfg(workers={"swe2": ["devin:free", "devin:weekly"]}), {}, NOW)
+    assert (result.workers[0].verdict, result.workers[0].reason) == ("unknown", "missing")
+
+
+def test_legacy_cards_status_does_not_tolerate_vanished_window():
+    # windows の無い旧形式は表示用 cards で代用するので、隠した窓と区別できない
+    data = status(win("codex:weekly", "codex", "spare", 80))
+    data["cards"] = data.pop("windows")
+    result = evaluate(data, cfg(workers={"codex": ["codex:weekly", "codex:5h"]}), {}, NOW)
+    assert (result.workers[0].verdict, result.workers[0].reason) == ("unknown", "missing")

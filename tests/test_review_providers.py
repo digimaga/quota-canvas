@@ -429,3 +429,18 @@ def test_bounded_discard_fp_passes_amt_reads_through():
     wrapped = _base._BoundedDiscardFP(response, 5.0, time.monotonic() + 10.0)
     assert wrapped.read(3) == b"abc"     # amt 指定はそのまま
     assert wrapped.read() == b"def"      # 上限付きの読み捨て (_read_bounded)
+
+
+def test_parse_codex_rejects_window_without_used_percent():
+    # 長さだけある窓を黙って捨てると、振り分けが残りの窓だけで判定してしまう
+    data = {"rate_limit": {"primary_window": {"limit_window_seconds": 18000},
+                           "secondary_window": {"used_percent": 10, "limit_window_seconds": 604800}}}
+    with pytest.raises(ValueError):
+        codex.parse_codex(data, NOW)
+
+
+def test_parse_codex_rejects_window_without_length():
+    data = {"rate_limit": {"primary_window": {"used_percent": 100, "reset_at": 1795300000},
+                           "secondary_window": {"used_percent": 10, "limit_window_seconds": 604800}}}
+    with pytest.raises(ValueError):
+        codex.parse_codex(data, NOW)

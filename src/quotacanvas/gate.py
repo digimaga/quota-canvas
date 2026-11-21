@@ -681,6 +681,33 @@ def _match_windows(patterns: List[str], windows: List[dict]) -> List[dict]:
     return out
 
 
+def _pattern_provider(pattern: object) -> Optional[str]:
+    """窓指定 ("opencode:5h" / "grok:*") の provider 部分。取れなければ None。"""
+    if not isinstance(pattern, str) or ":" not in pattern:
+        return None
+    return pattern.split(":", 1)[0] or None
+
+
+def _vanished_ok_providers(matched: List[dict], windows: List[dict]) -> Set[str]:
+    """名指しの窓が欠けても残りで判定してよい provider。API の窓が 1 つ以上一致し、
+    その provider の独立窓 (内訳・判定専用を除く) がすべて一致しているもの。"""
+    def wid(w: dict) -> Optional[str]:
+        value = w.get("id")
+        return value if isinstance(value, str) else None
+
+    matched_ids = {wid(w) for w in matched}
+    out: Set[str] = set()
+    for w in matched:
+        provider = w.get("provider")
+        if not isinstance(provider, str) or wid(w) in ROUTING_ONLY_WINDOWS:
+            continue
+        if all(wid(o) in matched_ids for o in windows
+               if o.get("provider") == provider and not o.get("part_of")
+               and wid(o) not in ROUTING_ONLY_WINDOWS):
+            out.add(provider)
+    return out
+
+
 def _worker_providers(name: str, patterns: List[str]) -> Set[str]:
     """ワーカーのデータ元 provider 名の集合 (窓 id の ':' 前で判断する)。
     gemini:argon は gemini provider のデータなので、gemini の取得失敗で
@@ -992,7 +1019,9 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
         # 判定専用の窓 (devin:free / opencode:free。ローカルのファイルから毎回作り直す)
         # だけに結ばれたワーカーは、同じ provider の API の取得失敗・前回値 (stale) で
         # unknown にしない (API が落ちていても利用制限中なら stop を出す)
-        file_only = bool(matched) and all(w.get("id") in ROUTING_ONLY_WINDOWS for w in matched)
+        # 設定の指定がすべて判定専用の窓のときだけ (API 窓との混在指定で API の
+        # 窓が欠けたときに、API の取得失敗・前回値を見逃さないため)。
+        file_only = bool(matched) and all(p in ROUTING_ONLY_WINDOWS for p in (patterns or []))
         if not file_only and any(_is_stale_window(w, stale_min, now) for w in data_windows):
             workers.append(WorkerResult(name=name, verdict="unknown", reason="stale",
                                         stale=True, provider=_one_provider(providers)))
@@ -1001,8 +1030,20 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             workers.append(WorkerResult(name=name, verdict="unknown", reason="error",
                                         provider=_one_provider(providers)))
             continue
+        # 名指しの窓が無いときは missing。ただし同じ provider の API の窓が取れていて、
+        # その provider の独立窓がすべて指定に入っている (プラン変更で 5h 窓が
+        # 無くなった等) なら、残った窓だけで判定する。指定外の窓が残っていれば
+        # (5h → 6h のような付け替えかもしれない) missing のまま。
+        # 表示フィルタ前の windows が無い旧形式 (cards で代用) では、隠した窓と
+        # 消えた窓を区別できないので許さない。
+        tolerated = (_vanished_ok_providers(matched, windows)
+                     if isinstance(status, dict) and isinstance(status.get("windows"), list)
+                     else set())
         if not matched or any(
-                not _match_windows([pattern], windows) for pattern in (patterns or [])):
+                not _match_windows([pattern], windows)
+                and (pattern in ROUTING_ONLY_WINDOWS
+                     or _pattern_provider(pattern) not in tolerated)
+                for pattern in (patterns or [])):
             workers.append(WorkerResult(name=name, verdict="unknown", reason="missing",
                                         provider=_one_provider(providers)))
             continue

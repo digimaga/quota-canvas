@@ -314,8 +314,12 @@ def parse_codex(data: Dict[str, Any], now: Optional[datetime] = None) -> Tuple[s
             continue  # window may be null
         used = entry.get("used_percent")
         seconds = entry.get("limit_window_seconds")
+        if used is None and seconds is None:
+            continue  # 中身の無い窓は null と同じ (その窓は無い)
         if used is None or not seconds:
-            continue
+            # 使用率か長さの片方だけの窓は応答の欠け。黙って捨てると、振り分けが
+            # 「プランにその窓が無い」とみなして残りの窓だけで判定してしまう。
+            raise ValueError("codex: incomplete rate-limit window")
         key, label, length = _window_identity(int(seconds))
         windows.append(Window(
             "codex", key, label, finite_number(used),
