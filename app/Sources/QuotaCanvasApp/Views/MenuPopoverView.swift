@@ -302,7 +302,9 @@ struct MenuPopoverView: View {
         }
         var placed: [(index: Int, isSub: Bool)] = []
         for panel in panels {
-            if let index = resolve(panel.main) { placed.append((index, false)) }
+            // main の窓が今無く、エンジンが同じサービスの別の窓で代わりに描いたパネルは
+            // status の main_window のカードを置く。
+            if let index = resolve(panel.main) ?? resolve(panel.mainWindow) { placed.append((index, false)) }
             for sub in panel.subs ?? [] {
                 if let index = resolve(sub) { placed.append((index, true)) }
             }

@@ -395,6 +395,40 @@ struct RegressionTests {
         check(LayoutSettingsView.restoreLayout(config: serviceMainConfig, status: [])
               .resolvedMains.isEmpty, "no status keeps no resolved main")
 
+        // 同じ main のパネルが 2 枚あるときは、照合できた先頭のパネルの値を使う
+        // （エンジンは同じ消えた窓 id の代わりを先頭の 1 枚にだけ描く）。
+        let dupMainConfig = [ConfigDocument.PanelConfig(main: "opencode:30d", subs: nil, size: "large"),
+                               ConfigDocument.PanelConfig(main: "opencode:30d", subs: nil, size: "large")]
+        let dupMainLayout = try JSONDecoder().decode([LayoutPanel].self,
+            from: Data(#"[{"main":"opencode:30d","subs":["opencode:5h"],"size":"large","main_window":"opencode:weekly"},{"main":"opencode:30d","subs":[],"size":"large"}]"#.utf8))
+        let duplicateRestored = LayoutSettingsView.restoreLayout(config: dupMainConfig, status: dupMainLayout)
+        check(duplicateRestored.resolvedMains == ["opencode:30d": "opencode:weekly"]
+              && duplicateRestored.resolvedSubs == ["opencode:30d": ["opencode:5h"]],
+              "duplicate mains keep the first matched panel's resolution")
+        // 現存する同じ main を小・大の順に置いても、大パネルの自動サブは読む。
+        let smallLargeConfig = [ConfigDocument.PanelConfig(main: "claude:weekly", subs: nil, size: "small"),
+                                ConfigDocument.PanelConfig(main: "claude:weekly", subs: nil, size: "large")]
+        let smallLargeLayout = try JSONDecoder().decode([LayoutPanel].self,
+            from: Data(#"[{"main":"claude:weekly","subs":[],"size":"small"},{"main":"claude:weekly","subs":["claude:5h"],"size":"large"}]"#.utf8))
+        check(LayoutSettingsView.restoreLayout(config: smallLargeConfig, status: smallLargeLayout)
+              .resolvedSubs == ["claude:weekly": ["claude:5h"]],
+              "a large panel after a small one with the same main keeps its auto subs")
+
+        // 保存後にエンジンが描き直した status から解決結果だけを更新する。照合できた main は
+        // 新しい値（無ければ消す）、照合できなかった main は今の値を保つ。
+        let refreshDoc = try ConfigDocument(data: Data(#"{"layout":{"panels":[{"main":"opencode:30d","size":"small"},{"main":"claude:5h","size":"small"}]}}"#.utf8))
+        let before = LayoutSettingsView.LayoutControlState(
+            slots: LayoutSettingsView.emptySlots(), splits: [],
+            resolvedSubsByMain: [:],
+            resolvedMainWindows: ["opencode:30d": "opencode:weekly", "claude:5h": "claude:weekly", "gone": "x:y"])
+        let refreshLayout = try JSONDecoder().decode([LayoutPanel].self,
+            from: Data(#"[{"main":"opencode:30d","size":"small","main_window":"opencode:5h"},{"main":"claude:5h","size":"small"}]"#.utf8))
+        let refreshed = LayoutSettingsView.refreshedResolution(previous: before, confirmed: refreshDoc,
+                                                               status: refreshLayout)
+        check(refreshed.resolvedMainWindows == ["opencode:30d": "opencode:5h", "gone": "x:y"]
+              && refreshed.slots == before.slots,
+              "refreshed status updates matched resolutions only and keeps slots")
+
         // status が教える実際のメイン窓（main_window）があるときは、推定（最長窓・
         // weekly 優先）と違う窓でも推定ではなく main_window の方だけを候補から除く。
         // 取れないとき（古いエンジン・status 無し）は従来の推定が fallback。
@@ -752,6 +786,15 @@ struct RegressionTests {
         let dedupedFlags = dedupedMenu.map { $0.inLayout }
         check(dedupedIds == ["claude:weekly", "claude:5h"] && dedupedFlags == [true, false],
               "both panels resolve to the same window, shown once at the first slot")
+        // main の窓 id が消え、エンジンが別の窓で代わりに描いたパネルは main_window のカードを置く。
+        let fallbackCards = try JSONDecoder().decode([StatusCard].self, from: Data("""
+            [{"id":"devin:free","provider":"devin"},{"id":"devin:weekly","provider":"devin"}]
+            """.utf8))
+        let fallbackLayout = try JSONDecoder().decode([LayoutPanel].self, from: Data(#"[{"main":"devin:1d","subs":[],"main_window":"devin:weekly"}]"#.utf8))
+        let fallbackMenu = MenuPopoverView.orderedCards(fallbackCards, layout: fallbackLayout)
+        check(fallbackMenu.map { $0.card.id ?? "" } == ["devin:weekly", "devin:free"]
+              && fallbackMenu.map(\.inLayout) == [true, false],
+              "a fallback panel places its main_window card in the popover")
 
         // RoutingModeModel（振り分けタブのモード切り替え）を偽のクライアントで動かす。
         let routingClient = FakeRoutingModeClient()

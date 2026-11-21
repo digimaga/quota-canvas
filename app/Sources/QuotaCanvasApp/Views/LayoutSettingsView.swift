@@ -144,6 +144,8 @@ struct LayoutSettingsView: View {
         return result
     }
 
+    private let statusTick = Timer.publish(every: 10, on: .main, in: .common).autoconnect()
+
     var body: some View {
         VStack(spacing: 0) {
             if loadFailed && doc == nil {
@@ -171,6 +173,12 @@ struct LayoutSettingsView: View {
             }
         }
         .task { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: .engineArtifactsChanged)) { _ in
+            refreshResolutionFromStatus()
+        }
+        // 保存後の通知（2 秒後の 1 回）より描き直しが遅れても、status.json の
+        // 新しい解決結果を拾う（StatusStore と同じ 10 秒間隔）。
+        .onReceive(statusTick) { _ in refreshResolutionFromStatus() }
         .alert("エラー", isPresented: Binding(
             get: { alertMessage != nil },
             set: { if !$0 { alertMessage = nil } }
@@ -808,9 +816,12 @@ struct LayoutSettingsView: View {
 
     /// 手動配置は config が正。status は自動配置と、対応するパネル（同じ main・size）の
     /// 解決済みサブ表示と、サービス ID の主枠が実際に解決されたメイン窓（main_window）に使う。
+    /// 解決済みサブ・メイン窓は main ごとに 1 つなので、同じ main のパネルが複数あれば
+    /// status と位置で照合できた先頭のパネルの値を使う（エンジンも同じ消えた窓 id の
+    /// 代わりは先頭の 1 枚にだけ描く）。matchedMains は照合できた main の集合。
     static func restoreLayout(config: [ConfigDocument.PanelConfig], status: [LayoutPanel])
         -> (slots: [LayoutSlot], splits: [Bool], resolvedSubs: [String: [String]],
-            resolvedMains: [String: String]) {
+            resolvedMains: [String: String], matchedMains: Set<String>) {
         let panels: [ConfigDocument.PanelConfig] = config.isEmpty
             ? status.map { ConfigDocument.PanelConfig(main: $0.main ?? "", subs: nil, size: $0.size ?? "large") }
             : config
@@ -818,6 +829,7 @@ struct LayoutSettingsView: View {
         var nextSplits = [Bool](repeating: false, count: columnCount)
         var resolvedSubs: [String: [String]] = [:]
         var resolvedMains: [String: String] = [:]
+        var matchedMains = Set<String>()
         var col = -1
         var colIsSmall = false
         var colFilled = 0
@@ -846,17 +858,49 @@ struct LayoutSettingsView: View {
                 // カレンダーは窓を持たない 1 枚: subs が config に残っていても捨てる
                 // (engine 側でも無視される。local: と同じ扱い)。
                 next[slotIndex(col, 0)].subs = main == calendarMain ? nil : panel.subs
-                if let statusPanel {
+                // 同じ main の大パネルが複数あれば先頭の値を使う（エンジンは同じ消えた
+                // 窓 id の代わりを先頭の 1 枚にだけ描く）。
+                if let statusPanel, resolvedSubs[main] == nil {
                     resolvedSubs[main] = statusPanel.subs ?? []
                 }
             }
             // サービス ID の主枠が実際に解決された窓（small も対象。「2本目の窓」の候補から除く）
-            if let statusPanel, let mainWindow = statusPanel.mainWindow {
+            if let statusPanel, !matchedMains.contains(main), let mainWindow = statusPanel.mainWindow {
                 resolvedMains[main] = mainWindow
             }
+            if statusPanel != nil { matchedMains.insert(main) }
             colFilled += 1
         }
-        return (next, nextSplits, resolvedSubs, resolvedMains)
+        return (next, nextSplits, resolvedSubs, resolvedMains, matchedMains)
+    }
+
+    /// エンジンが描き直した status から解決済みサブ・メイン窓だけを更新する（スロットと
+    /// split は触らない。nextControlState のコメント参照）。保存で配置が変わると、
+    /// 消えた窓の代わりに選ばれる窓も変わるため。照合できた main は新しい値に置き換え
+    /// （新しい status に無ければ消す）、照合できなかった main は今の値を保つ。
+    static func refreshedResolution(previous: LayoutControlState, confirmed: ConfigDocument,
+                                    status: [LayoutPanel]) -> LayoutControlState {
+        let restored = restoreLayout(config: confirmed.layoutPanels, status: status)
+        var next = previous
+        for main in restored.matchedMains {
+            next.resolvedMainWindows[main] = restored.resolvedMains[main]
+            if let subs = restored.resolvedSubs[main] {
+                next.resolvedSubsByMain[main] = subs
+            }
+        }
+        return next
+    }
+
+    private func refreshResolutionFromStatus() {
+        guard !busy, let confirmed = doc,
+              let status = StatusStore.loadStatusSnapshot()?.layout else { return }
+        let next = Self.refreshedResolution(
+            previous: LayoutControlState(slots: slots, splits: splits,
+                                         resolvedSubsByMain: resolvedSubsByMain,
+                                         resolvedMainWindows: resolvedMainWindows),
+            confirmed: confirmed, status: status)
+        resolvedSubsByMain = next.resolvedSubsByMain
+        resolvedMainWindows = next.resolvedMainWindows
     }
 
     /// 表示中のスロットから layout.panels を組み立てて即保存。
