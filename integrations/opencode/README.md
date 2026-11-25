@@ -17,3 +17,9 @@ worker は英数字、`.`、`_`、`-` の 1〜40 文字で、先頭の `-` と `
 `./integrations/opencode/install.sh --dry-run` で確認し、`./integrations/opencode/install.sh` で配置後、OpenCode を再起動してください。同じ内容が配置済みなら変更しません。異なる既存ファイルは `quota-guard.js.bak` に退避し、退避先が既に存在する場合は dry-run でも停止します。
 
 stop の場合は回復を待って再送するか、必要に応じて `orca-agent-gate allow <worker>` で一時許可します。警告はプラグインの標準エラーに出力します。表示位置は OpenCode の起動形態に依存します。
+
+## T3 Code の Go モデル制限
+
+`t3-go-model-policy.js` を OpenCode のユーザー設定ディレクトリの `plugins/` に配置し、T3 Code のプロバイダーに `T3_GO_MODEL_POLICY=opencode-go` または `T3_GO_MODEL_POLICY=opendesign` を設定します。T3 Code がプロバイダーごとに起動するローカルサーバーを使うため、Server URL は空にします。
+
+どちらも DeepSeek V4.1 Flash を提供します。OpenCode Go の GLM-5.3 Flash は候補に残り、要求時刻が平日 UTC 01:00–04:00 または 06:00–10:00 の場合に実行できます。モデル一覧を更新したあと、各接続が返すモデル ID を確認してください。
