@@ -127,7 +127,9 @@ def test_pick_refetches_when_status_is_stale(monkeypatch, capsys, tmp_path):
 
 
 def test_pick_accepts_status_just_under_20_minutes(monkeypatch, capsys, tmp_path):
-    path = _status_file(tmp_path, NOW - timedelta(minutes=19))
+    # NOW は読み込み時の時刻。全体実行で数分たつと 19 分前が 20 分を超えるので、
+    # 判定に使う実時刻に近い今の時刻から数える。
+    path = _status_file(tmp_path, datetime.now(UTC) - timedelta(minutes=19))
     monkeypatch.setattr(cli, "STATUS_PATH", path)
     monkeypatch.setattr(providers, "fetch_all",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("取得しない")))

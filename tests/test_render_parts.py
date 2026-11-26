@@ -3,8 +3,11 @@
 - Grok の大パネル / 小パネルが gauge="remaining" / "used" の両方で例外なく
   描けること、サブ行に内訳行 (凡例の丸 + ラベル + 細いバー + 「20% 使用」)
   が出ること。
-- parts を持たないカード (Claude など) の描画が parts 導入前と同じピクセル
-  であること (tests/reference_noparts_*.png と比較)。
+- parts を持たないカード (Claude など) の描画が基準画像を作った時点と同じ
+  ピクセルであること (tests/reference_noparts_*.png と比較)。基準画像は Mac ごとに
+  違うヒラギノではなく Pillow 同梱のフォントで描く (_use_fixed_font)。同梱フォントは
+  日本語の字形とウェイトを持たないので、そこの変更はこのテストでは見えない。
+  作り直すときは `.venv/bin/python tests/test_render_parts.py` を実行する。
 """
 
 from __future__ import annotations
@@ -13,9 +16,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import PIL
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
+from quotacanvas import render as render_mod
 from quotacanvas.models import Pace, PaceStatus, ProviderUsage, Window
 from quotacanvas.pacing import compute_pace
 from quotacanvas.render import (_PART_COLORS, TRACK, PanelSpec, _lookups,
@@ -241,16 +246,44 @@ def _claude_cards():
             (claude, claude_5h_pace)]
 
 
+_NOPARTS_LAYOUT = [
+    PanelSpec("claude:weekly", subs=["claude:weekly_fable", "claude:5h"]),
+    PanelSpec("claude:5h", size="small"),
+]
+
+
+def _use_fixed_font(monkeypatch):
+    """描画フォントを Pillow 同梱のものに固定する。ヒラギノは macOS の版で
+    字形が変わり、同じコードでも基準画像と画素が合わなくなるため。"""
+    cache = {}
+
+    def fixed(weight, size):
+        key = (weight, size)
+        if key not in cache:
+            cache[key] = ImageFont.load_default(size)
+        return cache[key]
+
+    monkeypatch.setattr(render_mod, "F", fixed)
+
+
+@pytest.fixture()
+def _fixed_font(monkeypatch):
+    # load_default(size) は Pillow 10.1 から。
+    if tuple(int(x) for x in PIL.__version__.split(".")[:2]) < (10, 1):
+        pytest.skip("Pillow 10.1 未満は同梱フォントの大きさを指定できない")
+    _use_fixed_font(monkeypatch)
+
+
+def _render_noparts(gauge):
+    return render(_claude_cards(), NOW, gauge=gauge, layout=_NOPARTS_LAYOUT)
+
+
 @pytest.mark.parametrize("gauge", ["remaining", "used"])
-def test_cards_without_parts_render_unchanged_pixels(gauge):
+def test_cards_without_parts_render_unchanged_pixels(gauge, _fixed_font):
     """parts を持たないカードの描画は導入前と同じピクセルになる。"""
     ref = REF_DIR / ("reference_noparts_%s.png" % gauge)
-    assert ref.exists(), "基準画像が無い: make_ref を再実行してください"
-    img = render(_claude_cards(), NOW, gauge=gauge, layout=[
-        PanelSpec("claude:weekly", subs=["claude:weekly_fable", "claude:5h"]),
-        PanelSpec("claude:5h", size="small"),
-    ])
-    assert img.tobytes() == Image.open(ref).tobytes()
+    assert ref.exists(), "基準画像が無い: .venv/bin/python tests/test_render_parts.py で作る"
+    assert _render_noparts(gauge).tobytes() == Image.open(ref).tobytes()
 
 
 # --------------------------------------- review: メイン候補 / parts の絞り込み
@@ -407,3 +440,14 @@ def test_render_without_percent_colors_differs_only_when_colored():
     on = render(cards, NOW, layout=layout)
     off = render(cards, NOW, layout=layout, percent_colors=False)
     assert on.tobytes() == off.tobytes()
+
+
+if __name__ == "__main__":
+    # 基準画像の作り直し: 描画を意図して変えたときだけ実行する。
+    mp = pytest.MonkeyPatch()
+    try:
+        _use_fixed_font(mp)
+        for g in ("remaining", "used"):
+            _render_noparts(g).save(REF_DIR / ("reference_noparts_%s.png" % g))
+    finally:
+        mp.undo()
