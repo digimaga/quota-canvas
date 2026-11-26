@@ -62,7 +62,8 @@ class Window:
 @dataclass
 class ResetCredit:
     """One "rate-limit reset credit": a right to instantly reset the weekly
-    window (Codex). Display only; quota-canvas never redeems it."""
+    window (Codex), or the 5-hour / weekly window (GLM Reset Card). Display
+    only; quota-canvas never redeems it."""
 
     title: str
     granted_at: Optional[datetime]

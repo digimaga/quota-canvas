@@ -17,6 +17,8 @@ opendesign_bad_api_url = "apiUrl must be https"
 commandcode_login_required = "No Command Code login (run cmd login)"
 commandcode_login_expired = "Command Code login expired (run cmd login again)"
 reset_credit = "Reset credits"
+glm_reset_5h = "5-hour reset"
+glm_reset_week = "Weekly reset"
 
 balance = "Balance"
 insufficient_balance = "Insufficient balance"

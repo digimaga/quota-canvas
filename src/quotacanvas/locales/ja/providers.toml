@@ -17,6 +17,8 @@ opendesign_bad_api_url = "apiUrl は https のみ受け付けます"
 commandcode_login_required = "Command Code のログインがありません（cmd login でログインしてください）"
 commandcode_login_expired = "Command Code のログインが切れました（cmd login でログインし直してください）"
 reset_credit = "リセット権"
+glm_reset_5h = "5時間枠リセット"
+glm_reset_week = "週間枠リセット"
 
 balance = "残高"
 insufficient_balance = "残高不足"
