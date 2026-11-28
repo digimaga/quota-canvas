@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
@@ -650,6 +651,134 @@ def test_line_english_wording():
                 f"~{gate.fmt_reset(data['windows'][0]['resets_at'], now)}) "
                 f"(as of {gate.fmt_hhmm(now)})")
     assert expected in line
+
+
+# --- 余り (slack) の表示 ---------------------------------------------------------
+
+
+def slack_win(wid, provider, remaining, *, length_h, resets_h, pace="spare"):
+    entry = win(wid, provider, pace, remaining, resets=NOW + timedelta(hours=resets_h))
+    entry["length"] = int(length_h * 3600)
+    return entry
+
+
+def test_line_shows_smallest_slack_across_windows():
+    # 5h は余裕 (+60)、週間だけ危ない (+15) → 長い窓の余りを出す (短い窓で隠さない)
+    data = status(
+        slack_win("oc:5h", "oc", 80.0, length_h=5, resets_h=1),
+        slack_win("oc:weekly", "oc", 30.0, length_h=7 * 24, resets_h=1.05 * 24),
+        slack_win("oc:monthly", "oc", 62.0, length_h=30 * 24, resets_h=6 * 24),
+        updated=NOW,
+    )
+    result = evaluate(data, cfg(workers={"oc": ["oc:5h", "oc:weekly", "oc:monthly"]}), {}, NOW)
+    worker = result.workers[0]
+    assert (worker.slack, worker.slack_window) == (15, 7 * 24 * 3600)
+    line = format_line(result, NOW, "ja")
+    assert ",余り週+15," in line
+    assert "余り5h+60" not in line and "余り30日+42" not in line
+
+
+def test_line_skips_slack_for_incomplete_windows():
+    # 長さ・リセット時刻・残り % のどれかが無い窓は計算に入れない
+    no_length = win("glm:5h", "glm", "spare", 40.0, resets=NOW + timedelta(hours=1))
+    no_reset = win("glm:weekly", "glm", "spare", 40.0)
+    no_reset["resets_at"] = None
+    no_reset["length"] = 7 * 24 * 3600
+    no_remaining = win("glm:monthly", "glm", "spare", 40.0, resets=NOW + timedelta(days=1))
+    no_remaining["length"] = 30 * 24 * 3600
+    del no_remaining["remaining"]
+    data = status(no_length, no_reset, no_remaining, updated=NOW)
+    result = evaluate(data, cfg(workers={"glm": ["glm:5h", "glm:weekly", "glm:monthly"]}),
+                      {}, NOW)
+    assert result.workers[0].slack is None
+    assert "余り" not in format_line(result, NOW, "ja")
+    # 1 枚でも計算できる窓があれば、その窓だけで余りを出す
+    entry = slack_win("glm:monthly", "glm", 62.0, length_h=30 * 24, resets_h=6 * 24)
+    result = evaluate(status(no_length, no_reset, entry),
+                      cfg(workers={"glm": ["glm:5h", "glm:weekly", "glm:monthly"]}), {}, NOW)
+    assert (result.workers[0].slack, result.workers[0].slack_window) == (42, 30 * 24 * 3600)
+
+
+@pytest.mark.parametrize("resets_hours,expected", [(-2, 40), (10, -60)])
+def test_slack_clamps_reset_time(resets_hours, expected):
+    # リセットが過去なら残り時間 0、窓の長さより先なら時間 % は 100 で頭打ち
+    entry = slack_win("glm:5h", "glm", 40.0, length_h=5, resets_h=resets_hours)
+    assert gate.window_slack(entry, NOW) == (expected, 5 * 3600)
+
+
+def test_line_keeps_quota_gate_prefix_with_slack():
+    # 既存の正規表現 (devin-run / worker-split) が名前=判定(の直後の残り % を読めること
+    entry = slack_win("opencode:weekly", "opencode", 48.0, length_h=7 * 24,
+                      resets_h=3 * 24, pace="spare")
+    result = evaluate(status(entry), cfg(workers={"opencode": ["opencode:weekly"]}), {}, NOW)
+    body = gate.format_worker_segments(result, NOW, "ja")
+    assert re.match(r"^(\S+?)=(\w+)\((\d{1,3})%", body)
+    assert "opencode=boost(48%,余り週+5,~" in format_line(result, NOW, "ja")
+
+
+def test_slack_window_labels_and_english_wording():
+    i18n.set_language("ja")
+    cases = [(5 * 3600, "5h"), (12 * 3600, "12h"), (7 * 24 * 3600, "週"),
+             (2 * 24 * 3600, "2日"), (30 * 24 * 3600, "30日")]
+    for length, label in cases:
+        assert gate.window_label(length) == label, length
+    i18n.set_language("en")
+    assert gate.window_label(7 * 24 * 3600) == "wk"
+    assert gate.window_label(2 * 24 * 3600) == "2d"
+    assert gate.window_label(30 * 24 * 3600) == "30d"
+    entry = slack_win("glm:weekly", "glm", 48.0, length_h=7 * 24, resets_h=3 * 24,
+                      pace="spare")
+    line = format_line(evaluate(status(entry), cfg(workers={"glm": ["glm:weekly"]}), {},
+                                NOW), NOW, "en")
+    assert "glm=boost(48%,slackwk+5,~" in line
+
+
+def test_line_slack_separates_window_from_number():
+    # 窓名が符号つき数字の前にあること (余り5h+60 / 余り週+5 / 余り30日+42 /
+    # 余り5h-30)。数字を先に置くと「+605h」のようにつながって読めない。
+    cases = [
+        ("glm:5h", 5, 1, 80.0, "5h", "+60"),
+        ("glm:weekly", 7 * 24, 3 * 24, 48.0, "週", "+5"),
+        ("glm:monthly", 30 * 24, 6 * 24, 62.0, "30日", "+42"),
+        ("glm:5h", 5, 2, 10.0, "5h", "-30"),
+    ]
+    for wid, length_h, resets_h, rem, label, value in cases:
+        entry = slack_win(wid, "glm", rem, length_h=length_h, resets_h=resets_h)
+        line = format_line(evaluate(status(entry), cfg(workers={"glm": [wid]}), {}, NOW),
+                           NOW, "ja")
+        assert ",余り%s%s," % (label, value) in line, line
+        # 旧形式 (余り+545h) のように数字と窓名がつながっていないこと
+        assert not re.search(r"余り[+-]\d", line), line
+
+
+def test_slack_window_label_distinguishes_short_windows():
+    # 5h は「4 時間超〜6 時間以下」だけ。それ以外の 1 日未満は Nh。
+    i18n.set_language("ja")
+    cases = [(1 * 3600, "1h"), (3 * 3600, "3h"), (4 * 3600, "4h"),
+             (4.5 * 3600, "5h"), (5 * 3600, "5h"), (6 * 3600, "5h"),
+             (7 * 3600, "7h"), (12 * 3600, "12h"), (24 * 3600, "1日"),
+             (7 * 24 * 3600, "週")]
+    for length, label in cases:
+        assert gate.window_label(length) == label, length
+    # 表示まで通しで確認 (1h 窓が「余り5h」にならない)
+    entry = slack_win("glm:short", "glm", 80.0, length_h=1, resets_h=0.25)
+    line = format_line(evaluate(status(entry), cfg(workers={"glm": ["glm:short"]}), {}, NOW),
+                       NOW, "ja")
+    assert ",余り1h+55," in line, line
+
+
+def test_slack_skips_routing_only_windows():
+    # 制限中の判定専用窓 (devin:free / opencode:free) は length が「戻るまでの
+    # 残り秒」の合成値なので、余りを計算すると 0 になる。計算から外す。
+    free = slack_win("devin:free", "devin", 100.0, length_h=1.5, resets_h=1.5)
+    only = evaluate(status(free, updated=NOW), cfg(workers={"swe2": ["devin:free"]}), {}, NOW)
+    assert only.workers[0].slack is None
+    assert "余り" not in format_line(only, NOW, "ja")
+    # API の窓と混在するときも、判定専用窓は候補にしない
+    api = slack_win("devin:5h", "devin", 60.0, length_h=5, resets_h=1)
+    mixed = evaluate(status(free, api, updated=NOW),
+                     cfg(workers={"swe2": ["devin:free", "devin:5h"]}), {}, NOW)
+    assert (mixed.workers[0].slack, mixed.workers[0].slack_window) == (40, 5 * 3600)
 
 
 # --- stale 行 --------------------------------------------------------------------

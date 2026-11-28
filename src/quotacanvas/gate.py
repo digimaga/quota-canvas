@@ -438,6 +438,8 @@ class WorkerResult:
     stale: bool = False
     provider: str = ""                  # リセット権表示用の provider 名 (一意でないとき "")
     local: Optional[Dict[str, int]] = None  # local 枠のとき {running, waiting, capacity}
+    slack: Optional[int] = None         # 一番小さい余り (残り % − リセットまでの時間 %)
+    slack_window: Optional[float] = None  # その余りの窓の長さ (秒)
 
     def to_dict(self) -> Dict[str, Any]:
         out = {
@@ -1005,6 +1007,7 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
                             previous_burst_resets,
                             dict(burst_resets) if display_holds is not holds else burst_resets)
             entry = picked[0] if picked else {}
+            slack, slack_window = pick_slack(display_windows, now)
             workers.append(WorkerResult(
                 name=name, verdict="stop", reason="disabled",
                 windows=[w["id"] for w in display_windows if isinstance(w.get("id"), str)],
@@ -1014,7 +1017,8 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
                 exhausts_at=entry.get("exhausts_at") if isinstance(entry.get("exhausts_at"), str) else None,
                 stale=any(_is_stale_window(w, stale_min, now) for w in data_windows),
                 provider=_one_provider(providers),
-                local=local_fields(entry) if entry else None))
+                local=local_fields(entry) if entry else None,
+                slack=slack, slack_window=slack_window))
             continue
         # 判定専用の窓 (devin:free / opencode:free。ローカルのファイルから毎回作り直す)
         # だけに結ばれたワーカーは、同じ provider の API の取得失敗・前回値 (stale) で
@@ -1053,6 +1057,7 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
                         previous_burst_resets, burst_resets)
         assert picked is not None
         entry, verdict, reason = picked
+        slack, slack_window = pick_slack(matched, now)
         until = burn.get(name)
         # local 枠だけのワーカーは「使い切りモードで reserve/stop を boost に格上げ」
         # の対象外 (ローカルサーバーに残量の概念が無く、待ち・満杯は実測なので)。
@@ -1072,6 +1077,7 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
             burn_until=to_local(until).isoformat() if active else None,
             provider=_one_provider(providers),
             local=local_fields(entry),
+            slack=slack, slack_window=slack_window,
         ))
     if no_agent:
         # 利用規約で他の AI からの利用が認められない provider (Gemini) だけのワーカーは、
@@ -1092,6 +1098,60 @@ def evaluate(status: Optional[dict], routing_cfg: "Routing",
 
 
 # ------------------------------------------------------------------ 表示 (line / check)
+
+def window_slack(entry: dict, now: datetime) -> Optional[Tuple[int, float]]:
+    """窓 1 枚の余り (整数) と窓の長さ (秒)。
+
+    余り = 残り % − (リセットまでの残り秒 ÷ 窓の長さ秒 × 100)。残り %・
+    リセット時刻・窓の長さのどれかが無い (壊れている) 窓は None。リセットが
+    過去なら残り秒は 0、窓の長さより先なら時間 % は 100 で頭打ちにする。"""
+    rem = norm_remaining(entry.get("remaining"))
+    reset = parse_dt(entry.get("resets_at"))
+    length = entry.get("length")
+    if rem is None or reset is None:
+        return None
+    if (isinstance(length, bool) or not isinstance(length, (int, float))
+            or not math.isfinite(length) or length <= 0):
+        return None
+    left = max(0.0, (reset - now).total_seconds())
+    time_pct = min(100.0, left / length * 100.0)
+    return int(math.floor(rem - time_pct + 0.5)), float(length)
+
+
+def pick_slack(entries: List[dict], now: datetime) -> Tuple[Optional[int], Optional[float]]:
+    """一番小さい余りの窓を選ぶ (余り, 窓の長さ秒)。計算できる窓が無ければ (None, None)。
+    長い窓が危ないときに短い窓の余裕で隠さないよう、窓ごとに比べて最小を採る。
+    判定専用の窓 (devin:free / opencode:free) は、制限中に length が「戻るまでの
+    残り秒」の合成値になるため余りの計算から外す。"""
+    best: Optional[Tuple[int, float]] = None
+    for entry in entries:
+        if entry.get("id") in ROUTING_ONLY_WINDOWS:
+            continue
+        got = window_slack(entry, now)
+        if got is not None and (best is None or got < best):
+            best = got
+    return best if best is not None else (None, None)
+
+
+def window_label(length: float) -> str:
+    """窓の長さの短い呼び名 (1h / 5h / 週 / 30日 など)。現在の言語の文言を使う。"""
+    day = 24 * 3600
+    # 5h は 4 時間超〜6 時間以下だけ。合成された短い窓 (戻るまでの残り秒) を
+    # 5h と誤って呼ばないよう、範囲を狭く取る。
+    if 4 * 3600 < length <= 6 * 3600:
+        return t("routing.gate.window_5h")
+    if 6 * day <= length <= 8 * day:
+        return t("routing.gate.window_week")
+    if 28 * day <= length <= 31 * day:
+        return t("routing.gate.window_30d")
+    if length < day:
+        return t("routing.gate.window_hours", n=int(round(length / 3600)))
+    return t("routing.gate.window_days", n=int(round(length / day)))
+
+
+def _signed(value: int) -> str:
+    return "+%d" % value if value >= 0 else str(value)
+
 
 def _exhausts_field(entry: dict, reason: str) -> Optional[str]:
     """WorkerResult.exhausts_at: over_rounding のときは端数を見込んだ枯渇見込み時刻、
@@ -1185,6 +1245,13 @@ def format_worker_segments(result: RoutingResult, now: datetime, lang: Optional[
             text = "%s=%s(%s" % (w.name, w.verdict, summary)
         else:
             text = "%s=%s(%s" % (w.name, w.verdict, pct_str(w.remaining))
+        if w.slack is not None:
+            # 残り % の直後・閉じ括弧の前に置く (名前=判定(の直後の数字 % を
+            # devin-run / worker-split が読むため、その間に何も入れない)。
+            # 並びは「余り → 窓名 → 符号つきの数字」(例 余り30日+42)。数字を
+            # 先にすると窓名とつながって読めないため、窓名を必ず数字の前に置く。
+            text += "," + t("routing.gate.slack", window=window_label(w.slack_window or 0.0),
+                            value=_signed(w.slack))
         if w.reason == "disabled":
             text += "," + t("routing.gate.disabled")
         if w.reason == "no_agent":
